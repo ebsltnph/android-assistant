@@ -1,5 +1,8 @@
 package com.example.assistant.feature.settings
 
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -146,6 +149,19 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         item { HorizontalDivider() }
+        item { Text("每日小结", style = MaterialTheme.typography.titleLarge) }
+        item {
+            DailySummarySettingsCard(
+                summaryHour = vm.summaryHour.collectAsState().value,
+                onHourChange = { hour ->
+                    vm.setSummaryHour(hour)
+                    // 重排 WorkManager 周期任务（直接用刚选的小时，避免读到旧值）
+                    app.rescheduleDailySummary(hour)
+                }
+            )
+        }
+
+        item { HorizontalDivider() }
         item { Text("提示词", style = MaterialTheme.typography.titleLarge) }
         item {
             OutlinedButton(onClick = { editingPrompt = true }) {
@@ -183,6 +199,78 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             vm = vm,
             onDismiss = { editingPrompt = false }
         )
+    }
+}
+
+/**
+ * 每日小结设置卡片：
+ * - 自动总结时间（小时下拉，保存后重排周期任务）
+ * - 系统日历同步开关（需 WRITE_CALENDAR 权限）
+ */
+@Composable
+private fun DailySummarySettingsCard(
+    summaryHour: Int,
+    onHourChange: (Int) -> Unit
+) {
+    val context = LocalContext.current
+    // 系统日历 Provider 要求 READ + WRITE 两个权限同时具备（只给 WRITE 会写入失败）
+    val calendarGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.READ_CALENDAR
+    ) == PackageManager.PERMISSION_GRANTED &&
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.WRITE_CALENDAR
+        ) == PackageManager.PERMISSION_GRANTED
+    val calendarLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { }
+    val hours = (0..23).toList()
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("自动总结时间", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                var expanded by remember { mutableStateOf(false) }
+                OutlinedButton(onClick = { expanded = true }) {
+                    Text("%02d:00".format(summaryHour))
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    hours.forEach { h ->
+                        DropdownMenuItem(
+                            text = { Text("%02d:00".format(h)) },
+                            onClick = { onHourChange(h); expanded = false }
+                        )
+                    }
+                }
+            }
+            Text(
+                "每天此时自动汇总当天日记，生成小结并推送通知（当天无日记则不打扰）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (calendarGranted) "✓ 已同步到系统日历（每天小结成为日历事件）"
+                    else "同步到系统日历（可在日历 App 查看每日小结）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (calendarGranted) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                if (!calendarGranted) {
+                    OutlinedButton(onClick = {
+                        calendarLauncher.launch(
+                            arrayOf(
+                                android.Manifest.permission.READ_CALENDAR,
+                                android.Manifest.permission.WRITE_CALENDAR
+                            )
+                        )
+                    }) { Text("授权") }
+                }
+            }
+        }
     }
 }
 

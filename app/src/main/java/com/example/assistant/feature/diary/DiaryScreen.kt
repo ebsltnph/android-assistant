@@ -9,10 +9,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -39,6 +42,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.assistant.AssistantApplication
+import com.example.assistant.core.AppSharedState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -69,6 +73,16 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
     val selectedBookId by vm.selectedBookId.collectAsState()
     val input by vm.input.collectAsState()
     val message by vm.message.collectAsState()
+
+    // 通知点击「每日小结」→ 弹出完整小结对话框
+    val showSummary by AppSharedState.showSummaryRequested.collectAsState()
+    var summaryDialogText by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(showSummary) {
+        if (showSummary) {
+            summaryDialogText = app.container.summaryStore.currentSummary()
+            AppSharedState.showSummaryRequested.value = false
+        }
+    }
 
     LaunchedEffect(Unit) { vm.initSelectedBook() }
 
@@ -256,6 +270,24 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                 kotlinx.coroutines.delay(2000)
                 vm.clearMessage()
             }
+        }
+
+        // 完整每日小结对话框（通知点击 / 手动入口共用）
+        summaryDialogText?.let { text ->
+            AlertDialog(
+                onDismissRequest = { summaryDialogText = null },
+                title = { Text("📋 今日小结") },
+                text = {
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.verticalScroll(rememberScrollState())
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { summaryDialogText = null }) { Text("关闭") }
+                }
+            )
         }
     }
 }

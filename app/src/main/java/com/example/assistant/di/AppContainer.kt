@@ -10,11 +10,13 @@ import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
+import com.example.assistant.core.storage.SummaryStore
 import com.example.assistant.data.db.AppDatabase
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.EventRepository
 import com.example.assistant.data.repo.MemoryRepository
 import com.example.assistant.data.repo.ReminderRepository
+import com.example.assistant.data.repo.SummaryRepository
 
 /**
  * 手动依赖注入容器：所有全局单例在这里创建。
@@ -30,6 +32,7 @@ class AppContainer(context: Context) {
     val secretStore: SecretStore by lazy { SecretStore(appContext) }
     val settingsStore: SettingsStore by lazy { SettingsStore(appContext) }
     val promptStore: PromptStore by lazy { PromptStore(appContext) }
+    val summaryStore: SummaryStore by lazy { SummaryStore(appContext) }
 
     // ---- 数据库 ----
     val database: AppDatabase by lazy { AppDatabase.create(appContext) }
@@ -37,6 +40,7 @@ class AppContainer(context: Context) {
     val memoryRepository: MemoryRepository by lazy { MemoryRepository(database.memoryDao()) }
     val reminderRepository: ReminderRepository by lazy { ReminderRepository(database.reminderDao()) }
     val eventRepository: EventRepository by lazy { EventRepository(database.eventDao()) }
+    val summaryRepository: SummaryRepository by lazy { SummaryRepository(database.summaryDao()) }
 
     // ---- 网络 ----
     val providerRegistry: ProviderRegistry by lazy {
@@ -49,6 +53,13 @@ class AppContainer(context: Context) {
     val agent: Agent by lazy { Agent(providerRegistry, promptBuilder, intentRouter) }
     val memoryExtractor: MemoryExtractor by lazy { MemoryExtractor(providerRegistry, promptStore) }
     val dailySummaryGenerator: DailySummaryGenerator by lazy {
-        DailySummaryGenerator(diaryRepository, providerRegistry, promptStore)
+        DailySummaryGenerator(
+            diaryRepository = diaryRepository,
+            providerRegistry = providerRegistry,
+            promptStore = promptStore,
+            summaryStore = summaryStore,
+            summaryRepository = summaryRepository,
+            appContext = appContext
+        )
     }
 }

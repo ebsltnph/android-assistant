@@ -1,6 +1,7 @@
 package com.example.assistant
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -21,12 +22,12 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.example.assistant.core.AppSharedState
+import com.example.assistant.core.notification.Notifier
 import com.example.assistant.feature.chat.ChatScreen
 import com.example.assistant.feature.diary.DiaryScreen
 import com.example.assistant.feature.home.HomeScreen
@@ -56,9 +57,26 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         requestNotificationPermissionIfNeeded()
+        handleIntent(intent)
         setContent {
             AssistantTheme {
                 AssistantApp()
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // App 已在运行时点击通知：更新共享状态，由 DiaryScreen 消费
+        handleIntent(intent)
+    }
+
+    /** 解析通知点击等外部 Intent，写入共享状态 */
+    private fun handleIntent(intent: Intent?) {
+        when (intent?.getStringExtra(Notifier.EXTRA_ACTION)) {
+            Notifier.ACTION_SHOW_SUMMARY -> {
+                AppSharedState.currentTab.value = MainTab.Diary
+                AppSharedState.showSummaryRequested.value = true
             }
         }
     }
@@ -74,7 +92,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun AssistantApp() {
-    var currentTab by rememberSaveable { mutableStateOf(MainTab.Home) }
+    val currentTab by AppSharedState.currentTab.collectAsState()
 
     Scaffold(
         bottomBar = {
@@ -82,7 +100,7 @@ fun AssistantApp() {
                 MainTab.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = currentTab == tab,
-                        onClick = { currentTab = tab },
+                        onClick = { AppSharedState.currentTab.value = tab },
                         icon = { Icon(tab.icon, contentDescription = tab.label) },
                         label = { Text(tab.label) }
                     )

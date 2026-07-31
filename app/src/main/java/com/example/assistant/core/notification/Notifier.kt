@@ -2,9 +2,12 @@ package com.example.assistant.core.notification
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import com.example.assistant.MainActivity
 import com.example.assistant.R
 
 /**
@@ -32,9 +35,29 @@ object Notifier {
         )
     }
 
-    /** 每日总结通知（P3） */
+    /** 每日总结通知：点击打开 App 并弹出完整小结 */
     fun notifyDiarySummary(context: Context, summary: String) {
-        send(context, CHANNEL_DIARY_SUMMARY, 1001, "今日小结", summary)
+        val contentIntent = PendingIntent.getActivity(
+            context,
+            REQUEST_SUMMARY_OPEN,
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(EXTRA_ACTION, ACTION_SHOW_SUMMARY),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_DIARY_SUMMARY)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("今日小结")
+            .setContentText(summary.take(200))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(summary))
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .build()
+        try {
+            NotificationManagerCompat.from(context).notify(NOTIFY_ID_DIARY_SUMMARY, notification)
+        } catch (e: SecurityException) {
+            // 未授予 POST_NOTIFICATIONS 权限：通知静默丢弃
+        }
     }
 
     /** 提醒通知（P4 使用） */
@@ -56,4 +79,11 @@ object Notifier {
             // 未授予 POST_NOTIFICATIONS 权限：通知静默丢弃
         }
     }
+
+    /** Intent extra：通知点击动作 */
+    const val EXTRA_ACTION = "assistant_action"
+    const val ACTION_SHOW_SUMMARY = "show_summary"
+
+    private const val REQUEST_SUMMARY_OPEN = 100
+    private const val NOTIFY_ID_DIARY_SUMMARY = 1001
 }

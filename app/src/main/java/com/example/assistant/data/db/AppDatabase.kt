@@ -4,10 +4,14 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.assistant.data.db.dao.DiaryDao
 import com.example.assistant.data.db.dao.EventDao
 import com.example.assistant.data.db.dao.MemoryDao
 import com.example.assistant.data.db.dao.ReminderDao
+import com.example.assistant.data.db.dao.SummaryDao
+import com.example.assistant.data.db.entity.DailySummaryEntity
 import com.example.assistant.data.db.entity.DiaryBookEntity
 import com.example.assistant.data.db.entity.DiaryEntryEntity
 import com.example.assistant.data.db.entity.MemoryEntity
@@ -25,9 +29,10 @@ import com.example.assistant.data.db.entity.ReminderEntity
         DiaryEntryEntity::class,
         MemoryEntity::class,
         ReminderEntity::class,
-        MonitoredEventEntity::class
+        MonitoredEventEntity::class,
+        DailySummaryEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -36,10 +41,28 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun memoryDao(): MemoryDao
     abstract fun reminderDao(): ReminderDao
     abstract fun eventDao(): EventDao
+    abstract fun summaryDao(): SummaryDao
 
     companion object {
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "assistant.db")
+                .addMigrations(MIGRATION_1_2)
                 .build()
+
+        /** v1 → v2：新增每日小结表（历史小结） */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `daily_summaries` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`date` TEXT NOT NULL, " +
+                        "`summary` TEXT NOT NULL, " +
+                        "`createdAtEpochMillis` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_daily_summaries_date` ON `daily_summaries` (`date`)"
+                )
+            }
+        }
     }
 }

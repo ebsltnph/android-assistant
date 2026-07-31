@@ -10,7 +10,9 @@ import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class SettingsViewModel(
@@ -31,6 +33,14 @@ class SettingsViewModel(
     /** 测试连接的结果 */
     private val _testResult = MutableStateFlow<TestResult?>(null)
     val testResult: StateFlow<TestResult?> = _testResult
+
+    /** 每日小结自动总结时间（小时，24h 制，默认 21:00） */
+    val summaryHour: StateFlow<Int> = settingsStore.dailySummaryHour
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 21)
+
+    fun setSummaryHour(hour: Int) {
+        viewModelScope.launch { settingsStore.setDailySummaryHour(hour) }
+    }
 
     init {
         refresh()

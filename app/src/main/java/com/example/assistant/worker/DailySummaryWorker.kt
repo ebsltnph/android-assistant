@@ -20,9 +20,12 @@ class DailySummaryWorker(
     override suspend fun doWork(): Result {
         val container = (applicationContext as AssistantApplication).container
         val generator = DailySummaryGenerator(
-            container.diaryRepository,
-            container.providerRegistry,
-            container.promptStore
+            diaryRepository = container.diaryRepository,
+            providerRegistry = container.providerRegistry,
+            promptStore = container.promptStore,
+            summaryStore = container.summaryStore,
+            summaryRepository = container.summaryRepository,
+            appContext = applicationContext
         )
         val summary = generator.generateToday() ?: return Result.success() // 今天没写日记，不打扰
         Notifier.notifyDiarySummary(applicationContext, summary)
