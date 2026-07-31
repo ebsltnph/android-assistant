@@ -1,0 +1,48 @@
+package com.example.assistant.di
+
+import android.content.Context
+import com.example.assistant.core.agent.Agent
+import com.example.assistant.core.agent.IntentRouter
+import com.example.assistant.core.agent.PromptBuilder
+import com.example.assistant.core.network.ProviderRegistry
+import com.example.assistant.core.storage.PromptStore
+import com.example.assistant.core.storage.SecretStore
+import com.example.assistant.core.storage.SettingsStore
+import com.example.assistant.data.db.AppDatabase
+import com.example.assistant.data.repo.DiaryRepository
+import com.example.assistant.data.repo.EventRepository
+import com.example.assistant.data.repo.MemoryRepository
+import com.example.assistant.data.repo.ReminderRepository
+
+/**
+ * 手动依赖注入容器：所有全局单例在这里创建。
+ *
+ * 各功能模块按需从容器取依赖，未来拆多模块时把对应字段移入独立容器即可。
+ * 已接入：存储（加密/DataStore）、网络（OpenAI 兼容）、Agent 编排、Room 数据层。
+ */
+class AppContainer(context: Context) {
+
+    val appContext: Context = context.applicationContext
+
+    // ---- 存储 ----
+    val secretStore: SecretStore by lazy { SecretStore(appContext) }
+    val settingsStore: SettingsStore by lazy { SettingsStore(appContext) }
+    val promptStore: PromptStore by lazy { PromptStore(appContext) }
+
+    // ---- 数据库 ----
+    val database: AppDatabase by lazy { AppDatabase.create(appContext) }
+    val diaryRepository: DiaryRepository by lazy { DiaryRepository(database.diaryDao()) }
+    val memoryRepository: MemoryRepository by lazy { MemoryRepository(database.memoryDao()) }
+    val reminderRepository: ReminderRepository by lazy { ReminderRepository(database.reminderDao()) }
+    val eventRepository: EventRepository by lazy { EventRepository(database.eventDao()) }
+
+    // ---- 网络 ----
+    val providerRegistry: ProviderRegistry by lazy {
+        ProviderRegistry(secretStore, settingsStore)
+    }
+
+    // ---- Agent 编排 ----
+    val promptBuilder: PromptBuilder by lazy { PromptBuilder(promptStore) }
+    val intentRouter: IntentRouter by lazy { IntentRouter(providerRegistry, promptStore) }
+    val agent: Agent by lazy { Agent(providerRegistry, promptBuilder, intentRouter) }
+}

@@ -1,0 +1,24 @@
+# Android / Gradle
+*.iml
+.gradle/
+/local.properties
+.idea/
+build/
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+
+# 签名密钥（绝不提交）
+*.jks
+*.keystore
+!debug.keystore
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 下载的临时压缩包
+*.zip
+*.tar
