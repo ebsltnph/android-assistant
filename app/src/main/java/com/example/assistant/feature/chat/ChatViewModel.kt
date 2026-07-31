@@ -53,7 +53,8 @@ class ChatViewModel(private val agent: Agent) : ViewModel() {
             _isStreaming.value = true
             _error.value = null
 
-            when (val result = agent.route(text)) {
+            // 传入会话历史（含当前消息），模型具备多轮上下文
+            when (val result = agent.route(text, history = session.all)) {
                 is AgentResult.Command -> {
                     val hint = commandHint(result.intent)
                     append(ChatUiMessage(counter++, "assistant", hint))

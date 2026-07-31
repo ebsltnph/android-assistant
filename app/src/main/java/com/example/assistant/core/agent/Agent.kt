@@ -35,8 +35,11 @@ class Agent(
         data class Error(val message: String) : AgentResult
     }
 
-    /** 路由用户消息，返回执行结果 */
-    suspend fun route(text: String, memoryText: String? = null): AgentResult {
+    /**
+     * 路由用户消息，返回执行结果。
+     * @param history 会话历史对话尾部（应已含当前用户消息）；不传则只带当前消息
+     */
+    suspend fun route(text: String, memoryText: String? = null, history: List<ChatMessage> = emptyList()): AgentResult {
         intentRouter.keywordRoute(text)?.let { return AgentResult.Command(it) }
         val llmHit = intentRouter.llmClassify(text)
         if (llmHit != null && llmHit !is AssistantIntent.Chat) return AgentResult.Command(llmHit)
@@ -47,7 +50,8 @@ class Agent(
             return AgentResult.Error("模型提供商未配置完整，请到「设置」检查")
         }
 
-        val messages = promptBuilder.buildChatMessages(memoryText, listOf(ChatMessage("user", text)))
+        val conversation = if (history.isNotEmpty()) history else listOf(ChatMessage("user", text))
+        val messages = promptBuilder.buildChatMessages(memoryText, conversation)
         return AgentResult.ChatRequested(messages)
     }
 
