@@ -150,12 +150,28 @@ private fun MessageBubble(msg: ChatUiMessage) {
             ),
             modifier = Modifier.widthIn(max = 320.dp)
         ) {
-            Text(
-                // 流式输出时追加光标，提示"正在打字"
-                text = msg.text + if (msg.streaming) "▍" else "",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-            )
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                // 思考过程：灰色小字 + 标注（与正式回答分开）
+                if (msg.thinking.isNotEmpty()) {
+                    Text(
+                        "🧠 思考过程",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        msg.thinking + if (msg.streaming && msg.text.isEmpty()) "▍" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (msg.text.isNotEmpty()) {
+                    Text(
+                        // 流式输出时追加光标，提示"正在打字"
+                        text = msg.text + if (msg.streaming) "▍" else "",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
         }
     }
 }

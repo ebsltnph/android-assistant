@@ -81,6 +81,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 
+- **USB 驱动（已踩坑解决）**：Windows 上荣耀手机必须装「荣耀手机助理 HonorSuite」（官网 honor.com/cn/tech/honor-suite/）才有正确的 ADB 驱动（VID_339B）。Google USB Driver 的 INF 不含荣耀 VID，Microsoft 通用 WinUSB 驱动枚举正常但 adb 认不到（接口 GUID 不匹配）。装 HonorSuite 后 `adb devices` 即可识别，平时无需打开该软件。另需关闭开发者选项的 HDB 开关（HDB 会干扰 ADB 通道）。安装 APK 时开发者选项需开「USB 安装」开关，否则报 INSTALL_FAILED_ABORTED: User rejected permissions
 - 无 GMS：不用 ML Kit；TTS 需用户启用荣耀/华为语音引擎
 - `SCHEDULE_EXACT_ALARM` 默认拒绝：先 `canScheduleExactAlarms()`，否则跳设置页申请，兜底 `setWindow`
 - `POST_NOTIFICATIONS` 需运行时申请（否则提醒/简报静默失败）

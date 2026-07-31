@@ -1,5 +1,6 @@
 package com.example.assistant.core.network
 
+import android.util.Log
 import com.example.assistant.core.network.dto.ChatResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -31,7 +32,9 @@ object ChatStream {
                 try {
                     emit(json.decodeFromString<ChatResponse>(payload))
                 } catch (e: Exception) {
-                    // 个别厂商可能在流中夹带非 JSON 行（如空行），跳过
+                    // 个别厂商可能在流中夹带非 JSON 行（如空行），跳过；
+                    // 记录失败行便于排查厂商格式差异
+                    Log.e("ChatStream", "解析流式行失败，原文: ${payload.take(300)}", e)
                 }
             }
         }

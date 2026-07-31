@@ -17,6 +17,8 @@ data class ChatUiMessage(
     val id: Long,
     val role: String,        // "user" | "assistant"
     val text: String,
+    /** 推理模型的思考过程（独立于正式回答展示，带"思考过程"标注） */
+    val thinking: String = "",
     val streaming: Boolean = false
 )
 
@@ -73,16 +75,21 @@ class ChatViewModel(private val agent: Agent) : ViewModel() {
         }
     }
 
-    /** 收集流式回复，实时更新消息文本，返回最终内容 */
+    /**
+     * 收集流式回复，实时更新消息文本，返回最终内容。
+     * 思考过程与正式回答分开积累、同时展示（思考部分带标注）。
+     */
     private suspend fun streamReply(messages: List<ChatMessage>, messageId: Long): String {
         var acc = ""
+        var thinking = ""
         try {
             agent.chatStream(messages).collect { chunk ->
-                val delta = chunk.choices.firstOrNull()?.delta?.textContent
-                if (!delta.isNullOrEmpty()) {
-                    acc += delta
-                    updateMessage(messageId) { it.copy(text = acc) }
-                }
+                val delta = chunk.choices.firstOrNull()?.delta
+                val text = delta?.textContent.orEmpty()
+                val think = delta?.reasoningContent.orEmpty()
+                if (text.isNotEmpty()) acc += text
+                if (think.isNotEmpty()) thinking += think
+                updateMessage(messageId) { it.copy(text = acc, thinking = thinking) }
             }
             updateMessage(messageId) { it.copy(streaming = false) }
         } catch (e: Exception) {
