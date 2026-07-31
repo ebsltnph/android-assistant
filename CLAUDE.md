@@ -22,15 +22,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 常用命令
 
-（开发机首次需安装 Android Studio 或命令行 SDK + JDK 17）
+（开发机 Windows：**JAVA_HOME 未设到 PATH**，构建前必须 `export JAVA_HOME="/c/Users/98662/Tools/jdk-21.0.12+8"`（gradle.properties 已写 org.gradle.java.home，但 gradlew 启动仍需环境变量）；**adb 不在 PATH**，用全路径 `C:\Users\98662\AppData\Local\Android\Sdk\platform-tools\adb.exe`）
 
 ```bash
+export JAVA_HOME="/c/Users/98662/Tools/jdk-21.0.12+8"
 ./gradlew assembleDebug        # 构建调试 APK
 ./gradlew assembleRelease      # 构建发布 APK
 ./gradlew test                 # 运行单元测试
 ./gradlew lintDebug            # 静态检查
-adb install -r app/build/outputs/apk/debug/app-debug.apk   # 装机
-adb logcat --pid=$(adb shell pidof com.example.assistant)  # 看 App 日志
+ADB="C:/Users/98662/AppData/Local/Android/Sdk/platform-tools/adb.exe"
+$ADB install -r app/build/outputs/apk/debug/app-debug.apk   # 装机
+$ADB logcat --pid=$($ADB shell pidof com.example.assistant) # 看 App 日志
+$ADB shell run-as com.example.assistant cat files/datastore/settings.preferences_pb | od -c  # 查设置值（末字节 10 进制=小时）
+$ADB shell dumpsys jobscheduler | grep -A20 "JOB androidx.work.systemjobscheduler:u0a291" | grep -E "Minimum latency|Enqueue"  # 验证周期任务排程
 ```
 
 ## 技术栈与版本
@@ -70,14 +74,18 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 
 - [x] P0 环境搭建（Android Studio 安装中）
 - [x] P1 骨架（底部导航 5 页）
-- [ ] P2 设置 + 文字聊天（LLM 管线）
-- [ ] P3 日记 + 长期记忆
-- [ ] P4 提醒 + 新闻事件 + 清晨简报
+- [x] P2 设置 + 文字聊天（LLM 管线：流式回复、多轮上下文、思考过程分段显示）
+- [x] P3 日记 + 长期记忆（多日记本、记忆抽取注入、每日小结）
+  - [x] P3 增强：每日小结可配置时间（设置页 0-23 点）、历史落库 Room（每天唯一）、镜像系统日历（全天事件）、通知点击看完整小结（已推送 GitHub）
+- [ ] P4 提醒 + 新闻事件 + 清晨简报（**暂停中，用户未放行**；新闻搜索 API 待定，计划推荐 Tavily，代码层走 SearchClient 接口）
 - [ ] P5 智能识屏 + 分享到助手
 - [ ] P6 悬浮球 + 磁贴 + 小部件
 - [ ] P7 真·唤醒词（可选）
 
+GitHub：https://github.com/ebsltnph/android-assistant（master，用户要求每个功能阶段完成后推送）
 详细计划见 `C:\Users\98662\.claude\plans\indexed-booping-mccarthy.md`。
+
+**下次会话待办**：① 用户已验证每日小结增强全部功能，注意今（2026-07-31）晚 0 点自动总结是否准时触发（用户设置 0 点）；② P4 等用户放行后开始。
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 
@@ -87,3 +95,5 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 - `POST_NOTIFICATIONS` 需运行时申请（否则提醒/简报静默失败）
 - MediaProjection（API 34+）：FGS 必须声明 `foregroundServiceType="mediaProjection"` + `FOREGROUND_SERVICE_MEDIA_PROJECTION` 权限
 - MagicOS 后台限制：引导用户给 App 开"电池无限制 + 自启动"；后台功能要测强杀场景
+- **系统日历（CalendarContract，已踩坑）**：① 写事件要求 **READ_CALENDAR + WRITE_CALENDAR 两个权限同时授予**（只给 WRITE 会 SecurityException 静默失败），授权按钮用 RequestMultiplePermissions 同时请求；② **全天事件必须用 UTC 毫秒存储**（`EVENT_TIMEZONE="UTC"`，DTSTART/DTEND 用 UTC 时区构建当天 0 点），对本地毫秒做 ±时区偏移很容易把日期算到昨天；③ 荣耀日历 App 按 UTC 日期渲染，验证用 `run-as` + logcat（`adb shell content query` 被 Android 13 权限拒绝）
+- **WorkManager 周期任务重排（已踩坑）**：① 不要用 `cancelUniqueWork` + `enqueueUniquePeriodicWork(KEEP)`——cancel 是异步的，KEEP 会先看到旧任务而拒绝替换，竞态导致改时间不生效；用 **REPLACE 策略**（原子替换）；② 重排时不要把 DataStore 异步读写在同一个 coroutine 链里（读到旧值），由 UI 直接把用户刚选的值传入；③ 验证排程：`dumpsys jobscheduler` 看 `Minimum latency` 推算触发时刻，设置值查 DataStore 文件字节
