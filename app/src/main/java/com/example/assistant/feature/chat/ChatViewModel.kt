@@ -5,10 +5,14 @@ import androidx.lifecycle.viewModelScope
 import com.example.assistant.core.agent.Agent
 import com.example.assistant.core.agent.Agent.AgentResult
 import com.example.assistant.core.agent.AssistantIntent
+import com.example.assistant.core.agent.MemoryExtractor
 import com.example.assistant.core.agent.Session
 import com.example.assistant.core.network.dto.ChatMessage
+import com.example.assistant.data.repo.DiaryRepository
+import com.example.assistant.data.repo.MemoryRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -22,7 +26,12 @@ data class ChatUiMessage(
     val streaming: Boolean = false
 )
 
-class ChatViewModel(private val agent: Agent) : ViewModel() {
+class ChatViewModel(
+    private val agent: Agent,
+    private val diaryRepository: DiaryRepository,
+    private val memoryRepository: MemoryRepository,
+    private val memoryExtractor: MemoryExtractor
+) : ViewModel() {
 
     private val _messages = MutableStateFlow<List<ChatUiMessage>>(emptyList())
     val messages: StateFlow<List<ChatUiMessage>> = _messages
@@ -53,10 +62,11 @@ class ChatViewModel(private val agent: Agent) : ViewModel() {
             _isStreaming.value = true
             _error.value = null
 
-            // 传入会话历史（含当前消息），模型具备多轮上下文
-            when (val result = agent.route(text, history = session.all)) {
+            // 带上长期记忆 + 会话历史（含当前消息）：多轮上下文 + 记忆注入
+            val memoryText = memoryRepository.memoryContextText()
+            when (val result = agent.route(text, memoryText = memoryText, history = session.all)) {
                 is AgentResult.Command -> {
-                    val hint = commandHint(result.intent)
+                    val hint = executeCommand(result.intent)
                     append(ChatUiMessage(counter++, "assistant", hint))
                     session.addAssistant(hint)
                 }
@@ -114,9 +124,12 @@ class ChatViewModel(private val agent: Agent) : ViewModel() {
         _messages.update { list -> list.map { if (it.id == id) transform(it) else it } }
     }
 
-    private fun commandHint(intent: AssistantIntent): String = when (intent) {
-        is AssistantIntent.RecordDiary ->
-            "📔 好的，为你记录：\"${intent.content}\"${intent.bookName?.let { "（记入「$it」日记本）" } ?: ""}\n（日记功能将在下一阶段开放，先把这句话当作记录吧）"
+    /**
+     * 执行命令类意图（本地执行，不走 LLM），返回展示给用户的提示文本。
+     * 已实现：写日记（含后台记忆抽取）；其余命令后续阶段接入。
+     */
+    private suspend fun executeCommand(intent: AssistantIntent): String = when (intent) {
+        is AssistantIntent.RecordDiary -> saveDiary(intent)
         is AssistantIntent.SetReminder ->
             "⏰ 收到提醒需求：\"${intent.title}\"\n（定时提醒功能将在后续阶段开放）"
         is AssistantIntent.ScreenSense ->
@@ -124,5 +137,21 @@ class ChatViewModel(private val agent: Agent) : ViewModel() {
         is AssistantIntent.MonitorEvent ->
             "🔎 收到事件关注需求：\"${intent.query}\"\n（事件监控功能将在后续阶段开放）"
         is AssistantIntent.Chat -> intent.text
+    }
+
+    /** 写入日记本（按指定名/默认本匹配），并在后台静默抽取长期记忆 */
+    private suspend fun saveDiary(intent: AssistantIntent.RecordDiary): String {
+        val books = diaryRepository.books.first()
+        val book = books.firstOrNull { it.name == intent.bookName }
+            ?: books.firstOrNull { it.isDefault }
+            ?: books.firstOrNull()
+            ?: return "⚠️ 还没有日记本，请先到「日记」页创建一个"
+        diaryRepository.addEntry(book.id, intent.content, source = "chat")
+        // 记忆抽取后台执行，失败静默，不阻塞回复
+        viewModelScope.launch {
+            val facts = memoryExtractor.extract(intent.content)
+            if (facts.isNotEmpty()) memoryRepository.addFacts(facts)
+        }
+        return "📔 已记入「${book.name}」日记本：\"${intent.content}\""
     }
 }

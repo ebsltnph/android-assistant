@@ -41,7 +41,14 @@ import com.example.assistant.AssistantApplication
 fun ChatScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val app = context.applicationContext as AssistantApplication
-    val vm: ChatViewModel = viewModel { ChatViewModel(app.container.agent) }
+    val vm: ChatViewModel = viewModel {
+        ChatViewModel(
+            agent = app.container.agent,
+            diaryRepository = app.container.diaryRepository,
+            memoryRepository = app.container.memoryRepository,
+            memoryExtractor = app.container.memoryExtractor
+        )
+    }
 
     val messages by vm.messages.collectAsState()
     val input by vm.inputText.collectAsState()

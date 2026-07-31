@@ -64,6 +64,9 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
 
+    // 后台任务（WorkManager：每日总结/周期轮询）
+    implementation(libs.work.runtime.ktx)
+
     // 网络（OpenAI 兼容客户端）
     implementation(libs.retrofit)
     implementation(libs.retrofit.kotlinx.serialization)

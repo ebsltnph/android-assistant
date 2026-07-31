@@ -2,7 +2,9 @@ package com.example.assistant.di
 
 import android.content.Context
 import com.example.assistant.core.agent.Agent
+import com.example.assistant.core.agent.DailySummaryGenerator
 import com.example.assistant.core.agent.IntentRouter
+import com.example.assistant.core.agent.MemoryExtractor
 import com.example.assistant.core.agent.PromptBuilder
 import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.storage.PromptStore
@@ -45,4 +47,8 @@ class AppContainer(context: Context) {
     val promptBuilder: PromptBuilder by lazy { PromptBuilder(promptStore) }
     val intentRouter: IntentRouter by lazy { IntentRouter(providerRegistry, promptStore) }
     val agent: Agent by lazy { Agent(providerRegistry, promptBuilder, intentRouter) }
+    val memoryExtractor: MemoryExtractor by lazy { MemoryExtractor(providerRegistry, promptStore) }
+    val dailySummaryGenerator: DailySummaryGenerator by lazy {
+        DailySummaryGenerator(diaryRepository, providerRegistry, promptStore)
+    }
 }
