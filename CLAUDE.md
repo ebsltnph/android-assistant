@@ -85,7 +85,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 GitHub：https://github.com/ebsltnph/android-assistant（master，用户要求每个功能阶段完成后推送）
 详细计划见 `C:\Users\98662\.claude\plans\indexed-booping-mccarthy.md`。
 
-**下次会话待办**：① 用户已验证每日小结增强全部功能，注意今（2026-07-31）晚 0 点自动总结是否准时触发（用户设置 0 点）；② P4 等用户放行后开始。
+**下次会话待办**：① 每日小结定时触发已全链路验证（2026-07-31 晚 23:00 自动通知收到）；② P4（提醒 + 新闻事件 + 清晨简报）等用户放行后开始。
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 
