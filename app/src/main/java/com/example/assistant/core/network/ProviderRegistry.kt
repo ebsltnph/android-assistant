@@ -2,6 +2,10 @@ package com.example.assistant.core.network
 
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
+import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 
 /**
  * 提供商注册表：按能力（对话/识屏/分类）解析当前生效的提供商档案，
@@ -49,5 +53,20 @@ class ProviderRegistry(
     fun invalidate() {
         apiCache.clear()
         assignmentCache = null
+    }
+
+    /**
+     * 高级设置里的思考参数（所有请求统一应用）。
+     * - thinking："default" 不发；on/off 发 DeepSeek 格式 {"type":"enabled"/"disabled"}
+     * - reasoningEffort："default" 不发；low/medium/high 直接透传（OpenAI 兼容格式）
+     */
+    suspend fun thinkingParams(): Pair<JsonObject?, String?> {
+        val thinking = when (settingsStore.thinkingMode.first()) {
+            "on" -> buildJsonObject { put("type", JsonPrimitive("enabled")) }
+            "off" -> buildJsonObject { put("type", JsonPrimitive("disabled")) }
+            else -> null
+        }
+        val effort = settingsStore.reasoningEffort.first().takeIf { it != "default" }
+        return thinking to effort
     }
 }

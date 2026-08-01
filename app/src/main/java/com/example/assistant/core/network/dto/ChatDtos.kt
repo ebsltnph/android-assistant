@@ -112,5 +112,13 @@ data class ChatRequest(
     val maxTokens: Int = 2048,
     val stream: Boolean = false,
     @SerialName("response_format")
-    val responseFormat: ResponseFormat? = null
+    val responseFormat: ResponseFormat? = null,
+    /**
+     * 思考开关（DeepSeek 格式：{"type":"enabled"} / {"type":"disabled"}）。
+     * null = 不发送（跟随厂商/模型默认）。
+     */
+    val thinking: JsonElement? = null,
+    /** 思考深度（OpenAI 格式："low"/"medium"/"high"，DeepSeek 兼容）。null = 不发送 */
+    @SerialName("reasoning_effort")
+    val reasoningEffort: String? = null
 )

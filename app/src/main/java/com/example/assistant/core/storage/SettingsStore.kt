@@ -52,6 +52,15 @@ class SettingsStore(context: Context) {
         it[KEY_QUIET_END] = endMinute
     }
 
+    // ---- 高级设置：思考开关与深度（"default" = 不发送参数，跟随厂商/模型默认） ----
+    /** 思考模式："default" | "on" | "off" */
+    val thinkingMode: Flow<String> = dataStore.data.map { it[KEY_THINKING_MODE] ?: "default" }
+    suspend fun setThinkingMode(v: String) = dataStore.edit { it[KEY_THINKING_MODE] = v }
+
+    /** 思考深度："default" | "low" | "medium" | "high" */
+    val reasoningEffort: Flow<String> = dataStore.data.map { it[KEY_REASONING_EFFORT] ?: "default" }
+    suspend fun setReasoningEffort(v: String) = dataStore.edit { it[KEY_REASONING_EFFORT] = v }
+
     companion object {
         private const val TAG = "SettingsStore"
         private val KEY_TTS = booleanPreferencesKey("tts_enabled")
@@ -59,6 +68,8 @@ class SettingsStore(context: Context) {
         private val KEY_BRIEFING_MINUTES = intPreferencesKey("briefing_minutes")
         private val KEY_QUIET_START = intPreferencesKey("quiet_start_minute")
         private val KEY_QUIET_END = intPreferencesKey("quiet_end_minute")
+        private val KEY_THINKING_MODE = stringPreferencesKey("thinking_mode")
+        private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
 
         private fun capabilityKey(c: Capability) = stringPreferencesKey("capability_${c.name}")
     }

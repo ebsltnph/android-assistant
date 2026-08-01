@@ -70,6 +70,7 @@ class IntentRouter(
         try {
             val api = providerRegistry.apiFor(profile)
             val prompt = promptStore.prompt(PromptStore.PromptKey.INTENT_CLASSIFIER)
+            val (thinking, effort) = providerRegistry.thinkingParams()
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(
@@ -79,7 +80,9 @@ class IntentRouter(
                 temperature = 0.0,
                 // 512：推理模型思考占配额（v4 flash 曾因 100 被吃光返回空分类）
                 maxTokens = 512,
-                responseFormat = ResponseFormat("json_object")
+                responseFormat = ResponseFormat("json_object"),
+                thinking = thinking,
+                reasoningEffort = effort
             )
             val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
             val content = response.choices.firstOrNull()?.message?.textContent ?: return@withContext null

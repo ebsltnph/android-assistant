@@ -42,6 +42,21 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setDailySummaryHour(hour) }
     }
 
+    // ---- 高级设置：思考开关与深度 ----
+    val thinkingMode: StateFlow<String> = settingsStore.thinkingMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "default")
+
+    val reasoningEffort: StateFlow<String> = settingsStore.reasoningEffort
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "default")
+
+    fun setThinkingMode(v: String) {
+        viewModelScope.launch { settingsStore.setThinkingMode(v) }
+    }
+
+    fun setReasoningEffort(v: String) {
+        viewModelScope.launch { settingsStore.setReasoningEffort(v) }
+    }
+
     init {
         refresh()
     }

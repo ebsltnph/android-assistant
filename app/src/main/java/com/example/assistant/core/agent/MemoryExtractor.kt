@@ -47,6 +47,7 @@ class MemoryExtractor(
         try {
             val api = providerRegistry.apiFor(profile)
             val prompt = promptStore.prompt(PromptStore.PromptKey.MEMORY_EXTRACT)
+            val (thinking, effort) = providerRegistry.thinkingParams()
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(
@@ -56,7 +57,9 @@ class MemoryExtractor(
                 temperature = 0.0,
                 // 1024：推理模型思考占配额，300 在长文本时可能被吃光
                 maxTokens = 1024,
-                responseFormat = ResponseFormat("json_object")
+                responseFormat = ResponseFormat("json_object"),
+                thinking = thinking,
+                reasoningEffort = effort
             )
             val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
             val content = response.choices.firstOrNull()?.message?.textContent

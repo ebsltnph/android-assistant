@@ -93,12 +93,15 @@ class Agent(
         val profile = providerRegistry.profileFor(Capability.CHAT)
             ?: throw IllegalStateException("未配置对话提供商")
         val api = providerRegistry.apiFor(profile)
+        val (thinking, effort) = providerRegistry.thinkingParams()
         val request = ChatRequest(
             model = profile.model,
             messages = messages,
             temperature = 0.7,
             maxTokens = 2048,
-            stream = true
+            stream = true,
+            thinking = thinking,
+            reasoningEffort = effort
         )
         return flow {
             val response = api.chatStream(providerRegistry.authHeader(profile.apiKey), request)
@@ -115,11 +118,14 @@ class Agent(
             ?: return Result.failure(IllegalStateException("未配置提供商"))
         return try {
             val api = providerRegistry.apiFor(profile)
+            val (thinking, effort) = providerRegistry.thinkingParams()
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(ChatMessage("user", "你好，请回复\"连接成功\"四个字")),
                 // 512：推理模型的思考过程占配额，20 会被吃光导致空响应
-                maxTokens = 512
+                maxTokens = 512,
+                thinking = thinking,
+                reasoningEffort = effort
             )
             val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
             val reply = response.choices.firstOrNull()?.message?.textContent

@@ -150,6 +150,24 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         item { HorizontalDivider() }
+        item { Text("高级设置", style = MaterialTheme.typography.titleLarge) }
+        item {
+            Text(
+                "控制推理模型（如 DeepSeek v4 flash）的思考行为。关闭思考可省流量加快回复，调浅深度可减少思考消耗。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            AdvancedSettingsCard(
+                thinkingMode = vm.thinkingMode.collectAsState().value,
+                reasoningEffort = vm.reasoningEffort.collectAsState().value,
+                onThinkingModeChange = { vm.setThinkingMode(it) },
+                onReasoningEffortChange = { vm.setReasoningEffort(it) }
+            )
+        }
+
+        item { HorizontalDivider() }
         item { Text("每日小结", style = MaterialTheme.typography.titleLarge) }
         item {
             DailySummarySettingsCard(
@@ -270,6 +288,76 @@ private fun DailySummarySettingsCard(
                         )
                     }) { Text("授权") }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 高级设置卡片：思考开关 + 思考深度。
+ * 均为三态/多选下拉，"跟随默认"= 不发送参数（各厂商模型按自身默认行为）。
+ */
+@Composable
+private fun AdvancedSettingsCard(
+    thinkingMode: String,
+    reasoningEffort: String,
+    onThinkingModeChange: (String) -> Unit,
+    onReasoningEffortChange: (String) -> Unit
+) {
+    // 下拉选项：显示名 -> 存储值
+    val thinkingOptions = listOf(
+        "跟随模型默认" to "default",
+        "开启思考" to "on",
+        "关闭思考" to "off"
+    )
+    val effortOptions = listOf(
+        "跟随模型默认" to "default",
+        "简洁（思考短）" to "low",
+        "均衡" to "medium",
+        "深入（思考长）" to "high"
+    )
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            DropdownSettingRow(
+                label = "思考模式",
+                options = thinkingOptions,
+                current = thinkingOptions.firstOrNull { it.second == thinkingMode }?.first ?: thinkingOptions.first().first,
+                onSelect = { onThinkingModeChange(it.second) }
+            )
+            DropdownSettingRow(
+                label = "思考深度",
+                options = effortOptions,
+                current = effortOptions.firstOrNull { it.second == reasoningEffort }?.first ?: effortOptions.first().first,
+                onSelect = { onReasoningEffortChange(it.second) }
+            )
+        }
+    }
+}
+
+/** 一行"标签 + 下拉选择"设置项 */
+@Composable
+private fun DropdownSettingRow(
+    label: String,
+    options: List<Pair<String, String>>,
+    current: String,
+    onSelect: (Pair<String, String>) -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        var expanded by remember { mutableStateOf(false) }
+        OutlinedButton(onClick = { expanded = true }) {
+            Text(current)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { opt ->
+                DropdownMenuItem(
+                    text = { Text(opt.first) },
+                    onClick = { onSelect(opt); expanded = false }
+                )
             }
         }
     }
