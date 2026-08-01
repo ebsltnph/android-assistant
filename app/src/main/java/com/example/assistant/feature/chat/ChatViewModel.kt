@@ -76,6 +76,11 @@ class ChatViewModel(
                     session.addAssistant(msg)
                 }
                 is AgentResult.ChatRequested -> {
+                    // 记录类请求：聊天照常流式回复，同时把用户原话同步写入日记本（不丢失）
+                    result.recordHint?.let { hint -> writeDiary(text, hint.bookName) }
+                    // 所有对话都后台做记忆抽取（importance 过滤兜底）——
+                    // 防止"你要记得"这类不带"记录"关键词但值得记住的信息被漏掉
+                    extractMemoryInBackground(text)
                     val streamingId = counter++
                     append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
                     val answer = streamReply(result.messages, streamingId)
@@ -126,10 +131,11 @@ class ChatViewModel(
 
     /**
      * 执行命令类意图（本地执行，不走 LLM），返回展示给用户的提示文本。
-     * 已实现：写日记（含后台记忆抽取）；其余命令后续阶段接入。
+     * 已实现：无（记录类已改为聊天+同步写日记，见 saveDiaryFromChat）；其余命令后续阶段接入。
      */
     private suspend fun executeCommand(intent: AssistantIntent): String = when (intent) {
-        is AssistantIntent.RecordDiary -> saveDiary(intent)
+        // 防御：正常路由下 RecordDiary 不会走到这里（Agent 已转为聊天+recordHint）
+        is AssistantIntent.RecordDiary -> "📔 已记入日记本"
         is AssistantIntent.SetReminder ->
             "⏰ 收到提醒需求：\"${intent.title}\"\n（定时提醒功能将在后续阶段开放）"
         is AssistantIntent.ScreenSense ->
@@ -139,19 +145,21 @@ class ChatViewModel(
         is AssistantIntent.Chat -> intent.text
     }
 
-    /** 写入日记本（按指定名/默认本匹配），并在后台静默抽取长期记忆 */
-    private suspend fun saveDiary(intent: AssistantIntent.RecordDiary): String {
+    /** 聊天同时记录：把用户这句话（原文）写入日记本（按指定名/默认本匹配） */
+    private suspend fun writeDiary(text: String, bookName: String?) {
         val books = diaryRepository.books.first()
-        val book = books.firstOrNull { it.name == intent.bookName }
+        val book = books.firstOrNull { it.name == bookName }
             ?: books.firstOrNull { it.isDefault }
             ?: books.firstOrNull()
-            ?: return "⚠️ 还没有日记本，请先到「日记」页创建一个"
-        diaryRepository.addEntry(book.id, intent.content, source = "chat")
-        // 记忆抽取后台执行，失败静默，不阻塞回复
+            ?: return // 还没有日记本（启动时已种子创建，这里防御）
+        diaryRepository.addEntry(book.id, text, source = "chat")
+    }
+
+    /** 后台静默抽取长期记忆（带重要性过滤，评分不足的不存），失败不打扰用户 */
+    private fun extractMemoryInBackground(text: String) {
         viewModelScope.launch {
-            val facts = memoryExtractor.extract(intent.content)
+            val facts = memoryExtractor.extract(text)
             if (facts.isNotEmpty()) memoryRepository.addFacts(facts)
         }
-        return "📔 已记入「${book.name}」日记本：\"${intent.content}\""
     }
 }

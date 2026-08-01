@@ -34,17 +34,22 @@ class DailySummaryGenerator(
 ) {
 
     /**
-     * 生成今日小结。当天无日记返回 null（调用方静默跳过）。
+     * 生成今日小结。窗口内无日记返回 null（调用方静默跳过）。
      * LLM 不可用时返回简短的兜底统计文本。
      */
     suspend fun generateToday(): String? {
-        val entries = diaryRepository.entriesBetween(dayStartMillis(), System.currentTimeMillis())
+        // 24 小时滑动窗口：取「总结时刻往前 24h」的日记。
+        // 不用「当天 0 点起」——总结时间设为 0 点时，当天 0 点到 0 点之间没有数据，会漏掉昨天深夜的日记。
+        val now = System.currentTimeMillis()
+        val entries = diaryRepository.entriesBetween(now - SUMMARY_WINDOW_MS, now)
         if (entries.isEmpty()) return null
 
         val profile = providerRegistry.profileFor(Capability.CHAT)
         val fallback = "今天写了 ${entries.size} 条日记，点开「日记」页看看吧"
+        // 兜底文本附上失败原因：MagicOS 屏蔽 App 日志（persist.log.tag=M），
+        // 把错误直接显示给用户，比抓 logcat 更可靠
         val result = if (profile == null || !profile.isConfigured()) {
-            fallback
+            fallback + "\n（未配置对话模型，请到「设置」添加）"
         } else {
             try {
                 val api = providerRegistry.apiFor(profile)
@@ -57,13 +62,16 @@ class DailySummaryGenerator(
                         ChatMessage("user", diaryText)
                     ),
                     temperature = 0.5,
-                    maxTokens = 800
+                    // 4096：推理模型（如 deepseek-v4-flash）的思考过程占 max_tokens 配额，
+                    // 800 会被思考吃光导致输出为空（finish=length），调大留出输出空间
+                    maxTokens = 4096
                 )
                 val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
-                response.choices.firstOrNull()?.message?.textContent?.trim()?.takeIf { it.isNotEmpty() } ?: fallback
+                response.choices.firstOrNull()?.message?.textContent?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: fallback + "\n（模型返回了空内容，请重试）"
             } catch (e: Exception) {
                 Log.w(TAG, "每日小结 LLM 调用失败", e)
-                fallback
+                fallback + "\n（生成失败：${e.message}）"
             }
         }
 
@@ -89,20 +97,13 @@ class DailySummaryGenerator(
         return "%d年%d月%d日".format(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))
     }
 
-    private fun dayStartMillis(): Long {
-        val cal = Calendar.getInstance()
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
-        return cal.timeInMillis
-    }
-
     private val entryTimeFormat = SimpleDateFormat("HH:mm", Locale.CHINA)
 
     private fun entryTime(millis: Long): String = entryTimeFormat.format(Date(millis))
 
     companion object {
         private const val TAG = "DailySummaryGenerator"
+        /** 汇总窗口：24 小时（滑动窗口，见 generateToday 注释） */
+        private const val SUMMARY_WINDOW_MS = 24 * 60 * 60 * 1000L
     }
 }

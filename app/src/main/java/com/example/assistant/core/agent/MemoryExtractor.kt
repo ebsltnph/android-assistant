@@ -15,6 +15,8 @@ import kotlinx.serialization.json.Json
 
 /**
  * 记忆抽取器：从日记/聊天内容中提取值得长期记住的事实。
+ * 重要性由 LLM 评分（importance 1-10），低于 [IMPORTANCE_THRESHOLD] 的过滤不存——
+ * 防止"今天在和代码搏斗"这类一次性内容进入长期记忆。
  * 用独立短提示词（不污染主对话缓存前缀），后台静默执行，失败不打扰用户。
  */
 class MemoryExtractor(
@@ -24,12 +26,18 @@ class MemoryExtractor(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** 抽取结果 DTO：模型输出 JSON 数组，每项 {fact, category} */
+    /** 抽取结果 DTO：模型输出 JSON 数组，每项 {fact, category, importance} */
     @Serializable
-    data class ExtractItem(val fact: String, val category: String = "general")
+    data class ExtractItem(
+        val fact: String,
+        val category: String = "general",
+        /** 重要度评分 1-10（LLM 判断）。模型未返回时默认 5（低于阈值 → 不存，保守） */
+        val importance: Int = 5
+    )
 
     /**
-     * 从文本中抽取长期记忆。任何失败（未配置/网络/解析）都返回空列表，不抛异常。
+     * 从文本中抽取长期记忆（importance ≥ 7 才存）。
+     * 任何失败（未配置/网络/解析）都返回空列表，不抛异常。
      */
     suspend fun extract(text: String): List<MemoryEntity> = withContext(Dispatchers.IO) {
         if (text.isBlank()) return@withContext emptyList()
@@ -46,7 +54,8 @@ class MemoryExtractor(
                     ChatMessage("user", text)
                 ),
                 temperature = 0.0,
-                maxTokens = 300,
+                // 1024：推理模型思考占配额，300 在长文本时可能被吃光
+                maxTokens = 1024,
                 responseFormat = ResponseFormat("json_object")
             )
             val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
@@ -56,8 +65,10 @@ class MemoryExtractor(
             // 模型可能返回带 ```json 围栏的内容，剥掉再解析
             val cleaned = content.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
             val items = json.decodeFromString<List<ExtractItem>>(cleaned)
-            items.filter { it.fact.isNotBlank() }
-                .map { MemoryEntity(fact = it.fact, category = it.category.ifBlank { "general" }) }
+            val filtered = items.filter { it.fact.isNotBlank() && it.importance >= IMPORTANCE_THRESHOLD }
+            // 调试日志：看模型评分与过滤结果（不含密钥），便于按使用体验调整阈值/提示词
+            Log.i(TAG, "抽取 ${items.size} 条，过滤后 ${filtered.size} 条：$items")
+            filtered.map { MemoryEntity(fact = it.fact, category = it.category.ifBlank { "general" }) }
         } catch (e: Exception) {
             // 抽取失败不打扰用户，仅记录日志
             Log.w(TAG, "记忆抽取失败", e)
@@ -67,5 +78,7 @@ class MemoryExtractor(
 
     companion object {
         private const val TAG = "MemoryExtractor"
+        /** 记忆重要性阈值：LLM 评分 ≥ 7 才存入长期记忆（后续可按使用体验调整） */
+        private const val IMPORTANCE_THRESHOLD = 7
     }
 }

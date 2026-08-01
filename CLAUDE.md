@@ -77,6 +77,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 - [x] P2 设置 + 文字聊天（LLM 管线：流式回复、多轮上下文、思考过程分段显示）
 - [x] P3 日记 + 长期记忆（多日记本、记忆抽取注入、每日小结）
   - [x] P3 增强：每日小结可配置时间（设置页 0-23 点）、历史落库 Room（每天唯一）、镜像系统日历（全天事件）、通知点击看完整小结（已推送 GitHub）
+  - [x] P3 体验修复（2026-08-01 真机验证通过）：① 每日小结改 **24h 滑动窗口**（总结时刻往前 24h，避免设 0 点时无数据）；② 记录判断交给 LLM——说"记录…"不再拦截聊天，**聊天照常回复 + 同步写原文入日记**（AgentResult.ChatRequested 带 recordHint），无关键词的消息由 LLM 分类判定；③ **记忆重要性过滤**——LLM 给候选记忆评 1-10 分，**≥7 才存**（防"今天在和代码搏斗"进长期记忆），阈值在 MemoryExtractor.IMPORTANCE_THRESHOLD；④ **全对话后台记忆抽取**（不只记录类消息，防"你要记得"漏掉）；⑤ 系统提示词默认值更新 + 提示词编辑框 bug 修复（打开时读已存值）
 - [ ] P4 提醒 + 新闻事件 + 清晨简报（**暂停中，用户未放行**；新闻搜索 API 待定，计划推荐 Tavily，代码层走 SearchClient 接口）
 - [ ] P5 智能识屏 + 分享到助手
 - [ ] P6 悬浮球 + 磁贴 + 小部件
@@ -85,7 +86,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 GitHub：https://github.com/ebsltnph/android-assistant（master，用户要求每个功能阶段完成后推送）
 详细计划见 `C:\Users\98662\.claude\plans\indexed-booping-mccarthy.md`。
 
-**下次会话待办**：① 每日小结定时触发已全链路验证（2026-07-31 晚 23:00 自动通知收到）；② P4（提醒 + 新闻事件 + 清晨简报）等用户放行后开始。
+**下次会话待办**：① P3 体验修复已真机验证（2026-08-01）；② P4（提醒 + 新闻事件 + 清晨简报）等用户放行后开始。
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 
@@ -97,3 +98,5 @@ GitHub：https://github.com/ebsltnph/android-assistant（master，用户要求�
 - MagicOS 后台限制：引导用户给 App 开"电池无限制 + 自启动"；后台功能要测强杀场景
 - **系统日历（CalendarContract，已踩坑）**：① 写事件要求 **READ_CALENDAR + WRITE_CALENDAR 两个权限同时授予**（只给 WRITE 会 SecurityException 静默失败），授权按钮用 RequestMultiplePermissions 同时请求；② **全天事件必须用 UTC 毫秒存储**（`EVENT_TIMEZONE="UTC"`，DTSTART/DTEND 用 UTC 时区构建当天 0 点），对本地毫秒做 ±时区偏移很容易把日期算到昨天；③ 荣耀日历 App 按 UTC 日期渲染，验证用 `run-as` + logcat（`adb shell content query` 被 Android 13 权限拒绝）
 - **WorkManager 周期任务重排（已踩坑）**：① 不要用 `cancelUniqueWork` + `enqueueUniquePeriodicWork(KEEP)`——cancel 是异步的，KEEP 会先看到旧任务而拒绝替换，竞态导致改时间不生效；用 **REPLACE 策略**（原子替换）；② 重排时不要把 DataStore 异步读写在同一个 coroutine 链里（读到旧值），由 UI 直接把用户刚选的值传入；③ 验证排程：`dumpsys jobscheduler` 看 `Minimum latency` 推算触发时刻，设置值查 DataStore 文件字节
+- **logcat 被 ROM 屏蔽（已踩坑）**：荣耀 MagicOS 默认 `persist.log.tag=M`，**App 进程的 Log.i/Log.w 在 adb logcat 里完全不可见**（只能看到系统注入的 RtgSched 等），`setprop log.tag.XXX VERBOSE` 也救不回已运行进程。调试信息要**显示到 App 界面**（如今日小结兜底文本带失败原因），验证靠拉数据库（`run-as` cat + Python sqlite3）
+- **推理模型非流式请求（已踩坑）**：deepseek-v4-flash 是推理模型，**reasoning 思考过程占 max_tokens 配额**——maxTokens 小了会 `finish_reason=length` 且 content 为空（内容全在思考里）。非流式请求 maxTokens 要给足：小结 4096、记忆抽取 1024、意图分类 512、测试连接 512（流式聊天 2048 够用）

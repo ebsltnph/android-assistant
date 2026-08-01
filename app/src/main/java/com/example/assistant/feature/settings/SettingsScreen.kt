@@ -32,6 +32,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -409,7 +410,11 @@ private fun PromptEditDialog(
     val app = context.applicationContext as AssistantApplication
     val store = app.container.promptStore
     val scope = rememberCoroutineScope()
-    var text by remember { mutableStateOf(PromptStore.PromptKey.ASSISTANT_SYSTEM.default) }
+    // 打开时读取当前已保存的提示词（用户没改过时才是默认值）
+    var text by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        text = store.prompt(PromptStore.PromptKey.ASSISTANT_SYSTEM)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
