@@ -220,7 +220,9 @@ class FloatingBallService : Service() {
 }
 
 /**
- * 悬浮球外观：玻璃拟态渐变圆球 + 高光描边 + 图标。
+ * 悬浮球外观：与浮动界面同风格的深墨玻璃球（glassmorphism）——
+ * 深墨蓝灰玻璃底（顶部略亮高光）+ 半透明白描边 + 柔和阴影，
+ * 图标用香槟金 #E4B863（风格唯一强调色）。
  * 手势：用「按下到抬起的总位移」区分点击与拖动（比 detectDragGestures 的
  * 拖动回调判定更可靠——点击时手指微小抖动不会被误判成拖动，避免球被拖走贴边）。
  */
@@ -235,17 +237,18 @@ private fun BallContent(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(ballSize)
-            .shadow(12.dp, CircleShape, ambientColor = Color(0xFF7C4DFF).copy(alpha = 0.5f))
+            .shadow(14.dp, CircleShape, ambientColor = Color(0xFF060A13).copy(alpha = 0.7f))
             .clip(CircleShape)
             .background(
-                Brush.linearGradient(
+                // 深墨玻璃：顶部略亮（玻璃高光），底部深墨夜景
+                Brush.verticalGradient(
                     listOf(
-                        Color(0xE67C4DFF),
-                        Color(0xE600B0FF)
+                        Color(0xFF4A5A78),
+                        Color(0xFF1A2436)
                     )
                 )
             )
-            .border(1.dp, Color.White.copy(alpha = 0.85f), CircleShape)
+            .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
             .pointerInput(Unit) {
                 val slop = viewConfiguration.touchSlop
                 awaitEachGesture {
@@ -279,8 +282,8 @@ private fun BallContent(
         Icon(
             Icons.Filled.AutoAwesome,
             contentDescription = "随身助手",
-            tint = Color.White,
-            modifier = Modifier.size(28.dp)
+            tint = Color(0xFFE4B863),
+            modifier = Modifier.size(24.dp)
         )
     }
 }
