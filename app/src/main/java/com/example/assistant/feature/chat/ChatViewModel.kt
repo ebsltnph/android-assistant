@@ -59,6 +59,9 @@ class ChatViewModel(
     private val session = Session()
     private var counter = 0L
 
+    /** 助手消息 id → 触发它的请求消息（重新生成用） */
+    private val regenerateMessages = mutableMapOf<Long, List<ChatMessage>>()
+
     fun setInput(text: String) {
         _inputText.value = text
     }
@@ -93,6 +96,8 @@ class ChatViewModel(
                     // 防止"你要记得"这类不带"记录"关键词但值得记住的信息被漏掉
                     extractMemoryInBackground(text)
                     val streamingId = counter++
+                    // 记住请求消息，供"重新生成"复用
+                    regenerateMessages[streamingId] = result.messages
                     append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
                     val answer = streamReply(result.messages, streamingId)
                     session.addAssistant(answer)
@@ -127,8 +132,28 @@ class ChatViewModel(
         return acc
     }
 
+    /**
+     * 重新生成某条助手回复：清空该条内容，用记忆的请求参数重新流式生成。
+     * 只对最近一次回复有意义（messages 是触发时的快照）。
+     */
+    fun regenerate(messageId: Long) {
+        if (_isStreaming.value) return
+        val messages = regenerateMessages[messageId] ?: return
+        viewModelScope.launch {
+            _isStreaming.value = true
+            _error.value = null
+            // 清空该条并重新流式
+            updateMessage(messageId) { it.copy(text = "", thinking = "", streaming = true) }
+            val answer = streamReply(messages, messageId)
+            // 会话尾部同步替换为该新回复（保持后续上下文一致）
+            session.replaceLastAssistant(answer)
+            _isStreaming.value = false
+        }
+    }
+
     fun clearConversation() {
         session.clear()
+        regenerateMessages.clear()
         _messages.value = emptyList()
     }
 

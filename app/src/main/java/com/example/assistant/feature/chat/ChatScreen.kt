@@ -1,7 +1,9 @@
 package com.example.assistant.feature.chat
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,13 +22,16 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -54,6 +59,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             eventExtractor = app.container.eventExtractor
         )
     }
+    val clipboard = LocalClipboardManager.current
 
     val messages by vm.messages.collectAsState()
     val input by vm.inputText.collectAsState()
@@ -107,7 +113,15 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(messages, key = { it.id }) { msg ->
-                    MessageBubble(msg)
+                    MessageBubble(
+                        msg = msg,
+                        isLastAssistant = msg.role == "assistant" && msg.id == messages.lastOrNull()?.id,
+                        onCopy = {
+                            clipboard.setText(AnnotatedString(msg.text))
+                            Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                        },
+                        onRegenerate = { vm.regenerate(msg.id) }
+                    )
                 }
             }
         }
@@ -146,7 +160,12 @@ fun ChatScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun MessageBubble(msg: ChatUiMessage) {
+private fun MessageBubble(
+    msg: ChatUiMessage,
+    isLastAssistant: Boolean,
+    onCopy: () -> Unit,
+    onRegenerate: () -> Unit
+) {
     val isUser = msg.role == "user"
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -182,6 +201,19 @@ private fun MessageBubble(msg: ChatUiMessage) {
                         text = msg.text + if (msg.streaming) "▍" else "",
                         style = MaterialTheme.typography.bodyMedium
                     )
+                }
+                // 操作按钮：复制（全部消息）；重新生成（仅最后一条助手回复）
+                if (!msg.streaming && (msg.text.isNotEmpty() || msg.thinking.isNotEmpty())) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = onCopy, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                            Text("复制", style = MaterialTheme.typography.labelSmall)
+                        }
+                        if (isLastAssistant) {
+                            TextButton(onClick = onRegenerate, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                                Text("重做", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                 }
             }
         }

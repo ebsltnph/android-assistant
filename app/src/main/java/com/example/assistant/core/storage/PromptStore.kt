@@ -34,11 +34,17 @@ class PromptStore(context: Context) {
     }
 
     enum class PromptKey(
+        /** 设置页显示名 */
+        val displayName: String,
+        /** 设置页说明 */
+        val description: String,
         val preferenceKey: androidx.datastore.preferences.core.Preferences.Key<String>,
         val default: String
     ) {
         /** 助手主提示词：固定外壳 + 用户可编辑中间段（PromptBuilder 组装） */
         ASSISTANT_SYSTEM(
+            "助手系统提示词",
+            "主对话的人格、能力与回答规则（外壳由程序拼接，只编辑中间设定）",
             stringPreferencesKey("assistant_system_prompt"),
             """你是"随身助手"，一个运行在用户手机上的个人 AI 助手。你的能力包括：日常问答、记录日记、设置提醒、识屏分析、关注新闻事件。
 关于记录和记忆：
@@ -52,6 +58,8 @@ class PromptStore(context: Context) {
 
         /** 记忆抽取提示词：日记/聊天内容 -> 值得长期记住的事实（importance ≥ 7 才存） */
         MEMORY_EXTRACT(
+            "记忆抽取",
+            "从日记/聊天中抽取值得长期记住的事实（评分 ≥7 才存）",
             stringPreferencesKey("memory_extract_prompt"),
             """从下面的内容中抽取值得长期记住的事实。只输出 JSON 数组，每个元素形如 {"fact":"事实内容","category":"类别","importance":9}。
 importance 是 1-10 的整数，标准：
@@ -63,6 +71,8 @@ importance 是 1-10 的整数，标准：
 
         /** 每日日记总结提示词 */
         DAILY_SUMMARY(
+            "每日小结",
+            "把一天（24h 窗口）的日记整理成小结",
             stringPreferencesKey("daily_summary_prompt"),
             """把下面的日记条目整理成一份清晰的每日小结，要求：
 - 每条日记一行，格式：时间（HH:mm）· 内容归纳（保留关键信息，不要编造）
@@ -74,12 +84,16 @@ importance 是 1-10 的整数，标准：
 
         /** 意图分类提示词：关键词未命中时兜底分类 */
         INTENT_CLASSIFIER(
+            "意图分类",
+            "关键词未命中时判断用户意图（记录/提醒/监控/聊天）",
             stringPreferencesKey("intent_classifier_prompt"),
             """判断用户这句话的意图，只输出一个 JSON 对象：{"intent":"chat|record_diary|set_reminder|screen_sense|monitor_event","reason":"一句话理由"}。规则：record_diary=记录/写日记；set_reminder=设置提醒/闹钟；screen_sense=识屏/截屏/翻译屏幕内容；monitor_event=持续关注某个话题或新闻事件（明确的"关注/帮我留意/盯"类长期监控请求）；chat=其他日常问答（包括"查一下/搜一下"这种一次性查询，会走联网搜索）。不要输出其他内容。"""
         ),
 
         /** 提醒时间解析提示词：把自然语言时间解析成结构化描述（时间戳由代码计算，模型不算日期） */
         REMINDER_PARSE(
+            "提醒时间解析",
+            "把自然语言时间解析成结构化描述（时间戳由代码计算）",
             stringPreferencesKey("reminder_parse_prompt"),
             """把用户的提醒需求解析成结构化 JSON。只输出一个 JSON 对象：{"title":"提醒内容","dayOffset":数字,"hour":数字,"minute":数字,"offsetMinutes":数字或null,"repeat":"daily或weekly或null","weekday":数字}。
 规则：
@@ -92,6 +106,8 @@ importance 是 1-10 的整数，标准：
 
         /** 事件监控抽取提示词：把"关注 XX"需求解析成结构化 JSON */
         MONITOR_EXTRACT(
+            "事件监控抽取",
+            "把「关注 XX」需求解析成搜索配置（名称/搜索词/规则/域名）",
             stringPreferencesKey("monitor_extract_prompt"),
             """把用户的"关注/监控"需求解析成结构化 JSON。只输出一个 JSON 对象：{"displayName":"显示名称","searchQuery":"搜索词","conditionKeywords":"命中关键词（逗号分隔，没有则空字符串）","customRule":"自定义判断规则（空字符串）","includeDomains":"限定来源域名（逗号分隔，空字符串）"}。
 规则：
@@ -105,6 +121,8 @@ importance 是 1-10 的整数，标准：
 
         /** 事件命中判断提示词：搜索结果是否命中关注事件 */
         EVENT_HIT(
+            "事件命中判断",
+            "判断搜索结果是否命中关注的事件（模板含 {event} 和 {results} 占位，勿删）",
             stringPreferencesKey("event_hit_prompt"),
             """判断搜索结果是否命中用户关注的新闻事件。只输出一个 JSON 对象：{"hit":true或false,"reason":"一句话理由"}。
 关注事件：{event}
@@ -115,6 +133,8 @@ importance 是 1-10 的整数，标准：
 
         /** 清晨简报提示词：今日提醒 + 昨日小结 → 简报文本 */
         BRIEFING(
+            "清晨简报",
+            "把今日提醒和昨日小结组装成简报（模板含 {reminders}/{summary} 占位，勿删）",
             stringPreferencesKey("briefing_prompt"),
             """你是一位清晨播报助手。根据下面的素材生成一份温暖的清晨简报（简体中文，不超过 6 句）：
 素材：
@@ -128,6 +148,8 @@ importance 是 1-10 的整数，标准：
 
         /** 搜索判断提示词：每条对话消息先判断是否需要联网搜索（全 LLM 判断） */
         SEARCH_JUDGE(
+            "搜索判断",
+            "每条消息先判断是否需要联网搜索（触发词规则）",
             stringPreferencesKey("search_judge_prompt"),
             """判断用户这句话是否需要联网搜索。只输出一个 JSON 对象：{"need_search": 布尔值, "query": "搜索词（不需要搜索则为空字符串）", "reason": "一句话理由"}。
 强制规则（满足任意一条就必须 need_search=true）：

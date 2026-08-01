@@ -22,6 +22,13 @@ class Session(private val maxTurns: Int = 10) {
         trim()
     }
 
+    /** 替换最后一条助手消息（"重新生成"后保持上下文一致）；空会话时忽略 */
+    fun replaceLastAssistant(text: String) {
+        if (messages.isEmpty()) return
+        messages.removeLast()
+        messages.addLast(ChatMessage("assistant", text))
+    }
+
     fun clear() = messages.clear()
 
     private fun trim() {

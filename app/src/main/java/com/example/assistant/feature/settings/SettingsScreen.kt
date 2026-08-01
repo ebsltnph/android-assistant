@@ -73,7 +73,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
     var editing by remember { mutableStateOf<ProviderProfile?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
-    var editingPrompt by remember { mutableStateOf(false) }
+    var editingPromptKey by remember { mutableStateOf<PromptStore.PromptKey?>(null) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -213,18 +213,33 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         item { HorizontalDivider() }
-        item { Text("提示词", style = MaterialTheme.typography.titleLarge) }
-        item {
-            OutlinedButton(onClick = { editingPrompt = true }) {
-                Text("编辑「助手系统提示词」")
-            }
-        }
+        item { Text("提示词（可编辑）", style = MaterialTheme.typography.titleLarge) }
         item {
             Text(
-                "提示词会注入每次对话。编辑时保留固定外壳（你是\"随身助手\"…），只修改中间内容。",
+                "各组提示词相互独立、各有默认值（含 LLM 判断类）。可随时编辑或恢复默认。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+        PromptStore.PromptKey.entries.forEach { key ->
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(key.displayName, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                key.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = { editingPromptKey = key }) { Text("编辑") }
+                    }
+                }
+            }
         }
     }
 
@@ -244,11 +259,11 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         )
     }
 
-    // 提示词编辑对话框
-    if (editingPrompt) {
+    // 提示词编辑对话框（9 组提示词通用，含恢复默认）
+    editingPromptKey?.let { key ->
         PromptEditDialog(
-            vm = vm,
-            onDismiss = { editingPrompt = false }
+            key = key,
+            onDismiss = { editingPromptKey = null }
         )
     }
 }
@@ -664,9 +679,10 @@ private fun ProviderEditDialog(
     )
 }
 
+/** 提示词编辑对话框（9 组通用）：加载当前值、保存、恢复默认 */
 @Composable
 private fun PromptEditDialog(
-    vm: SettingsViewModel,
+    key: PromptStore.PromptKey,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -676,12 +692,12 @@ private fun PromptEditDialog(
     // 打开时读取当前已保存的提示词（用户没改过时才是默认值）
     var text by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
-        text = store.prompt(PromptStore.PromptKey.ASSISTANT_SYSTEM)
+        text = store.prompt(key)
     }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑助手系统提示词") },
+        title = { Text("编辑「${key.displayName}」") },
         text = {
             Column {
                 OutlinedTextField(
@@ -691,7 +707,7 @@ private fun PromptEditDialog(
                     minLines = 8
                 )
                 Text(
-                    "固定外壳（\"你是随身助手…\"等）由程序拼接，这里只编辑你的设定内容。",
+                    key.description + "。恢复默认会丢弃当前修改。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -699,10 +715,21 @@ private fun PromptEditDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                scope.launch { store.setPrompt(PromptStore.PromptKey.ASSISTANT_SYSTEM, text) }
+                scope.launch { store.setPrompt(key, text) }
                 onDismiss()
             }) { Text("保存") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+        dismissButton = {
+            Row {
+                // 恢复默认：删掉已存值 → 读回代码默认
+                TextButton(onClick = {
+                    scope.launch {
+                        store.resetPrompt(key)
+                        text = store.prompt(key)
+                    }
+                }) { Text("恢复默认") }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        }
     )
 }
