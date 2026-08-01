@@ -11,7 +11,10 @@ import com.example.assistant.receiver.ReminderReceiver
 /**
  * 提醒排程器：封装 AlarmManager。
  * - 精确闹钟 setExactAndAllowWhileIdle；SCHEDULE_EXACT_ALARM 未授权时 setWindow 兜底（±10 分钟窗口）
- * - PendingIntent 以 reminder.id 为 requestCode（唯一、可更新）
+ * - 主闹钟：PendingIntent 以 reminder.id 为 requestCode（唯一、可更新）
+ * - 确认重复闹钟：提醒触发后用户未确认（通知点击 → App 弹窗确认）时，
+ *   每 [ACK_REPEAT_INTERVAL_MS]（5 分钟）重复触发提醒通知，直到用户确认
+ *   （确认后 cancelAckRepeat 取消；见 ReminderReceiver / MainActivity 确认弹窗）
  */
 class ReminderScheduler(private val context: Context) {
 
@@ -19,6 +22,12 @@ class ReminderScheduler(private val context: Context) {
 
     companion object {
         const val EXTRA_REMINDER_ID = "reminder_id"
+        /** 5 分钟重复触发的标记（Receiver 据此跳过写日记/重排） */
+        const val EXTRA_IS_ACK_REPEAT = "is_ack_repeat"
+        const val ACK_REPEAT_INTERVAL_MS = 5 * 60 * 1000L
+
+        /** 确认重复闹钟的 requestCode 偏移（与主闹钟区分，避免互相取消） */
+        private const val ACK_REPEAT_REQUEST_OFFSET = 1_000_000
     }
 
     /** 排程一个提醒 */
@@ -36,14 +45,31 @@ class ReminderScheduler(private val context: Context) {
         }
     }
 
-    /** 取消提醒（删除/取消时） */
+    /** 取消提醒（删除/取消/确认时）：同时取消主闹钟与确认重复闹钟 */
     fun cancel(reminderId: Long) {
         alarmManager.cancel(pendingIntent(reminderId))
+        alarmManager.cancel(ackRepeatPendingIntent(reminderId))
     }
 
     /** 全量重排（开机/启动后恢复 pending 提醒） */
     fun rescheduleAll(reminders: List<ReminderEntity>) {
         reminders.forEach { schedule(it) }
+    }
+
+    /** 排程 5 分钟后重复提醒（提醒已触发但用户未确认时） */
+    fun scheduleAckRepeat(reminderId: Long) {
+        val pi = ackRepeatPendingIntent(reminderId)
+        val at = System.currentTimeMillis() + ACK_REPEAT_INTERVAL_MS
+        if (canExact()) {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        } else {
+            alarmManager.setWindow(AlarmManager.RTC_WAKEUP, at, 10 * 60 * 1000L, pi)
+        }
+    }
+
+    /** 取消 5 分钟重复提醒闹钟（用户确认后） */
+    fun cancelAckRepeat(reminderId: Long) {
+        alarmManager.cancel(ackRepeatPendingIntent(reminderId))
     }
 
     /** 是否有精确闹钟权限（Android 12+ 默认拒绝，需用户到系统设置开启） */
@@ -55,6 +81,16 @@ class ReminderScheduler(private val context: Context) {
             context,
             reminderId.toInt(),
             Intent(context, ReminderReceiver::class.java).putExtra(EXTRA_REMINDER_ID, reminderId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    private fun ackRepeatPendingIntent(reminderId: Long): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            reminderId.toInt() + ACK_REPEAT_REQUEST_OFFSET,
+            Intent(context, ReminderReceiver::class.java)
+                .putExtra(EXTRA_REMINDER_ID, reminderId)
+                .putExtra(EXTRA_IS_ACK_REPEAT, true),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 }

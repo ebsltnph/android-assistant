@@ -20,8 +20,14 @@ class BootReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val pending = app.container.reminderRepository.pending(System.currentTimeMillis())
+                val now = System.currentTimeMillis()
+                // 未触发的提醒：重排主闹钟（闹钟在系统重启后会丢失）
+                val pending = app.container.reminderRepository.pending(now)
                 app.container.reminderScheduler.rescheduleAll(pending)
+                // 已触发但未确认的提醒：恢复 5 分钟重复闹钟（继续提醒直到用户确认）
+                app.container.reminderRepository.unackedFiredPending(now).forEach {
+                    app.container.reminderScheduler.scheduleAckRepeat(it.id)
+                }
             } finally {
                 pendingResult.finish()
             }

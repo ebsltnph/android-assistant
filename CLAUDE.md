@@ -80,6 +80,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - [x] P3 体验修复（2026-08-01 真机验证通过）：① 每日小结改 **24h 滑动窗口**（总结时刻往前 24h，避免设 0 点时无数据）；② 记录判断交给 LLM——说"记录…"不再拦截聊天，**聊天照常回复 + 同步写原文入日记**（AgentResult.ChatRequested 带 recordHint），无关键词的消息由 LLM 分类判定；③ **记忆重要性过滤**——LLM 给候选记忆评 1-10 分，**≥7 才存**（防"今天在和代码搏斗"进长期记忆），阈值在 MemoryExtractor.IMPORTANCE_THRESHOLD；④ **全对话后台记忆抽取**（不只记录类消息，防"你要记得"漏掉）；⑤ 系统提示词默认值更新 + 提示词编辑框 bug 修复（打开时读已存值）
   - [x] P3 高级设置（2026-08-01）：**思考开关 + 思考深度**（设置页「高级设置」分区；ProviderRegistry.thinkingParams() 统一应用，ChatRequest 加 thinking/reasoning_effort 字段，只在该项非"default"时发送；用户实测 v4 flash 关思考质量不差、速度更快）
 - [x] **P4 提醒 + 对话搜索 + 事件监控 + 清晨简报**（2026-08-01 完成并真机验证）
+  - P4 增强（2026-08-01）：**提醒需手动确认**——提醒触发后通知可点击（进 App 弹「提醒确认」窗），**未确认每 5 分钟重复通知**（ReminderScheduler.scheduleAckRepeat 独立 requestCode；ReminderReceiver 首次触发写日记/重排 + **续排 5min——重复触发分支也要续排，否则只重复一次**；确认后 ack + cancelAckRepeat + 一次性 markFired）；DB v4（ackedAtEpochMillis 列）；僵尸清理只清已确认的；启动/Boot 恢复未确认提醒的重复闹钟；重复提醒每天触发后需重新确认
   - **对话搜索**：SearchClient 接口 + Tavily（keyless 免注册兜底/填 key 1000 次每月）；全 LLM 判断触发（SearchJudger，所有聊天消息先判断）；结果注入 PromptBuilder extraContext（不破坏缓存前缀）
   - **定时提醒**：聊天"提醒我X"→ ReminderTimeParser **结构化解析+本地算时间戳**（模型日期算术不可靠，曾算出 7月3日）；AlarmManager 精确闹钟（未授权 setWindow 兜底+提醒页引导授权）；重复提醒（daily/weekly 触发后重排）；BootReceiver 开机重排；**触发自动写日记**（source=reminder）；僵尸提醒自动清理（启动时）
   - **事件监控**：EventPollWorker 周期 6h（事件级 pollHours 过滤）；Tavily news 搜索 + LLM 命中判断（有 conditionKeywords 走本地关键词）；24h 通知去重；**自定义规则 customRule + 限定域名 includeDomains**（Room v3 迁移；聊天创建自动提取，本地 URL 正则兜底）；周期数字输入框（1-168h）；提醒页「立即检查」

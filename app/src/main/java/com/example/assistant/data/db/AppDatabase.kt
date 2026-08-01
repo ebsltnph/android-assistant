@@ -32,7 +32,7 @@ import com.example.assistant.data.db.entity.ReminderEntity
         MonitoredEventEntity::class,
         DailySummaryEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -46,7 +46,7 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "assistant.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
 
         /** v1 → v2：新增每日小结表（历史小结） */
@@ -73,6 +73,15 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "ALTER TABLE `monitored_events` ADD COLUMN `includeDomains` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        /** v3 → v4：提醒加"用户确认时间"列（通知点击 → App 弹窗确认后才停止 5 分钟重复） */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `reminders` ADD COLUMN `ackedAtEpochMillis` INTEGER"
                 )
             }
         }

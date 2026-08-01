@@ -18,4 +18,7 @@ object AppSharedState {
 
     /** 待显示的简报全文（HomeScreen 消费后置回 null） */
     val briefingText = MutableStateFlow<String?>(null)
+
+    /** 待确认的提醒 id（提醒通知点击 → App 弹确认窗，确认/稍后后置回 null） */
+    val pendingReminderConfirmId = MutableStateFlow<Long?>(null)
 }

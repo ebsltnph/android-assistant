@@ -81,14 +81,17 @@ object Notifier {
         }
     }
 
-    /** 提醒通知（P4 使用） */
-    fun notifyReminder(context: Context, title: String, body: String, id: Int = 2000) {
-        send(context, CHANNEL_REMINDER, id, title, body)
+    /**
+     * 提醒通知：点击 → 打开 App 弹确认窗（用户确认后才停止 5 分钟重复通知）。
+     * reminderId 用于通知点击跳转（EXTRA_REMINDER_ID）。
+     */
+    fun notifyReminder(context: Context, title: String, body: String, id: Int = 2000, reminderId: Long = id.toLong()) {
+        send(context, CHANNEL_REMINDER, id, title, body, reminderId = reminderId)
     }
 
-    /** 免打扰时段内的提醒：静默通知（不响铃不振动） */
-    fun notifyReminderSilent(context: Context, title: String, body: String, id: Int = 2000) {
-        send(context, CHANNEL_REMINDER_SILENT, id, title, body)
+    /** 免打扰时段内的提醒：静默通知（不响铃不振动），同样可点击确认 */
+    fun notifyReminderSilent(context: Context, title: String, body: String, id: Int = 2000, reminderId: Long = id.toLong()) {
+        send(context, CHANNEL_REMINDER_SILENT, id, title, body, reminderId = reminderId)
     }
 
     /** 清晨简报通知：点击打开 App 并弹窗显示简报全文 */
@@ -117,16 +120,39 @@ object Notifier {
         }
     }
 
-    private fun send(context: Context, channelId: String, id: Int, title: String, body: String) {
-        val notification = NotificationCompat.Builder(context, channelId)
+    /**
+     * 普通通知（无点击跳转）。
+     * reminderId 非空时带点击跳转（提醒确认流程用）。
+     */
+    private fun send(
+        context: Context,
+        channelId: String,
+        id: Int,
+        title: String,
+        body: String,
+        reminderId: Long? = null
+    ) {
+        val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body.take(200))
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
-            .build()
+        if (reminderId != null) {
+            // 点击通知 → 打开 App 弹「提醒确认」窗（确认后才停止 5 分钟重复通知）
+            val contentIntent = PendingIntent.getActivity(
+                context,
+                id,
+                Intent(context, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    .putExtra(EXTRA_ACTION, ACTION_CONFIRM_REMINDER)
+                    .putExtra(EXTRA_REMINDER_ID, reminderId),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.setContentIntent(contentIntent)
+        }
         try {
-            NotificationManagerCompat.from(context).notify(id, notification)
+            NotificationManagerCompat.from(context).notify(id, builder.build())
         } catch (e: SecurityException) {
             // 未授予 POST_NOTIFICATIONS 权限：通知静默丢弃
         }
@@ -139,6 +165,9 @@ object Notifier {
     const val ACTION_SHOW_BRIEFING = "show_briefing"
     /** 识屏小窗「在 App 中继续」→ 回聊天页带截图与结果 */
     const val ACTION_SHOW_SCREEN_SENSE = "show_screen_sense"
+    /** 提醒通知点击 → 打开 App 弹确认窗 */
+    const val ACTION_CONFIRM_REMINDER = "confirm_reminder"
+    const val EXTRA_REMINDER_ID = "reminder_id"
 
     /** 识屏相关的引导提示（悬浮窗权限缺失等） */
     fun notifyScreenSenseHint(context: Context, text: String) {

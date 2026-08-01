@@ -31,15 +31,21 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.example.assistant.data.db.entity.ReminderEntity
+import kotlinx.coroutines.launch
+import java.util.Calendar
 import com.example.assistant.core.AppSharedState
 import com.example.assistant.core.notification.Notifier
 import com.example.assistant.di.AppContainer
@@ -171,6 +177,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             AssistantTheme {
                 AssistantApp()
+                // 提醒通知点击 → 确认弹窗（确认后才停止 5 分钟重复通知）
+                ReminderConfirmDialog(app = container)
                 // 悬浮窗权限引导对话框（识屏小窗需要 overlay 权限）
                 if (showOverlayDialog) {
                     AlertDialog(
@@ -238,6 +246,11 @@ class MainActivity : ComponentActivity() {
                 val text = intent.getStringExtra(ScreenResultOverlay.EXTRA_SCREEN_RESULT).orEmpty()
                 container.screenSenseController.postResult(path, text)
             }
+            Notifier.ACTION_CONFIRM_REMINDER -> {
+                // 提醒通知点击：弹确认窗（确认后停止 5 分钟重复通知）
+                val rid = intent.getLongExtra(Notifier.EXTRA_REMINDER_ID, -1)
+                if (rid > 0) AppSharedState.pendingReminderConfirmId.value = rid
+            }
             ScreenSenseTileService.ACTION_SCREEN_SENSE -> {
                 // 快捷磁贴点击：直接发起识屏授权
                 launchScreenCapture()
@@ -297,6 +310,66 @@ class MainActivity : ComponentActivity() {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
+}
+
+/**
+ * 提醒确认弹窗：提醒通知点击 → App 弹出，手动确认后停止 5 分钟重复通知。
+ * 「确认」→ 记录确认时间 + 取消重复闹钟 + 一次性提醒标记 fired（从列表消失）；
+ * 「稍后」/点外部 → 不确认，继续每 5 分钟重复提醒。
+ */
+@Composable
+private fun ReminderConfirmDialog(app: AppContainer) {
+    val reminderId by AppSharedState.pendingReminderConfirmId.collectAsState()
+    if (reminderId == null) return
+    val scope = rememberCoroutineScope()
+    var reminder by remember(reminderId) { mutableStateOf<ReminderEntity?>(null) }
+    var loaded by remember(reminderId) { mutableStateOf(false) }
+
+    LaunchedEffect(reminderId) {
+        reminder = app.reminderRepository.byId(reminderId!!)
+        loaded = true
+    }
+    if (!loaded) return
+
+    val item = reminder
+    if (item == null) {
+        // 提醒已被删除：直接关闭
+        LaunchedEffect(Unit) { AppSharedState.pendingReminderConfirmId.value = null }
+        return
+    }
+    AlertDialog(
+        onDismissRequest = { AppSharedState.pendingReminderConfirmId.value = null },
+        title = { Text("⏰ 提醒确认") },
+        text = {
+            Text(
+                "「${item.title}」\n时间：${formatReminderTime(item.triggerAtEpochMillis)}\n" +
+                    "确认后停止提醒；不确认则每 5 分钟再提醒一次。"
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    app.reminderRepository.ack(item.id)
+                    app.reminderScheduler.cancelAckRepeat(item.id)
+                    // 一次性提醒：确认后标记 fired（触发 24h 后自动清理，列表不堆积）
+                    if (item.repeatRule == null) app.reminderRepository.markFired(item.id)
+                }
+                AppSharedState.pendingReminderConfirmId.value = null
+            }) { Text("确认") }
+        },
+        dismissButton = {
+            TextButton(onClick = { AppSharedState.pendingReminderConfirmId.value = null }) {
+                Text("稍后")
+            }
+        }
+    )
+}
+
+/** 提醒触发时间显示：X月X日 HH:mm */
+private fun formatReminderTime(millis: Long): String {
+    val cal = Calendar.getInstance().apply { timeInMillis = millis }
+    return "${cal.get(Calendar.MONTH) + 1}月${cal.get(Calendar.DAY_OF_MONTH)}日 " +
+        "%02d:%02d".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
 }
 
 @Composable
