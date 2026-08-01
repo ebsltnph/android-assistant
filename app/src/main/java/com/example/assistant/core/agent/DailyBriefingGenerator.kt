@@ -50,6 +50,8 @@ class DailyBriefingGenerator(
         val summaryText = summary?.summary ?: "（无昨日小结）"
 
         val profile = providerRegistry.profileFor(Capability.CHAT)
+        // 日期由代码生成（不依赖 LLM 知识截止，它曾把 8月1日说成 7月31日）
+        val dateLabel = todayLabel()
         val template = buildString {
             append("🌅 早上好！\n")
             if (todayReminders.isNotEmpty()) {
@@ -57,7 +59,7 @@ class DailyBriefingGenerator(
             }
             summary?.let { append("昨日小结：${it.summary.take(200)}") }
         }
-        if (profile == null || !profile.isConfigured()) return template
+        if (profile == null || !profile.isConfigured()) return dated(dateLabel, template)
 
         val result = try {
             val api = providerRegistry.apiFor(profile)
@@ -68,7 +70,8 @@ class DailyBriefingGenerator(
                 model = profile.model,
                 messages = listOf(
                     ChatMessage("system", prompt),
-                    ChatMessage("user", "请生成今天的清晨简报。")
+                    // 当前时间告诉模型（"今天/昨天"的基准），避免它按知识截止猜日期
+                    ChatMessage("user", "当前时间：$dateLabel ${weekdayText()}\n请生成今天的清晨简报。")
                 ),
                 temperature = 0.7,
                 // 1024：推理模型思考占配额
@@ -87,9 +90,30 @@ class DailyBriefingGenerator(
         val date = "%04d-%02d-%02d".format(
             today.get(Calendar.YEAR), today.get(Calendar.MONTH) + 1, today.get(Calendar.DAY_OF_MONTH)
         )
-        summaryStore.saveBriefing(result, date)
-        return result
+        val dated = dated(dateLabel, result)
+        summaryStore.saveBriefing(dated, date)
+        return dated
     }
+
+    /** 简报文本前缀日期标签（如「🌅 2026年8月1日 清晨简报」） */
+    private fun dated(dateLabel: String, text: String): String =
+        "🌅 $dateLabel 清晨简报\n\n$text"
+
+    private fun todayLabel(): String {
+        val cal = Calendar.getInstance()
+        return "%d年%d月%d日".format(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))
+    }
+
+    private fun weekdayText(): String =
+        when (Calendar.getInstance().get(Calendar.DAY_OF_WEEK)) {
+            Calendar.MONDAY -> "星期一"
+            Calendar.TUESDAY -> "星期二"
+            Calendar.WEDNESDAY -> "星期三"
+            Calendar.THURSDAY -> "星期四"
+            Calendar.FRIDAY -> "星期五"
+            Calendar.SATURDAY -> "星期六"
+            else -> "星期日"
+        }
 
     private fun dayStartMillis(): Long {
         val cal = Calendar.getInstance()
