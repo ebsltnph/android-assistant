@@ -16,6 +16,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <!-- 识屏悬浮小窗：显示在其他应用上层（运行时检查 + 引导开启） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 悬浮球前台服务（API 34+ 的 specialUse 类型需要） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:name=".AssistantApplication"
@@ -67,6 +69,38 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+
+        <!-- 悬浮球前台服务（specialUse：常驻显示悬浮球与响应点击） -->
+        <service
+            android:name=".service.FloatingBallService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="悬浮球常驻悬浮窗，点击展开浮动界面" />
+        </service>
+
+        <!-- 浮动界面（悬浮球展开的玻璃拟态面板）：
+             独立 task + 排除最近任务，finish 后系统自动回原 App -->
+        <activity
+            android:name=".feature.floating.FloatingPanelActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Assistant.Translucent"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- 识屏授权中转（透明无 UI）：悬浮球场景下弹系统授权，避免闪现 App 界面 -->
+        <activity
+            android:name=".service.MediaProjectionPermissionActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Assistant.Translucent"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <!-- 提醒到点广播 -->
         <receiver

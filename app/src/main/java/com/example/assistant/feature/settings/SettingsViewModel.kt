@@ -84,6 +84,14 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setReasoningEffort(v) }
     }
 
+    // ---- P6：悬浮球 ----
+    val floatingBallEnabled: StateFlow<Boolean> = settingsStore.floatingBallEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setFloatingBallEnabled(v: Boolean) {
+        viewModelScope.launch { settingsStore.setFloatingBallEnabled(v) }
+    }
+
     init {
         refresh()
     }

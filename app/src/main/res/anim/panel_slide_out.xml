@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 浮动界面退出动画：整体下滑消失（返回手势/关闭按钮触发 finish） -->
+<translate xmlns:android="http://schemas.android.com/apk/res/android"
+    android:fromYDelta="0%"
+    android:toYDelta="100%"
+    android:duration="220" />

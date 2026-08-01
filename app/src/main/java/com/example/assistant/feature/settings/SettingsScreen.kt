@@ -55,6 +55,7 @@ import com.example.assistant.AssistantApplication
 import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.ProviderProfile
 import com.example.assistant.core.storage.PromptStore
+import com.example.assistant.service.FloatingBallService
 import kotlinx.coroutines.launch
 
 /**
@@ -202,6 +203,28 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         item { HorizontalDivider() }
+        item { Text("悬浮球", style = MaterialTheme.typography.titleLarge) }
+        item {
+            // 悬浮球开关：开 → 启动前台服务（常驻），关 → 停止
+            FloatingBallSettingsCard(
+                enabled = vm.floatingBallEnabled.collectAsState().value,
+                overlayGranted = overlayGranted,
+                onEnabledChange = { on ->
+                    vm.setFloatingBallEnabled(on)
+                    if (on) FloatingBallService.start(context) else FloatingBallService.stop(context)
+                },
+                onOpenOverlaySettings = {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                    )
+                }
+            )
+        }
+
+        item { HorizontalDivider() }
         item { Text("高级设置", style = MaterialTheme.typography.titleLarge) }
         item {
             Text(
@@ -308,6 +331,53 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             key = key,
             onDismiss = { editingPromptKey = null }
         )
+    }
+}
+
+/**
+ * 悬浮球设置卡片（P6）：开关 + 悬浮窗权限引导 + 使用说明。
+ * 开启 = 启动前台服务（通知栏常驻一条低优先级通知，悬浮球在任意应用上层）。
+ */
+@Composable
+private fun FloatingBallSettingsCard(
+    enabled: Boolean,
+    overlayGranted: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onOpenOverlaySettings: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("启用悬浮球", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "在任意应用上层悬浮一个小球，点开即可识屏 / 提醒 / 记录 / 对话",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = onEnabledChange)
+            }
+            if (enabled) {
+                Text(
+                    "说明：需悬浮窗权限；开启后通知栏常驻一条「悬浮球运行中」（可手动关掉，不影响功能）；" +
+                        "识图每次都要点一次系统授权。为保证悬浮球不被系统杀掉，建议在系统设置里给随身助手开启" +
+                        "「电池无限制」和「自启动」。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+                if (!overlayGranted) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        Text("悬浮窗权限：未开启", color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = onOpenOverlaySettings) { Text("去开启") }
+                    }
+                }
+            }
+        }
     }
 }
 

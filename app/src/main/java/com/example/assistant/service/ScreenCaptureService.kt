@@ -27,17 +27,19 @@ import com.example.assistant.MainActivity
 import com.example.assistant.R
 import com.example.assistant.core.notification.Notifier
 import com.example.assistant.core.vision.ImageUtils
+import com.example.assistant.di.AppContainer
+import com.example.assistant.feature.floating.FloatingPanelActivity
 import java.io.File
 import java.io.FileOutputStream
 
 /**
  * 屏幕截屏前台服务（foregroundServiceType=mediaProjection，API 34+ 强制 FGS）。
  *
- * 流程：MainActivity 授权成功 → [start] 拉起本服务 → 截一帧 → PNG 存 cacheDir →
- * 弹出识屏小窗（AppContainer.screenResultOverlay）→ 本服务作为小窗存活的 FGS 宿主
- * （防 MagicOS 后台杀进程）→ 小窗关闭回调 [onClosed] 时 stopSelf。
+ * 流程：授权成功 → [start] 拉起本服务 → 延迟 2.5s 截一帧 → PNG 存 cacheDir →
+ * 拉起浮动界面（FloatingPanelActivity 识图模式：缩略图 + 提取文字/翻译/总结）→ stopSelf。
+ * 识屏前/截屏期间由 panelState=CAPTURING 隐藏悬浮球（防被截进截图）。
  *
- * 省电：截图完成后立即释放 MediaProjection/VirtualDisplay（小窗只展示本地 PNG 文件）。
+ * 省电：截图完成后立即释放 MediaProjection/VirtualDisplay（浮动界面只展示本地 PNG 文件）。
  */
 class ScreenCaptureService : Service() {
 
@@ -63,6 +65,9 @@ class ScreenCaptureService : Service() {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(EXTRA_RESULT_DATA)
         }
+        // 截屏延迟：悬浮球入口通知栏是收起的（1.2s 即可）；
+        // 聊天/磁贴入口通知栏可能展开（保持 2.5s，给用户时间收起）
+        val delayMs = intent.getLongExtra(EXTRA_DELAY_MS, DEFAULT_DELAY_MS)
         if (resultCode != Activity.RESULT_OK || data == null) {
             stopSelf()
             return START_NOT_STICKY
@@ -86,18 +91,26 @@ class ScreenCaptureService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        // 延迟 2.5 秒再截屏：MainActivity 授权成功后已 moveTaskToBack，
-        // 等界面切换动画完成 + 给用户留出"关闭通知栏"的时间（荣耀无法编程收起通知栏）
+        // 延迟截屏：授权成功后已 moveTaskToBack，等界面切换动画完成；
+        // 聊天/磁贴入口还要给用户留出"关闭通知栏"的时间（荣耀无法编程收起通知栏）
         Handler(Looper.getMainLooper()).postDelayed({
             startCapture(resultCode, data)
-        }, 2500)
+        }, delayMs)
         return START_NOT_STICKY
     }
 
     /** 用授权令牌创建投影 + 虚拟显示，帧回调里截一帧 */
     private fun startCapture(resultCode: Int, data: Intent) {
         val mpm = getSystemService(MediaProjectionManager::class.java)
-        val projection = mpm.getMediaProjection(resultCode, data)
+        val projection = try {
+            mpm.getMediaProjection(resultCode, data)
+        } catch (e: Exception) {
+            // 授权令牌失效（Android 14 令牌一次性 / 荣耀撤销权限）：提示重试，不崩溃
+            Notifier.notifyScreenSenseHint(this, "识屏授权已失效，请再次点击识屏并允许权限")
+            (application as AssistantApplication).container.panelState.value = AppContainer.PanelState.HIDDEN
+            stopSelf()
+            return
+        }
         val handler = Handler(handlerThread.looper)
         // Android 14 要求：createVirtualDisplay 之前必须先注册回调
         // （用于在系统停止投影时释放资源），否则 IllegalStateException
@@ -130,8 +143,9 @@ class ScreenCaptureService : Service() {
         imageReader = reader
     }
 
-    /** 截到一帧（handlerThread 线程）：存 PNG → 释放投影 → 弹出小窗 */
+    /** 截到一帧（handlerThread 线程）：存 PNG → 释放投影 → 拉起浮动界面（识图模式） */
     private fun onFrameCaptured(bitmap: Bitmap) {
+        val container = (application as AssistantApplication).container
         // 取消「识屏准备中」提示（提醒关通知栏的）
         Notifier.cancelScreenSensePreparing(this)
         val scaled = ImageUtils.scaleBitmap(bitmap)
@@ -142,16 +156,20 @@ class ScreenCaptureService : Service() {
                 scaled.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
         } catch (e: Exception) {
+            container.panelState.value = AppContainer.PanelState.HIDDEN
             stopSelf()
             return
         }
-        // 释放投影资源（省电）：小窗只展示本地文件，不再需要虚拟显示
+        // 释放投影资源（省电）：浮动界面只展示本地文件，不再需要虚拟显示
         releaseCapture()
-        updateNotification("识屏小窗已弹出")
-        val container = (application as AssistantApplication).container
-        container.screenResultOverlay.show(file.absolutePath) {
-            stopSelf()
-        }
+        // 拉起浮动界面（识图模式）：截图缩略图 + 提取文字/翻译/总结 + 输出区
+        container.panelState.value = AppContainer.PanelState.PANEL_OPEN
+        startActivity(
+            FloatingPanelActivity.intentFor(
+                this, FloatingPanelActivity.PanelMode.SCREEN_SENSE, file.absolutePath
+            )
+        )
+        stopSelf()
     }
 
     private fun releaseCapture() {
@@ -213,13 +231,21 @@ class ScreenCaptureService : Service() {
     companion object {
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
+        private const val EXTRA_DELAY_MS = "delay_ms"
         private const val NOTIFICATION_ID = 3001
 
-        /** 启动截屏服务（授权成功后调用，必须带 resultCode + data） */
-        fun start(context: Context, resultCode: Int, data: Intent) {
+        /** 默认截屏延迟（聊天/磁贴入口：通知栏可能展开，需时间收起） */
+        const val DEFAULT_DELAY_MS = 2500L
+
+        /** 悬浮球入口的截屏延迟（通知栏已收起，缩短等待） */
+        const val BALL_DELAY_MS = 1200L
+
+        /** 启动截屏服务（授权成功后调用，必须带 resultCode + data；delayMs 为截屏等待时长） */
+        fun start(context: Context, resultCode: Int, data: Intent, delayMs: Long = DEFAULT_DELAY_MS) {
             val intent = Intent(context, ScreenCaptureService::class.java)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, data)
+                .putExtra(EXTRA_DELAY_MS, delayMs)
             ContextCompat.startForegroundService(context, intent)
         }
     }

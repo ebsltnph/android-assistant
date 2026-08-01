@@ -32,6 +32,8 @@ compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+# 扩展图标库（悬浮球浮动界面的识图/提醒/记录等图标，版本由 compose-bom 统一管理）
+compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 
 # 数据持久化
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }

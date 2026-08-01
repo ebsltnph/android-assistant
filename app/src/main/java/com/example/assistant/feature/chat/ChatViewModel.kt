@@ -3,8 +3,6 @@ package com.example.assistant.feature.chat
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import com.example.assistant.core.agent.Agent
 import com.example.assistant.core.agent.Agent.AgentResult
 import com.example.assistant.core.agent.AssistantIntent
@@ -21,8 +19,12 @@ import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.EventRepository
 import com.example.assistant.data.repo.MemoryRepository
 import com.example.assistant.data.repo.ReminderRepository
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
@@ -48,6 +50,12 @@ data class PendingImage(
     val base64: String
 )
 
+/**
+ * 聊天核心逻辑（进程级共享单例，AppContainer 创建）：
+ * 聊天页与浮动界面（悬浮球展开的面板）共用同一份会话与消息列表——
+ * 浮动界面的对话/识屏结果自动留存到 App 聊天记录。
+ * 不是 ViewModel：生命周期 = 进程（协程域 [scope] 自管，进程退出才结束）。
+ */
 class ChatViewModel(
     private val context: Context,
     private val agent: Agent,
@@ -61,7 +69,10 @@ class ChatViewModel(
     private val eventExtractor: EventExtractor,
     private val visionAnalyzer: VisionAnalyzer,
     private val screenSenseController: ScreenSenseController
-) : ViewModel() {
+) {
+
+    /** 协程域：进程级共享，用 SupervisorJob 防止单个任务失败影响其他任务 */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val _messages = MutableStateFlow<List<ChatUiMessage>>(emptyList())
     val messages: StateFlow<List<ChatUiMessage>> = _messages
@@ -82,13 +93,21 @@ class ChatViewModel(
     private val session = Session()
     private var counter = 0L
 
+    /**
+     * 识屏指令被真正执行的事件（LLM 分类命中"识屏"时也会走到 executeCommand）：
+     * 浮动界面订阅它直接触发自己的识图流程（面板场景 MainActivity 在后台，
+     * 原来的 requestScreenSense 事件它收不到，导致 LLM 中转的识屏无后续）。
+     */
+    private val _screenSenseRequested = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val screenSenseRequested: SharedFlow<Unit> = _screenSenseRequested
+
     /** 助手消息 id → 触发它的请求消息（重新生成用） */
     private val regenerateMessages = mutableMapOf<Long, List<ChatMessage>>()
 
     init {
         // 识屏小窗「在 App 中继续」：截图加入附件栏（等用户输入命令，
         // 文字+图片一起发给视觉模型）；小窗里已分析的结果作为一条助手消息保留
-        viewModelScope.launch {
+        scope.launch {
             screenSenseController.results.collect { result ->
                 if (result.imagePath.isNotEmpty()) {
                     addFileAttachment(result.imagePath)
@@ -100,13 +119,13 @@ class ChatViewModel(
             }
         }
         // 外部分享图片 → 附件栏（不自动分析，等用户输入要求一起发送）
-        viewModelScope.launch {
+        scope.launch {
             screenSenseController.imageShares.collect { share ->
                 loadImageToPending(share.uri)
             }
         }
         // 外部分享文本 → 预填输入框（用户确认后发送）
-        viewModelScope.launch {
+        scope.launch {
             screenSenseController.textShares.collect { text ->
                 _inputText.value = text
             }
@@ -125,7 +144,7 @@ class ChatViewModel(
     }
 
     private fun loadImageToPending(uri: Uri) {
-        viewModelScope.launch {
+        scope.launch {
             val bitmap = withContext(Dispatchers.IO) {
                 ImageUtils.readUriBitmap(context, uri)
             }
@@ -142,7 +161,7 @@ class ChatViewModel(
 
     /** 本地截图文件加入附件栏（识屏小窗「在 App 中继续」），与分享/上传图片同一交互 */
     private fun addFileAttachment(path: String) {
-        viewModelScope.launch {
+        scope.launch {
             val bitmap = withContext(Dispatchers.IO) {
                 try {
                     android.graphics.BitmapFactory.decodeFile(path)
@@ -168,7 +187,7 @@ class ChatViewModel(
         if (_isStreaming.value) return
         _inputText.value = ""
         _pendingImage.value = null
-        viewModelScope.launch {
+        scope.launch {
             _isStreaming.value = true
             _error.value = null
             if (image != null) {
@@ -177,6 +196,98 @@ class ChatViewModel(
                 sendText(text)
             }
             _isStreaming.value = false
+        }
+    }
+
+    /**
+     * 浮动界面对话入口（悬浮球展开面板的输入框）：
+     * 与聊天页 send() 行为一致（路由/记忆注入/流式回复），
+     * 但不碰输入框/附件栏状态（面板有自己的输入框）。
+     */
+    fun quickSend(text: String) {
+        val t = text.trim()
+        if (t.isEmpty() || _isStreaming.value) return
+        scope.launch {
+            _isStreaming.value = true
+            _error.value = null
+            sendText(t)
+            _isStreaming.value = false
+        }
+    }
+
+    /** 浮动界面「提醒」模式：文本直接创建提醒（自动补"提醒我"前缀提高解析成功率） */
+    fun createReminderNow(text: String) {
+        val t = text.trim()
+        if (t.isEmpty() || _isStreaming.value) return
+        scope.launch {
+            _isStreaming.value = true
+            val normalized = if (t.startsWith("提醒")) t else "提醒我$t"
+            val hint = createReminder(AssistantIntent.SetReminder(title = "", timeText = normalized))
+            append(ChatUiMessage(counter++, "assistant", hint))
+            session.addAssistant(hint)
+            _isStreaming.value = false
+        }
+    }
+
+    /**
+     * 浮动界面识图模式对话：文字要求 + 截图**一起**发给视觉模型
+     * （与聊天页附件行为一致：不重发图片进会话，用占位文本，后续追问走普通聊天）。
+     */
+    fun quickSendVision(text: String, imageBase64: String, thumbnail: Bitmap?) {
+        val t = text.trim()
+        if (t.isEmpty() || _isStreaming.value) return
+        scope.launch {
+            _isStreaming.value = true
+            _error.value = null
+            val placeholder = if (t.isNotEmpty()) "[📷 屏幕截图]\n$t" else "[📷 屏幕截图]"
+            session.addUser(placeholder)
+            _messages.update { it + ChatUiMessage(counter++, "user", t, image = thumbnail) }
+            if (visionAnalyzer.visionProfile() == null) {
+                append(ChatUiMessage(counter++, "assistant", VisionAnalyzer.GUIDE_TEXT))
+                session.addAssistant(VisionAnalyzer.GUIDE_TEXT)
+            } else {
+                val streamingId = counter++
+                append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
+                val instruction = t.ifBlank { "请描述这张图片" }
+                val answer = streamVisionReply(imageBase64, instruction, streamingId)
+                session.addAssistant(answer)
+            }
+            _isStreaming.value = false
+        }
+    }
+
+    /**
+     * 浮动界面识图按钮分析完成：把「截图 + 提示词」作为用户消息、
+     * 分析结果作为助手消息**一起进聊天记录**（与聊天附件行为一致，
+     * 输出区/聊天页都能看到完整一问一答）。
+     */
+    fun quickAnalyzeResult(imagePath: String, instruction: String, resultText: String) {
+        scope.launch {
+            val bmp = withContext(Dispatchers.IO) {
+                try {
+                    android.graphics.BitmapFactory.decodeFile(imagePath)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            val thumbnail = bmp?.let { ImageUtils.thumbnail(it) }
+            val placeholder = if (instruction.isNotEmpty()) "[📷 屏幕截图]\n$instruction" else "[📷 屏幕截图]"
+            session.addUser(placeholder)
+            _messages.update { it + ChatUiMessage(counter++, "user", instruction, image = thumbnail) }
+            append(ChatUiMessage(counter++, "assistant", resultText))
+            session.addAssistant(resultText)
+        }
+    }
+
+    /** 浮动界面「记录」模式：文本直接写入默认日记本，并给出反馈消息 */
+    fun writeDiaryNow(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        scope.launch {
+            writeDiary(t, null)
+            val hint = "📔 已记入日记本"
+            append(ChatUiMessage(counter++, "assistant", hint))
+            session.addAssistant(hint)
         }
     }
 
@@ -293,7 +404,7 @@ class ChatViewModel(
     fun regenerate(messageId: Long) {
         if (_isStreaming.value) return
         val messages = regenerateMessages[messageId] ?: return
-        viewModelScope.launch {
+        scope.launch {
             _isStreaming.value = true
             _error.value = null
             // 清空该条并重新流式
@@ -329,10 +440,12 @@ class ChatViewModel(
         is AssistantIntent.RecordDiary -> "📔 已记入日记本"
         is AssistantIntent.SetReminder -> createReminder(intent)
         is AssistantIntent.ScreenSense -> {
-            // 请求 MainActivity 弹 MediaProjection 授权；截屏后悬浮小窗弹出，
-            // 快捷按钮（提取文字/翻译/描述）直接在任意 App 上层完成分析
+            // 请求 MainActivity 弹 MediaProjection 授权（聊天页场景 MainActivity 在前台）；
+            // 同时广播事件——浮动界面订阅后直接走自己的识图流程
+            // （面板场景 MainActivity 在后台收不到请求，必须由面板自己触发）
             screenSenseController.requestScreenSense(intent.action)
-            "👁️ 正在准备识屏…\n请在系统弹出的窗口中点「允许」，截屏后小窗会出现在屏幕上方"
+            _screenSenseRequested.tryEmit(Unit)
+            "👁️ 正在准备识屏…\n请在系统弹出的窗口中点「允许」，截屏后浮动界面会显示识别结果"
         }
         is AssistantIntent.MonitorEvent -> createMonitoredEvent(intent)
         is AssistantIntent.Chat -> intent.text
@@ -405,7 +518,7 @@ class ChatViewModel(
 
     /** 后台静默抽取长期记忆（带重要性过滤，评分不足的不存），失败不打扰用户 */
     private fun extractMemoryInBackground(text: String) {
-        viewModelScope.launch {
+        scope.launch {
             val facts = memoryExtractor.extract(text)
             if (facts.isNotEmpty()) memoryRepository.addFacts(facts)
         }

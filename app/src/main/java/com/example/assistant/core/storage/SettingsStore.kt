@@ -61,6 +61,11 @@ class SettingsStore(context: Context) {
     val reasoningEffort: Flow<String> = dataStore.data.map { it[KEY_REASONING_EFFORT] ?: "default" }
     suspend fun setReasoningEffort(v: String) = dataStore.edit { it[KEY_REASONING_EFFORT] = v }
 
+    // ---- P6：悬浮球 ----
+    /** 悬浮球开关（默认关；开着 → 前台服务常驻，开机自动恢复） */
+    val floatingBallEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_FLOATING_BALL] ?: false }
+    suspend fun setFloatingBallEnabled(v: Boolean) = dataStore.edit { it[KEY_FLOATING_BALL] = v }
+
     companion object {
         private const val TAG = "SettingsStore"
         private val KEY_TTS = booleanPreferencesKey("tts_enabled")
@@ -70,6 +75,7 @@ class SettingsStore(context: Context) {
         private val KEY_QUIET_END = intPreferencesKey("quiet_end_minute")
         private val KEY_THINKING_MODE = stringPreferencesKey("thinking_mode")
         private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
+        private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
 
         private fun capabilityKey(c: Capability) = stringPreferencesKey("capability_${c.name}")
     }

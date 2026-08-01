@@ -8,6 +8,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.example.assistant.core.notification.Notifier
 import com.example.assistant.di.AppContainer
+import com.example.assistant.service.FloatingBallService
 import com.example.assistant.worker.DailySummaryWorker
 import com.example.assistant.worker.EventPollWorker
 import com.example.assistant.worker.MorningBriefingWorker
@@ -52,6 +53,12 @@ class AssistantApplication : Application() {
                 container.reminderScheduler.scheduleAckRepeat(it.id)
             }
             container.reminderRepository.cleanupFired(now - 24 * 3600_000L)
+        }
+        // P6 悬浮球：开关开着 → 进入 App 自动恢复悬浮球服务（防系统杀后台后丢失）
+        appScope.launch {
+            if (container.settingsStore.floatingBallEnabled.first()) {
+                FloatingBallService.start(this@AssistantApplication)
+            }
         }
     }
 

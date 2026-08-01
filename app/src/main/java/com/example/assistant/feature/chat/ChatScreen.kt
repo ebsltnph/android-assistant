@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,7 +47,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.assistant.AssistantApplication
 
 /**
@@ -59,22 +59,9 @@ import com.example.assistant.AssistantApplication
 fun ChatScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val app = context.applicationContext as AssistantApplication
-    val vm: ChatViewModel = viewModel {
-        ChatViewModel(
-            context = app,
-            agent = app.container.agent,
-            diaryRepository = app.container.diaryRepository,
-            memoryRepository = app.container.memoryRepository,
-            memoryExtractor = app.container.memoryExtractor,
-            reminderRepository = app.container.reminderRepository,
-            reminderTimeParser = app.container.reminderTimeParser,
-            reminderScheduler = app.container.reminderScheduler,
-            eventRepository = app.container.eventRepository,
-            eventExtractor = app.container.eventExtractor,
-            visionAnalyzer = app.container.visionAnalyzer,
-            screenSenseController = app.container.screenSenseController
-        )
-    }
+    // P6：聊天核心改为进程级共享单例（浮动界面与聊天页共用同一会话），
+    // 直接从容器取，不再每屏创建一个
+    val vm = remember { app.container.chatViewModel }
     val clipboard = LocalClipboardManager.current
 
     val messages by vm.messages.collectAsState()

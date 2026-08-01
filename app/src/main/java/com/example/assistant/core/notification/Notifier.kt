@@ -25,6 +25,9 @@ object Notifier {
     /** 识屏：截屏前台服务的前台通知（IMPORTANCE_LOW 不打扰） */
     const val CHANNEL_SCREEN_CAPTURE = "screen_capture"
 
+    /** 悬浮球：常驻前台服务的前台通知（IMPORTANCE_LOW 不打扰） */
+    const val CHANNEL_FLOATING_BALL = "floating_ball"
+
     /** 创建通知渠道（幂等，可在 Application.onCreate 调用） */
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -52,6 +55,11 @@ object Notifier {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_SCREEN_CAPTURE, "识屏", NotificationManager.IMPORTANCE_LOW
+            )
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_FLOATING_BALL, "悬浮球", NotificationManager.IMPORTANCE_LOW
             )
         )
     }
@@ -163,8 +171,6 @@ object Notifier {
     const val EXTRA_BRIEFING_TEXT = "briefing_text"
     const val ACTION_SHOW_SUMMARY = "show_summary"
     const val ACTION_SHOW_BRIEFING = "show_briefing"
-    /** 识屏小窗「在 App 中继续」→ 回聊天页带截图与结果 */
-    const val ACTION_SHOW_SCREEN_SENSE = "show_screen_sense"
     /** 提醒通知点击 → 打开 App 弹确认窗 */
     const val ACTION_CONFIRM_REMINDER = "confirm_reminder"
     const val EXTRA_REMINDER_ID = "reminder_id"

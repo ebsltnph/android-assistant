@@ -23,12 +23,16 @@ import com.example.assistant.core.storage.SummaryStore
 import com.example.assistant.core.vision.ScreenSenseController
 import com.example.assistant.core.vision.VisionAnalyzer
 import com.example.assistant.data.db.AppDatabase
-import com.example.assistant.service.ScreenResultOverlay
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.EventRepository
 import com.example.assistant.data.repo.MemoryRepository
 import com.example.assistant.data.repo.ReminderRepository
 import com.example.assistant.data.repo.SummaryRepository
+import com.example.assistant.feature.chat.ChatViewModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * 手动依赖注入容器：所有全局单例在这里创建。
@@ -39,6 +43,18 @@ import com.example.assistant.data.repo.SummaryRepository
 class AppContainer(context: Context) {
 
     val appContext: Context = context.applicationContext
+
+    /** 全局协程域（进程级；App 内长生命周期任务统一用它） */
+    val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /**
+     * 浮动界面状态机（P6 悬浮球）：
+     * HIDDEN=面板关闭（悬浮球显示）；PANEL_OPEN=面板展开（悬浮球隐藏）；
+     * CAPTURING=识屏授权/截屏中（悬浮球隐藏，防截进截图）。
+     * 悬浮球服务订阅它控制悬浮球显隐。
+     */
+    enum class PanelState { HIDDEN, PANEL_OPEN, CAPTURING }
+    val panelState: MutableStateFlow<PanelState> = MutableStateFlow(PanelState.HIDDEN)
 
     // ---- 存储 ----
     val secretStore: SecretStore by lazy { SecretStore(appContext) }
@@ -98,7 +114,22 @@ class AppContainer(context: Context) {
     // ---- P5：识屏 / 分享 ----
     val screenSenseController: ScreenSenseController by lazy { ScreenSenseController() }
     val visionAnalyzer: VisionAnalyzer by lazy { VisionAnalyzer(providerRegistry, promptStore) }
-    val screenResultOverlay: ScreenResultOverlay by lazy {
-        ScreenResultOverlay(appContext, visionAnalyzer, screenSenseController)
+
+    // ---- P6：聊天核心（进程级共享单例：聊天页与浮动界面共用同一会话） ----
+    val chatViewModel: ChatViewModel by lazy {
+        ChatViewModel(
+            context = appContext,
+            agent = agent,
+            diaryRepository = diaryRepository,
+            memoryRepository = memoryRepository,
+            memoryExtractor = memoryExtractor,
+            reminderRepository = reminderRepository,
+            reminderTimeParser = reminderTimeParser,
+            reminderScheduler = reminderScheduler,
+            eventRepository = eventRepository,
+            eventExtractor = eventExtractor,
+            visionAnalyzer = visionAnalyzer,
+            screenSenseController = screenSenseController
+        )
     }
 }

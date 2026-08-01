@@ -2,16 +2,11 @@ package com.example.assistant
 
 import android.Manifest
 import android.content.Intent
-import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
-import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
-import android.view.Display
-import android.view.Surface
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -54,11 +49,9 @@ import com.example.assistant.feature.diary.DiaryScreen
 import com.example.assistant.feature.home.HomeScreen
 import com.example.assistant.feature.reminder.ReminderScreen
 import com.example.assistant.feature.settings.SettingsScreen
-import com.example.assistant.service.ScreenCaptureService
-import com.example.assistant.service.ScreenResultOverlay
+import com.example.assistant.core.vision.ScreenSenseStarter
 import com.example.assistant.tiles.ScreenSenseTileService
 import com.example.assistant.ui.theme.AssistantTheme
-import kotlinx.coroutines.launch
 
 /** 底部导航的五个主页面 */
 enum class MainTab(
@@ -84,85 +77,10 @@ class MainActivity : ComponentActivity() {
     /** 待启动截屏服务的授权数据（resultCode + data），权限请求通过后使用 */
     private var pendingCaptureResult: Pair<Int, Intent>? = null
 
-    /**
-     * MediaProjection 截屏授权。
-     * 坑（荣耀 MagicOS）：用户点「允许」授权后，系统会（异步、时机不定地）撤销
-     * FOREGROUND_SERVICE_MEDIA_PROJECTION 权限——检查时可能在、启动服务瞬间已没了。
-     * 对策：授权返回后**固定请求一次权限**（标准 Android 上已授予则直接回调不弹框、
-     * 零成本；荣耀上用户允许一次，权限"刚授予"状态启动服务，避开撤销竞态）。
-     * 服务内还有 startForeground try-catch 兜底（见 ScreenCaptureService）。
-     */
-    private val screenCaptureLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK && result.data != null) {
-                pendingCaptureResult = result.resultCode to result.data!!
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    mediaProjectionPermissionLauncher.launch(
-                        Manifest.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION
-                    )
-                } else {
-                    startScreenCaptureService(result.resultCode, result.data!!)
-                }
-            } else {
-                // 用户取消授权：恢复方向（横屏锁定只服务于识屏流程）
-                restoreOrientation()
-            }
-        }
-
-    /** 荣耀把 FOREGROUND_SERVICE_MEDIA_PROJECTION 当运行时权限：请求通过后启动截屏服务 */
-    private val mediaProjectionPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            val pending = pendingCaptureResult
-            pendingCaptureResult = null
-            if (granted && pending != null) {
-                startScreenCaptureService(pending.first, pending.second)
-            } else {
-                restoreOrientation()
-            }
-        }
-
-    /**
-     * 启动截屏服务前先让 App 退到后台（moveTaskToBack）：
-     * 识屏的目标是"用户当前看到的屏幕"（其他 App 的内容），而授权后前台是助手 App——
-     * 退后台后，服务延迟 1 秒截屏，截到的是用户上一个 App 的画面（服务见 ScreenCaptureService）。
-     */
-    private fun startScreenCaptureService(resultCode: Int, data: Intent) {
-        // 提示用户关闭通知栏（荣耀无法编程收起，截屏会带上通知栏）；
-        // 截屏完成后服务自动取消该通知
-        Notifier.notifyScreenSensePreparing(this)
-        // 授权成功：App 即将退后台，恢复方向（前台是目标 App，不受影响）
-        restoreOrientation()
-        moveTaskToBack(true)
-        ScreenCaptureService.start(this, resultCode, data)
-    }
-
-    /** 识屏流程结束：恢复 manifest 的 fullSensor（跟随传感器） */
-    private fun restoreOrientation() {
-        if (landscapeLockedForScreenSense) {
-            landscapeLockedForScreenSense = false
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-        }
-    }
-
-    /** 悬浮窗权限设置页返回（onResume 里检查是否已开启） */
-    private var pendingScreenCapture = false
-    private var showOverlayDialog by mutableStateOf(false)
-
-    /** 横屏环境触发识屏时锁定的横屏方向（授权流程结束后恢复） */
-    private var landscapeLockedForScreenSense = false
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Manifest 已声明 fullSensor（跟随传感器方向）：横拿手机时 MainActivity
-        // 以横屏加载（与屏幕一致，无旋转动画）；竖拿时竖屏（正常使用不受影响）。
-        // 若仍处于横屏（横屏 App 场景），锁定横屏稳定授权流程（授权框不随旋转丢失），
-        // 授权结束（成功退后台 / 用户取消）后由 restoreOrientation 恢复。
-        val rotation = getSystemService(DisplayManager::class.java)
-            .getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: Surface.ROTATION_0
-        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            landscapeLockedForScreenSense = true
-        }
+        // 识屏授权流程在 MediaProjectionPermissionActivity（独立 task）中进行，
+        // 横屏锁定等荣耀对策见该 Activity / ScreenSenseStarter
         enableEdgeToEdge()
         requestNotificationPermissionIfNeeded()
         handleIntent(intent)
@@ -179,26 +97,6 @@ class MainActivity : ComponentActivity() {
                 AssistantApp()
                 // 提醒通知点击 → 确认弹窗（确认后才停止 5 分钟重复通知）
                 ReminderConfirmDialog(app = container)
-                // 悬浮窗权限引导对话框（识屏小窗需要 overlay 权限）
-                if (showOverlayDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showOverlayDialog = false; pendingScreenCapture = false },
-                        title = { Text("开启悬浮窗权限") },
-                        text = { Text("识屏小窗需要「显示在其他应用上层」权限，才能在任意 App 上方展示截图与识别结果。") },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                showOverlayDialog = false
-                                openOverlaySettings()
-                            }) { Text("去开启") }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = {
-                                showOverlayDialog = false
-                                pendingScreenCapture = false
-                            }) { Text("取消") }
-                        }
-                    )
-                }
             }
         }
     }
@@ -211,13 +109,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 从「显示在其他应用上层」设置页返回：已开启则继续识屏授权流程
-        if (pendingScreenCapture) {
-            pendingScreenCapture = false
-            if (Settings.canDrawOverlays(this)) {
-                launchMediaProjection()
-            }
-        }
+        // （原悬浮窗权限检查与引导已随 P6 识屏入口统一到权限 Activity 而移除）
     }
 
     /** 解析通知点击 / 分享 / 识屏等外部 Intent */
@@ -238,13 +130,6 @@ class MainActivity : ComponentActivity() {
                 AppSharedState.currentTab.value = MainTab.Home
                 AppSharedState.briefingText.value =
                     intent.getStringExtra(Notifier.EXTRA_BRIEFING_TEXT) ?: "（简报内容缺失）"
-            }
-            Notifier.ACTION_SHOW_SCREEN_SENSE -> {
-                // 识屏小窗「在 App 中继续」：切聊天页，把截图与已得结果交给聊天会话
-                AppSharedState.currentTab.value = MainTab.Chat
-                val path = intent.getStringExtra(ScreenResultOverlay.EXTRA_SCREEN_IMAGE_PATH).orEmpty()
-                val text = intent.getStringExtra(ScreenResultOverlay.EXTRA_SCREEN_RESULT).orEmpty()
-                container.screenSenseController.postResult(path, text)
             }
             Notifier.ACTION_CONFIRM_REMINDER -> {
                 // 提醒通知点击：弹确认窗（确认后停止 5 分钟重复通知）
@@ -279,29 +164,53 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 识屏入口：先检查悬浮窗权限（小窗必需），未开启则引导；已开启直接弹系统授权 */
+    /**
+     * 识屏入口（聊天指令 / 快捷磁贴）。
+     * 授权**在本 Activity（主 task）内进行**：授权后 moveTaskToBack 退的是主 task，
+     * 回到上一个 App 再截屏（P5 已验证路径）。
+     * 注意：不能用独立 task 的权限 Activity——它退的是自己的空 task，
+     * 主 task 不动，截屏会截到助手自己（用户反馈的 bug，勿改回）。
+     */
     private fun launchScreenCapture() {
-        if (!Settings.canDrawOverlays(this)) {
-            pendingScreenCapture = true
-            showOverlayDialog = true
-            return
-        }
-        launchMediaProjection()
-    }
-
-    private fun launchMediaProjection() {
-        // 统一流程：授权 →（荣耀会撤权限）→ 授权返回后固定请求权限 → 启动服务
+        // 置 CAPTURING：悬浮球服务据此隐藏悬浮球（防被截进截图）
+        container.panelState.value = AppContainer.PanelState.CAPTURING
         val mpm = getSystemService(MediaProjectionManager::class.java)
         screenCaptureLauncher.launch(mpm.createScreenCaptureIntent())
     }
 
-    private fun openOverlaySettings() {
-        val intent = Intent(
-            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-            Uri.parse("package:$packageName")
-        )
-        startActivity(intent)
-    }
+    /**
+     * MediaProjection 截屏授权（荣耀对策与 P5 相同）：
+     * 授权返回后**固定请求一次** FOREGROUND_SERVICE_MEDIA_PROJECTION 权限
+     * （荣耀把该权限当运行时权限且授权后异步撤销，固定请求避开撤销竞态）。
+     */
+    private val screenCaptureLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK && result.data != null) {
+                pendingCaptureResult = result.resultCode to result.data!!
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    mediaProjectionPermissionLauncher.launch(
+                        Manifest.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION
+                    )
+                } else {
+                    ScreenSenseStarter.finishAuth(this, result.resultCode, result.data!!)
+                }
+            } else {
+                // 用户取消授权：恢复悬浮球显示
+                container.panelState.value = AppContainer.PanelState.HIDDEN
+            }
+        }
+
+    /** 荣耀把 FOREGROUND_SERVICE_MEDIA_PROJECTION 当运行时权限：请求通过后启动截屏服务 */
+    private val mediaProjectionPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val pending = pendingCaptureResult
+            pendingCaptureResult = null
+            if (granted && pending != null) {
+                ScreenSenseStarter.finishAuth(this, pending.first, pending.second)
+            } else {
+                container.panelState.value = AppContainer.PanelState.HIDDEN
+            }
+        }
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&

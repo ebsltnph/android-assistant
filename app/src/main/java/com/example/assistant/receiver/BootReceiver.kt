@@ -4,13 +4,16 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.example.assistant.AssistantApplication
+import com.example.assistant.service.FloatingBallService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * 开机广播：重启后把未触发的提醒重新排程到 AlarmManager
- * （闹钟在系统重启后会丢失，必须重排）。
+ * 开机广播：重启后恢复后台功能。
+ * - 未触发的提醒重新排程到 AlarmManager（闹钟在系统重启后会丢失）
+ * - 悬浮球开关开着时自动拉起前台服务（P6）
  */
 class BootReceiver : BroadcastReceiver() {
 
@@ -27,6 +30,10 @@ class BootReceiver : BroadcastReceiver() {
                 // 已触发但未确认的提醒：恢复 5 分钟重复闹钟（继续提醒直到用户确认）
                 app.container.reminderRepository.unackedFiredPending(now).forEach {
                     app.container.reminderScheduler.scheduleAckRepeat(it.id)
+                }
+                // P6：悬浮球开关开着 → 开机自动拉起（BOOT_COMPLETED 启动 FGS 是豁免场景）
+                if (app.container.settingsStore.floatingBallEnabled.first()) {
+                    FloatingBallService.start(context)
                 }
             } finally {
                 pendingResult.finish()

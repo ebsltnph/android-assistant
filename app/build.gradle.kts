@@ -52,6 +52,8 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
+    // 扩展图标（识图/提醒/记录等，P6 悬浮球浮动界面用）
+    implementation(libs.compose.material.icons.extended)
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.androidx.lifecycle.runtime.compose)
 

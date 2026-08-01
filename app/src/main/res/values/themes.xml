@@ -4,4 +4,15 @@
     <style name="Theme.Assistant" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@android:color/white</item>
     </style>
+
+    <!-- 浮动界面（悬浮球展开面板）用：透明窗口，让下层 App 可见，
+         变暗/光晕/面板全部由 Compose 内容绘制 -->
+    <style name="Theme.Assistant.Translucent" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

@@ -93,13 +93,21 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - 分享到助手：文本预填输入框；图片进附件栏，**文字+图片一起发给视觉模型**（不自动分析）
   - 识屏能力指派（Capability.VISION）+ 视觉模型引导 + SCREEN_SENSE 提示词（第 10 组可编辑）
   - 横屏识屏不旋转（fullSensor，见平台注意事项）
-- [ ] P6 悬浮球 + 磁贴 + 小部件
+- [x] **P6 悬浮球 + 浮动界面**（2026-08-02 完成并真机验证，待推送）
+  - **悬浮球**：FloatingBallService（FGS specialUse + PROPERTY_SPECIAL_USE_FGS_SUBTYPE，通知 3004）；OverlayWindow 通用悬浮窗（从 P5 小窗抽取 OverlayOwners/addView/moveBy）；玻璃拟态渐变球，拖拽贴边半隐藏（露出 32dp——**太窄会落在返回手势区点击无反应**）；点击/拖动用**总位移阈值**判定（detectDragGestures 的 onDragCancel 判定点击不可靠——荣耀触摸噪声会把点击判成拖动）
+  - **浮动界面**：FloatingPanelActivity（透明 Activity + 独立 task `taskAffinity=""` + excludeFromRecents + fullSensor + adjustResize + configChanges）——系统返回手势原生退出回原 App；深墨夜景变暗层 + 噪点蒙层 + **7 个动态光斑**（顺时针/逆时针沿边缘游走 + Lissajous 穿越，大小/亮度/速度各异，小斑更亮）；四气泡（识图/提醒/记录/对话）显示于背景上（无大框）；glassmorphism 风格（白 5-12% 玻璃 + 1px 白描边 + 大圆角 + 香槟金 #E4B863 强调色）
+  - **面板与聊天同一会话**：ChatViewModel 提升为 AppContainer 进程级共享单例（去 ViewModel 继承，自建 scope）；quickSend/createReminderNow/writeDiaryNow/quickSendVision（识图模式带图对话）/quickAnalyzeResult（按钮分析结果 = 截图+提示词+结果完整入聊天记录）
+  - **识屏统一**：ScreenSenseStarter（requestCapture/finishAuth/abort/instructionFor）；P5 小窗退役删除；**悬浮球路径走独立 task 权限 Activity（MediaProjectionPermissionActivity，不闪现 App 界面）**；**聊天/磁贴路径走 MainActivity 内授权（主 task，moveTaskToBack 才正确回上一个 App）**——两者不能互换（独立 task 的 moveTaskToBack 退空 task，主 task 不动会截到助手自己）
+  - **panelState 状态机**（HIDDEN/PANEL_OPEN/CAPTURING）：驱动悬浮球显隐（截屏期隐藏防截进截图）；**onDestroy 不一定执行**（系统回收 Activity）→ onStop 恢复状态 + FloatingPanelActivity.isPanelOpen 自愈 + CAPTURING 60s 超时兜底；**onDestroy 只重置自己置的状态**（无条件重置会覆盖 CAPTURING，悬浮球提前重现被截进截图）
+  - 截屏延迟按入口区分：悬浮球 1.2s（通知栏已收起）/ 聊天磁贴 2.5s（通知栏可能展开）
+  - 输入"识屏/识图"类指令：本地关键词直连 + **LLM 分类命中（screenSenseRequested 事件）也直连**浮动界面识图流程（不依赖后台 MainActivity 中转）
+  - 设置页「悬浮球」开关卡片 + Application/BootReceiver 开机自启
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，用户要求每个功能阶段完成后推送）
 详细计划见 `C:\Users\98662\.claude\plans\indexed-booping-mccarthy.md`。
 
-**下次会话待办**：① P5 已完成并真机验证、已推送（2026-08-01）；② P6 悬浮球 + 快捷磁贴 + 小部件（悬浮球可复用 ScreenResultOverlay 的 overlay 基础设施）；③ 识屏小窗 UI 优化（用户要求整体 UI 优化时一起做，先问用户具体要求）；④ 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）。
+**下次会话待办**：① P6 已完成并真机验证（2026-08-02），待推送 GitHub；② P7 真·语音唤醒词（可选，真机验证语音方案）；③ 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）；④ 桌面小部件（原 P6 范围，用户决定本次不做，留待后续）。
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 
@@ -120,3 +128,9 @@ GitHub：https://github.com/ebsltnph/android-assistant（master，用户要求�
 - **悬浮窗 ComposeView（踩坑）**：WindowManager overlay 里用 ComposeView 会崩 `ViewTreeLifecycleOwner not found`（overlay 不是 Activity 窗口）——必须手动 `setViewTreeLifecycleOwner/setViewTreeViewModelStoreOwner/setViewTreeSavedStateRegistryOwner`（OverlayOwners 类，ScreenResultOverlay.kt）；且 `SavedStateRegistryController.performRestore` 要求 lifecycle 在 INITIALIZED 时调用（先 restore 再提升状态，顺序见 OverlayOwners.moveToStart）
 - **横屏环境识屏（踩坑）**：横屏 App（视频/游戏锁横屏）里点磁贴触发识屏时，MainActivity（默认方向）启动会把屏幕拉回竖屏——**旋转动画会打断 MediaProjection 授权框**（丢失、需重新点击）。onCreate 里 `setRequestedOrientation` 无效（系统在 Activity 创建前就按 manifest 解析方向开始旋转，onCreate 时 Display.rotation 已读成新方向）。正解：**MainActivity 声明 `android:screenOrientation="fullSensor"`**（跟随传感器：横拿=横屏加载无动画，竖拿=竖屏正常），onCreate 里检测到横屏再 `setRequestedOrientation(SENSOR_LANDSCAPE)` 锁稳授权流程，授权结束恢复 FULL_SENSOR
 - **视觉模型流式（踩坑）**：识屏视觉调用流式分支 maxTokens 也要 4096（2048 会被推理模型思考过程吃光、content 为空返回"模型没有返回内容"）；非流式小窗按钮 4096 已对
+- **悬浮球点击无反应（P6 踩坑）**：① 贴边半隐藏露出太窄（<32dp）时，可见区域落在荣耀**返回手势区**——触摸被系统手势吃掉，点击永远无反应（露出 32dp 以上才可靠）；② 点击判定别用 detectDragGestures 的 onDragCancel（荣耀触摸采样噪声大，点击微动会被判成拖动把球拖走），用**按下到抬起总位移 < touchSlop** 判定点击
+- **独立 task 授权 Activity 的 moveTaskToBack（P6 踩坑）**：悬浮球识图走独立 task 的 MediaProjectionPermissionActivity 是对的（不闪现 App 界面）；但**聊天/磁贴必须走 MainActivity 主 task 内授权**——独立 task 的 moveTaskToBack 退的是自己的空 task，主 task 不动，截屏会截到助手自己（用户反馈"磁贴识图后回到 app 聊天"）
+- **onDestroy 不一定执行（P6 踩坑）**：系统回收 Activity 时只有 onStop 保证回调——依赖 onDestroy 做状态恢复会卡死（panelState 停在 PANEL_OPEN → 悬浮球永久隐藏，开关重开也没用）。对策：onStop 恢复状态 + isPanelOpen 自愈标记 + CAPTURING 60s 超时兜底；**onDestroy 只重置自己置的状态**（无条件重置会覆盖识屏中的 CAPTURING，悬浮球提前重现被截进截图）
+- **adb input 注入触摸到不了 overlay 悬浮窗（P6 踩坑）**：`adb shell input tap/swipe` 的注入事件不投递给 TYPE_APPLICATION_OVERLAY 窗口——悬浮球点击没法自动化验证，必须真人手点
+- **窗口级模糊在荣耀不可用（P6 踩坑）**：FLAG_BLUR_BEHIND + 反射 setBlurBehindRadius 均无效（荣耀没开放）——用「深墨变暗层 + 噪点蒙层 + 动态光晕」模拟毛玻璃氛围
+- **FGS(specialUse) 后台启动 Activity（P6 已验证可用）**：悬浮球服务（FGS specialUse）startActivity 开浮动界面，SYSTEM_ALERT_WINDOW 权限豁免后台启动限制（荣耀上有效）；BOOT_COMPLETED 启动 FGS 是豁免场景
