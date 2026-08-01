@@ -1,6 +1,9 @@
 package com.example.assistant.feature.settings
 
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -42,7 +46,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.assistant.AssistantApplication
 import com.example.assistant.core.network.Capability
@@ -74,6 +81,19 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     var editing by remember { mutableStateOf<ProviderProfile?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
     var editingPromptKey by remember { mutableStateOf<PromptStore.PromptKey?>(null) }
+
+    // 悬浮窗权限状态（识屏小窗需要）；从系统设置页返回时刷新
+    var overlayGranted by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                overlayGranted = Settings.canDrawOverlays(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -155,6 +175,29 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             SearchSettingsCard(
                 apiKey = vm.searchApiKey.collectAsState().value,
                 onSaveKey = { vm.saveSearchApiKey(it) }
+            )
+        }
+
+        item { HorizontalDivider() }
+        item { Text("识屏", style = MaterialTheme.typography.titleLarge) }
+        item {
+            // 视觉模型状态：能力指派 → 默认档案兜底（与 ProviderRegistry.profileFor 一致）
+            val visionProfile = remember(assignments, profiles) {
+                val assignedId = assignments[Capability.VISION]
+                profiles.firstOrNull { it.id == assignedId }
+                    ?: profiles.firstOrNull { it.isDefault }
+            }
+            ScreenSenseSettingsCard(
+                visionProfile = visionProfile,
+                overlayGranted = overlayGranted,
+                onOpenOverlaySettings = {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                    )
+                }
             )
         }
 
@@ -265,6 +308,60 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             key = key,
             onDismiss = { editingPromptKey = null }
         )
+    }
+}
+
+/**
+ * 识屏设置卡片：视觉模型配置状态 + 悬浮窗权限引导。
+ * （识屏入口：聊天说「识屏」/ 快捷磁贴 / 分享 / 聊天上传图片）
+ */
+@Composable
+private fun ScreenSenseSettingsCard(
+    visionProfile: ProviderProfile?,
+    overlayGranted: Boolean,
+    onOpenOverlaySettings: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("识别屏幕 / 图片", style = MaterialTheme.typography.titleSmall)
+            // 视觉模型状态
+            when {
+                visionProfile == null || !visionProfile.isConfigured() -> Text(
+                    "⚠️ 未配置识屏模型。请在「能力指派」中把「识屏（视觉）」指派给支持图片输入的模型" +
+                        "（如通义 qwen-vl、智谱 GLM-4V、Kimi vision、OpenAI gpt-4o）；" +
+                        "DeepSeek 官方 API 不支持图片。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                !visionProfile.supportsVision -> Text(
+                    "⚠️ 识屏模型：${visionProfile.name}（未勾选「支持图片输入」，编辑该提供商开启）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                else -> Text(
+                    "✓ 识屏模型：${visionProfile.name}（${visionProfile.model}）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            // 悬浮窗权限状态（识屏小窗显示在其他 App 上层需要）
+            Text(
+                if (overlayGranted) "悬浮窗权限：已开启 ✓"
+                else "⚠️ 悬浮窗权限未开启（识屏小窗需要）",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (overlayGranted) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                }
+            )
+            if (!overlayGranted) {
+                Button(onClick = onOpenOverlaySettings) { Text("去开启悬浮窗权限") }
+            }
+        }
     }
 }
 

@@ -1,5 +1,8 @@
 package com.example.assistant.feature.chat
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.assistant.core.agent.Agent
@@ -11,15 +14,20 @@ import com.example.assistant.core.agent.ReminderTimeParser
 import com.example.assistant.core.agent.Session
 import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.network.dto.ChatMessage
+import com.example.assistant.core.vision.ImageUtils
+import com.example.assistant.core.vision.ScreenSenseController
+import com.example.assistant.core.vision.VisionAnalyzer
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.EventRepository
 import com.example.assistant.data.repo.MemoryRepository
 import com.example.assistant.data.repo.ReminderRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 
 /** 聊天界面的一条消息 */
@@ -29,10 +37,19 @@ data class ChatUiMessage(
     val text: String,
     /** 推理模型的思考过程（独立于正式回答展示，带"思考过程"标注） */
     val thinking: String = "",
-    val streaming: Boolean = false
+    val streaming: Boolean = false,
+    /** 消息附带的图片缩略图（识屏截图 / 上传的图片），空表示无图 */
+    val image: Bitmap? = null
+)
+
+/** 待发送附件：缩略图（附件栏显示）+ base64（发送时给视觉模型） */
+data class PendingImage(
+    val thumbnail: Bitmap,
+    val base64: String
 )
 
 class ChatViewModel(
+    private val context: Context,
     private val agent: Agent,
     private val diaryRepository: DiaryRepository,
     private val memoryRepository: MemoryRepository,
@@ -41,7 +58,9 @@ class ChatViewModel(
     private val reminderTimeParser: ReminderTimeParser,
     private val reminderScheduler: ReminderScheduler,
     private val eventRepository: EventRepository,
-    private val eventExtractor: EventExtractor
+    private val eventExtractor: EventExtractor,
+    private val visionAnalyzer: VisionAnalyzer,
+    private val screenSenseController: ScreenSenseController
 ) : ViewModel() {
 
     private val _messages = MutableStateFlow<List<ChatUiMessage>>(emptyList())
@@ -56,55 +75,164 @@ class ChatViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
+    /** 待发送图片附件（分享/上传后等待用户输入文字，一起发送） */
+    private val _pendingImage = MutableStateFlow<PendingImage?>(null)
+    val pendingImage: StateFlow<PendingImage?> = _pendingImage
+
     private val session = Session()
     private var counter = 0L
 
     /** 助手消息 id → 触发它的请求消息（重新生成用） */
     private val regenerateMessages = mutableMapOf<Long, List<ChatMessage>>()
 
+    init {
+        // 识屏小窗「在 App 中继续」：截图加入附件栏（等用户输入命令，
+        // 文字+图片一起发给视觉模型）；小窗里已分析的结果作为一条助手消息保留
+        viewModelScope.launch {
+            screenSenseController.results.collect { result ->
+                if (result.imagePath.isNotEmpty()) {
+                    addFileAttachment(result.imagePath)
+                }
+                if (result.resultText.isNotBlank()) {
+                    append(ChatUiMessage(counter++, "assistant", result.resultText))
+                    session.addAssistant(result.resultText)
+                }
+            }
+        }
+        // 外部分享图片 → 附件栏（不自动分析，等用户输入要求一起发送）
+        viewModelScope.launch {
+            screenSenseController.imageShares.collect { share ->
+                loadImageToPending(share.uri)
+            }
+        }
+        // 外部分享文本 → 预填输入框（用户确认后发送）
+        viewModelScope.launch {
+            screenSenseController.textShares.collect { text ->
+                _inputText.value = text
+            }
+        }
+    }
+
     fun setInput(text: String) {
         _inputText.value = text
     }
 
+    /** 聊天上传/分享图片 → 读图、缩放、进入附件栏 */
+    fun setPendingImageFromUri(uri: Uri) = loadImageToPending(uri)
+
+    fun removePendingImage() {
+        _pendingImage.value = null
+    }
+
+    private fun loadImageToPending(uri: Uri) {
+        viewModelScope.launch {
+            val bitmap = withContext(Dispatchers.IO) {
+                ImageUtils.readUriBitmap(context, uri)
+            }
+            if (bitmap == null) {
+                _error.value = "无法读取这张图片，请换一张试试"
+                return@launch
+            }
+            _pendingImage.value = PendingImage(
+                thumbnail = ImageUtils.thumbnail(bitmap),
+                base64 = ImageUtils.bitmapToBase64(bitmap)
+            )
+        }
+    }
+
+    /** 本地截图文件加入附件栏（识屏小窗「在 App 中继续」），与分享/上传图片同一交互 */
+    private fun addFileAttachment(path: String) {
+        viewModelScope.launch {
+            val bitmap = withContext(Dispatchers.IO) {
+                try {
+                    android.graphics.BitmapFactory.decodeFile(path)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            if (bitmap == null) {
+                _error.value = "无法读取截图，请重新识屏"
+                return@launch
+            }
+            _pendingImage.value = PendingImage(
+                thumbnail = ImageUtils.thumbnail(bitmap),
+                base64 = ImageUtils.bitmapToBase64(bitmap)
+            )
+        }
+    }
+
     fun send() {
         val text = _inputText.value.trim()
-        if (text.isEmpty() || _isStreaming.value) return
+        val image = _pendingImage.value
+        if (text.isEmpty() && image == null) return
+        if (_isStreaming.value) return
         _inputText.value = ""
-        session.addUser(text)
+        _pendingImage.value = null
         viewModelScope.launch {
-            _messages.update { it + ChatUiMessage(counter++, "user", text) }
             _isStreaming.value = true
             _error.value = null
-
-            // 带上长期记忆 + 会话历史（含当前消息）：多轮上下文 + 记忆注入
-            val memoryText = memoryRepository.memoryContextText()
-            when (val result = agent.route(text, memoryText = memoryText, history = session.all)) {
-                is AgentResult.Command -> {
-                    val hint = executeCommand(result.intent)
-                    append(ChatUiMessage(counter++, "assistant", hint))
-                    session.addAssistant(hint)
-                }
-                is AgentResult.Error -> {
-                    val msg = "⚠️ ${result.message}"
-                    append(ChatUiMessage(counter++, "assistant", msg))
-                    session.addAssistant(msg)
-                }
-                is AgentResult.ChatRequested -> {
-                    // 记录类请求：聊天照常流式回复，同时把用户原话同步写入日记本（不丢失）
-                    result.recordHint?.let { hint -> writeDiary(text, hint.bookName) }
-                    // 所有对话都后台做记忆抽取（importance 过滤兜底）——
-                    // 防止"你要记得"这类不带"记录"关键词但值得记住的信息被漏掉
-                    extractMemoryInBackground(text)
-                    val streamingId = counter++
-                    // 记住请求消息，供"重新生成"复用
-                    regenerateMessages[streamingId] = result.messages
-                    append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
-                    val answer = streamReply(result.messages, streamingId)
-                    session.addAssistant(answer)
-                }
+            if (image != null) {
+                sendWithImage(text, image)
+            } else {
+                sendText(text)
             }
             _isStreaming.value = false
         }
+    }
+
+    /** 普通文字消息：搜索判断 + 路由 + 流式回复（原有逻辑） */
+    private suspend fun sendText(text: String) {
+        session.addUser(text)
+        _messages.update { it + ChatUiMessage(counter++, "user", text) }
+
+        // 带上长期记忆 + 会话历史（含当前消息）：多轮上下文 + 记忆注入
+        val memoryText = memoryRepository.memoryContextText()
+        when (val result = agent.route(text, memoryText = memoryText, history = session.all)) {
+            is AgentResult.Command -> {
+                val hint = executeCommand(result.intent)
+                append(ChatUiMessage(counter++, "assistant", hint))
+                session.addAssistant(hint)
+            }
+            is AgentResult.Error -> {
+                val msg = "⚠️ ${result.message}"
+                append(ChatUiMessage(counter++, "assistant", msg))
+                session.addAssistant(msg)
+            }
+            is AgentResult.ChatRequested -> {
+                // 记录类请求：聊天照常流式回复，同时把用户原话同步写入日记本（不丢失）
+                result.recordHint?.let { hint -> writeDiary(text, hint.bookName) }
+                // 所有对话都后台做记忆抽取（importance 过滤兜底）——
+                // 防止"你要记得"这类不带"记录"关键词但值得记住的信息被漏掉
+                extractMemoryInBackground(text)
+                val streamingId = counter++
+                // 记住请求消息，供"重新生成"复用
+                regenerateMessages[streamingId] = result.messages
+                append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
+                val answer = streamReply(result.messages, streamingId)
+                session.addAssistant(answer)
+            }
+        }
+    }
+
+    /**
+     * 附件消息：文字要求 + 图片**一起**发给「识屏」视觉模型（流式）。
+     * 图片不重发进会话（占位文本），后续追问基于回复文本走普通聊天。
+     */
+    private suspend fun sendWithImage(text: String, image: PendingImage) {
+        val placeholder = if (text.isNotEmpty()) "[📷 用户发送了一张图片]\n$text" else "[📷 用户发送了一张图片]"
+        session.addUser(placeholder)
+        _messages.update { it + ChatUiMessage(counter++, "user", text, image = image.thumbnail) }
+        // 未配置视觉模型 → 明确引导，不发起无意义的调用
+        if (visionAnalyzer.visionProfile() == null) {
+            append(ChatUiMessage(counter++, "assistant", VisionAnalyzer.GUIDE_TEXT))
+            session.addAssistant(VisionAnalyzer.GUIDE_TEXT)
+            return
+        }
+        val streamingId = counter++
+        append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
+        val instruction = text.ifBlank { "请描述这张图片" }
+        val answer = streamVisionReply(image.base64, instruction, streamingId)
+        session.addAssistant(answer)
     }
 
     /**
@@ -126,6 +254,32 @@ class ChatViewModel(
             updateMessage(messageId) { it.copy(streaming = false) }
         } catch (e: Exception) {
             val tail = "\n\n[出错：${e.message}]"
+            acc += tail
+            updateMessage(messageId) { it.copy(text = acc, streaming = false) }
+        }
+        return acc
+    }
+
+    /** 视觉模型流式回复（附件图片），失败信息附到消息尾部 */
+    private suspend fun streamVisionReply(imageBase64: String, instruction: String, messageId: Long): String {
+        var acc = ""
+        try {
+            visionAnalyzer.analyzeStream(imageBase64, instruction).collect { chunk ->
+                val delta = chunk.choices.firstOrNull()?.delta
+                val text = delta?.textContent.orEmpty()
+                if (text.isNotEmpty()) {
+                    acc += text
+                    updateMessage(messageId) { it.copy(text = acc) }
+                }
+            }
+            // 兜底：流式结束仍无内容（模型返回空/思考吃光配额等），给出明确提示
+            if (acc.isBlank()) {
+                acc = "（模型没有返回内容，可能思考过程占满输出长度。可关闭思考或更换视觉模型后重试）"
+                updateMessage(messageId) { it.copy(text = acc) }
+            }
+            updateMessage(messageId) { it.copy(streaming = false) }
+        } catch (e: Exception) {
+            val tail = "\n\n[识屏出错：${e.message}]"
             acc += tail
             updateMessage(messageId) { it.copy(text = acc, streaming = false) }
         }
@@ -167,15 +321,19 @@ class ChatViewModel(
 
     /**
      * 执行命令类意图（本地执行，不走 LLM），返回展示给用户的提示文本。
-     * 已实现：设提醒（LLM 解析时间 + AlarmManager 排程）；记录类见 saveDiaryFromChat；
-     * 事件监控（MonitorEvent）在 P4 事件监控部分接入。
+     * 已实现：设提醒（LLM 解析时间 + AlarmManager 排程）；识屏（请求授权 → 悬浮小窗）；
+     * 记录类见 sendText 的 recordHint；事件监控（MonitorEvent）见 createMonitoredEvent。
      */
     private suspend fun executeCommand(intent: AssistantIntent): String = when (intent) {
         // 防御：正常路由下 RecordDiary 不会走到这里（Agent 已转为聊天+recordHint）
         is AssistantIntent.RecordDiary -> "📔 已记入日记本"
         is AssistantIntent.SetReminder -> createReminder(intent)
-        is AssistantIntent.ScreenSense ->
-            "👁️ 收到识屏指令（${intent.action}）\n（识屏功能将在后续阶段开放）"
+        is AssistantIntent.ScreenSense -> {
+            // 请求 MainActivity 弹 MediaProjection 授权；截屏后悬浮小窗弹出，
+            // 快捷按钮（提取文字/翻译/描述）直接在任意 App 上层完成分析
+            screenSenseController.requestScreenSense(intent.action)
+            "👁️ 正在准备识屏…\n请在系统弹出的窗口中点「允许」，截屏后小窗会出现在屏幕上方"
+        }
         is AssistantIntent.MonitorEvent -> createMonitoredEvent(intent)
         is AssistantIntent.Chat -> intent.text
     }

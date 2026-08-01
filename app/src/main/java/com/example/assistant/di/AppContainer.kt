@@ -20,7 +20,10 @@ import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
 import com.example.assistant.core.storage.SummaryStore
+import com.example.assistant.core.vision.ScreenSenseController
+import com.example.assistant.core.vision.VisionAnalyzer
 import com.example.assistant.data.db.AppDatabase
+import com.example.assistant.service.ScreenResultOverlay
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.EventRepository
 import com.example.assistant.data.repo.MemoryRepository
@@ -90,5 +93,12 @@ class AppContainer(context: Context) {
             promptStore = promptStore,
             summaryStore = summaryStore
         )
+    }
+
+    // ---- P5：识屏 / 分享 ----
+    val screenSenseController: ScreenSenseController by lazy { ScreenSenseController() }
+    val visionAnalyzer: VisionAnalyzer by lazy { VisionAnalyzer(providerRegistry, promptStore) }
+    val screenResultOverlay: ScreenResultOverlay by lazy {
+        ScreenResultOverlay(appContext, visionAnalyzer, screenSenseController)
     }
 }

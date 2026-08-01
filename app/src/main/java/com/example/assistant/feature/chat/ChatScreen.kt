@@ -1,6 +1,11 @@
 package com.example.assistant.feature.chat
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -8,11 +13,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Card
@@ -29,6 +39,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -40,6 +52,7 @@ import com.example.assistant.AssistantApplication
 /**
  * 聊天页（询问模式）。
  * - 文字提问 + 流式回答
+ * - 图片：点 + 上传（附件模式，文字要求与图片一起发给识屏模型）
  * - 语音输入：优先用手机输入法的麦克风键（免权限、识别质量好），备选"按住说话"后续阶段加
  */
 @Composable
@@ -48,6 +61,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
     val app = context.applicationContext as AssistantApplication
     val vm: ChatViewModel = viewModel {
         ChatViewModel(
+            context = app,
             agent = app.container.agent,
             diaryRepository = app.container.diaryRepository,
             memoryRepository = app.container.memoryRepository,
@@ -56,7 +70,9 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             reminderTimeParser = app.container.reminderTimeParser,
             reminderScheduler = app.container.reminderScheduler,
             eventRepository = app.container.eventRepository,
-            eventExtractor = app.container.eventExtractor
+            eventExtractor = app.container.eventExtractor,
+            visionAnalyzer = app.container.visionAnalyzer,
+            screenSenseController = app.container.screenSenseController
         )
     }
     val clipboard = LocalClipboardManager.current
@@ -65,6 +81,14 @@ fun ChatScreen(modifier: Modifier = Modifier) {
     val input by vm.inputText.collectAsState()
     val isStreaming by vm.isStreaming.collectAsState()
     val error by vm.error.collectAsState()
+    val pendingImage by vm.pendingImage.collectAsState()
+
+    // 相册选图（Photo Picker，免存储权限）
+    val pickImageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        uri?.let { vm.setPendingImageFromUri(it) }
+    }
 
     val listState = rememberLazyListState()
 
@@ -98,7 +122,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             ) {
                 Text("你好，我是随身助手", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "直接打字提问，或点键盘上的麦克风图标语音输入。\n也可以说「记录…」「提醒我…」「识屏…」，我会自动识别。",
+                    "直接打字提问，或点键盘上的麦克风图标语音输入。\n也可以说「记录…」「提醒我…」「识屏…」，我会自动识别。\n点 + 可以上传图片一起分析。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -109,7 +133,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(messages, key = { it.id }) { msg ->
@@ -135,16 +159,60 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             )
         }
 
+        // 附件栏：待发送图片（等用户输入文字要求一起发送）
+        pendingImage?.let { p ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Image(
+                    bitmap = p.thumbnail.asImageBitmap(),
+                    contentDescription = "待发送图片",
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                )
+                Column(Modifier.weight(1f)) {
+                    Text("已添加图片", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "输入要求后与图片一起发送",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = { vm.removePendingImage() }) {
+                    Icon(Icons.Filled.Close, contentDescription = "移除图片")
+                }
+            }
+        }
+
         OutlinedTextField(
             value = input,
             onValueChange = { vm.setInput(it) },
             placeholder = { Text("问问助手…") },
             trailingIcon = {
-                IconButton(
-                    onClick = { vm.send() },
-                    enabled = !isStreaming
-                ) {
-                    Icon(Icons.Filled.Send, contentDescription = "发送")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 上传图片（附件模式，与文字一起发给识屏模型）
+                    IconButton(
+                        onClick = {
+                            pickImageLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        enabled = !isStreaming
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = "添加图片")
+                    }
+                    IconButton(
+                        onClick = { vm.send() },
+                        enabled = !isStreaming
+                    ) {
+                        Icon(Icons.Filled.Send, contentDescription = "发送")
+                    }
                 }
             },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
@@ -182,6 +250,17 @@ private fun MessageBubble(
             modifier = Modifier.widthIn(max = 320.dp)
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                // 消息附带图片（识屏截图 / 上传图片）
+                msg.image?.let {
+                    Image(
+                        bitmap = it.asImageBitmap(),
+                        contentDescription = "消息图片",
+                        modifier = Modifier
+                            .width(180.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                    )
+                }
                 // 思考过程：灰色小字 + 标注（与正式回答分开）
                 if (msg.thinking.isNotEmpty()) {
                     Text(

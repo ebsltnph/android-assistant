@@ -22,6 +22,9 @@ object Notifier {
     private const val CHANNEL_REMINDER_SILENT = "reminder_silent"
     private const val CHANNEL_BRIEFING = "briefing"
 
+    /** 识屏：截屏前台服务的前台通知（IMPORTANCE_LOW 不打扰） */
+    const val CHANNEL_SCREEN_CAPTURE = "screen_capture"
+
     /** 创建通知渠道（幂等，可在 Application.onCreate 调用） */
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -44,6 +47,11 @@ object Notifier {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_BRIEFING, "清晨简报", NotificationManager.IMPORTANCE_DEFAULT
+            )
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_SCREEN_CAPTURE, "识屏", NotificationManager.IMPORTANCE_LOW
             )
         )
     }
@@ -129,6 +137,30 @@ object Notifier {
     const val EXTRA_BRIEFING_TEXT = "briefing_text"
     const val ACTION_SHOW_SUMMARY = "show_summary"
     const val ACTION_SHOW_BRIEFING = "show_briefing"
+    /** 识屏小窗「在 App 中继续」→ 回聊天页带截图与结果 */
+    const val ACTION_SHOW_SCREEN_SENSE = "show_screen_sense"
+
+    /** 识屏相关的引导提示（悬浮窗权限缺失等） */
+    fun notifyScreenSenseHint(context: Context, text: String) {
+        send(context, CHANNEL_SCREEN_CAPTURE, 3002, "识屏", text)
+    }
+
+    /**
+     * 「识屏准备中」提示：授权后 App 退后台、延迟截屏前提醒用户关闭通知栏
+     * （荣耀无法编程收起通知栏，截图会带上它）。截屏完成后由服务取消。
+     */
+    fun notifyScreenSensePreparing(context: Context) {
+        send(context, CHANNEL_SCREEN_CAPTURE, NOTIFY_ID_SCREEN_PREPARING, "识屏", "已就绪，请先关闭通知栏，即将截屏…")
+    }
+
+    fun cancelScreenSensePreparing(context: Context) {
+        try {
+            NotificationManagerCompat.from(context).cancel(NOTIFY_ID_SCREEN_PREPARING)
+        } catch (_: SecurityException) {
+        }
+    }
+
+    private const val NOTIFY_ID_SCREEN_PREPARING = 3003
 
     private const val REQUEST_SUMMARY_OPEN = 100
     private const val REQUEST_BRIEFING_OPEN = 101

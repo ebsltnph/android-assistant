@@ -86,14 +86,19 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **清晨简报**：MorningBriefingWorker（默认 7:30 分钟可配）；**昨日**小结（严格取昨天）+ 今日提醒 → LLM 组装；**落库首页随时可看** + 通知点击弹窗
   - **免打扰**：默认 23:00-07:00 分钟可配；提醒静默渠道、事件命中跳过
   - 所有时间设置**精确到分钟**（MinutePicker 组件：时+分下拉）
-- [ ] P5 智能识屏 + 分享到助手
+- [x] P5 智能识屏 + 分享到助手（2026-08-01 完成并真机验证，已推送）
+  - 识屏四入口：聊天指令/快捷磁贴/分享图片/聊天上传图片
+  - **识屏悬浮小窗**：截屏后弹在任意 App 上层（提取文字/翻译/描述直接分析显示，不用回 App）；「在 App 中继续」回聊天**附件栏**等命令（用户确认的交互：截图不自动发消息）
+  - 分享到助手：文本预填输入框；图片进附件栏，**文字+图片一起发给视觉模型**（不自动分析）
+  - 识屏能力指派（Capability.VISION）+ 视觉模型引导 + SCREEN_SENSE 提示词（第 10 组可编辑）
+  - 横屏识屏不旋转（fullSensor，见平台注意事项）
 - [ ] P6 悬浮球 + 磁贴 + 小部件
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，用户要求每个功能阶段完成后推送）
 详细计划见 `C:\Users\98662\.claude\plans\indexed-booping-mccarthy.md`。
 
-**下次会话待办**：① P4 已完成并真机验证（2026-08-01，待推送）；② P5 智能识屏 + 分享到助手。
+**下次会话待办**：① P5 已完成并真机验证、已推送（2026-08-01）；② P6 悬浮球 + 快捷磁贴 + 小部件（悬浮球可复用 ScreenResultOverlay 的 overlay 基础设施）；③ 识屏小窗 UI 优化（用户要求整体 UI 优化时一起做，先问用户具体要求）；④ 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）。
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 
@@ -109,3 +114,8 @@ GitHub：https://github.com/ebsltnph/android-assistant（master，用户要求�
 - **推理模型非流式请求（已踩坑）**：deepseek-v4-flash 是推理模型，**reasoning 思考过程占 max_tokens 配额**——maxTokens 小了会 `finish_reason=length` 且 content 为空（内容全在思考里）。非流式请求 maxTokens 要给足：小结 4096、记忆抽取 1024、意图分类/搜索判断/时间解析 1024、测试连接 512（流式聊天 2048 够用）
 - **v4 flash 的 JSON 输出（已踩坑）**：① `response_format=json_object` 支持不稳定——曾输出自相矛盾的 JSON（理由说要搜索却 need_search=false）和空 content；② 日期算术不可靠（"2分钟后"算成 7月3日）。对策：**JsonExtract 健壮解析**（剥围栏/提取 {} 子串/容忍字符串数字）+ **时间戳本地计算**（模型只输出结构化描述 dayOffset/hour/minute）+ **启发式兜底**（query 非空视为要搜索）
 - **force-stop 清闹钟（踩坑）**：`adb shell am force-stop` 会清掉 App 已排的 AlarmManager 闹钟（DB 里还是 pending）——装机验证提醒时**不要 force-stop**（`install -r` 本身够，会杀进程但保留闹钟）
+- **TileService 磁贴（踩坑）**：① API 34+ `startActivityAndCollapse(Intent)` 弃用并**直接抛 UnsupportedOperationException**（点击磁贴即崩溃、表现为"磁贴无法点击"）；官方替代（`registerActivity(PendingIntent)` + 无参 `startActivityAndCollapse()`）**API 36 才有**（compileSdk 35 编译不过）；② 荣耀系统类**裁剪了 `collapsePanels()`**（反射 NoSuchMethodException），普通 App 无法编程收起通知栏——磁贴触发识屏时通知栏停在屏幕上，截屏会带上它；③ 当前方案：截屏延迟 2.5s + 「识屏准备中」通知（Notifier.notifyScreenSensePreparing，截屏后自动取消）引导用户手动关闭通知栏；④ **待改进**：升级 compileSdk/targetSdk 36 后用官方 API（registerActivity）自动收起通知栏
+- **MediaProjection 权限（荣耀踩坑）**：荣耀把 `FOREGROUND_SERVICE_MEDIA_PROJECTION` 当运行时权限且**授权 MediaProjection 后/服务停止后不定时撤销**（dumpsys 查询时可能在、服务启动瞬间已没了）——服务 startForeground 直接 SecurityException 崩溃（进程死、App 退桌面）。对策：**授权返回后固定再请求一次该权限**（标准 Android 上已授予不弹框），服务内 startForeground 再 try-catch 兜底通知；另外 **MediaProjection 授权后前台仍是助手 App**，要识别"上一个 App"必须授权后 `moveTaskToBack` + 延迟截屏（服务延迟 2.5s），聊天触发时若从桌面打开助手会退回桌面（正确姿势是磁贴：在目标 App 里点磁贴，助手任务压在目标 App 之上，退后台自然回到目标 App）
+- **悬浮窗 ComposeView（踩坑）**：WindowManager overlay 里用 ComposeView 会崩 `ViewTreeLifecycleOwner not found`（overlay 不是 Activity 窗口）——必须手动 `setViewTreeLifecycleOwner/setViewTreeViewModelStoreOwner/setViewTreeSavedStateRegistryOwner`（OverlayOwners 类，ScreenResultOverlay.kt）；且 `SavedStateRegistryController.performRestore` 要求 lifecycle 在 INITIALIZED 时调用（先 restore 再提升状态，顺序见 OverlayOwners.moveToStart）
+- **横屏环境识屏（踩坑）**：横屏 App（视频/游戏锁横屏）里点磁贴触发识屏时，MainActivity（默认方向）启动会把屏幕拉回竖屏——**旋转动画会打断 MediaProjection 授权框**（丢失、需重新点击）。onCreate 里 `setRequestedOrientation` 无效（系统在 Activity 创建前就按 manifest 解析方向开始旋转，onCreate 时 Display.rotation 已读成新方向）。正解：**MainActivity 声明 `android:screenOrientation="fullSensor"`**（跟随传感器：横拿=横屏加载无动画，竖拿=竖屏正常），onCreate 里检测到横屏再 `setRequestedOrientation(SENSOR_LANDSCAPE)` 锁稳授权流程，授权结束恢复 FULL_SENSOR
+- **视觉模型流式（踩坑）**：识屏视觉调用流式分支 maxTokens 也要 4096（2048 会被推理模型思考过程吃光、content 为空返回"模型没有返回内容"）；非流式小窗按钮 4096 已对
