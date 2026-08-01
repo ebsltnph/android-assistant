@@ -19,6 +19,8 @@ object Notifier {
 
     private const val CHANNEL_DIARY_SUMMARY = "diary_summary"
     private const val CHANNEL_REMINDER = "reminder"
+    private const val CHANNEL_REMINDER_SILENT = "reminder_silent"
+    private const val CHANNEL_BRIEFING = "briefing"
 
     /** 创建通知渠道（幂等，可在 Application.onCreate 调用） */
     fun ensureChannels(context: Context) {
@@ -31,6 +33,17 @@ object Notifier {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_REMINDER, "提醒", NotificationManager.IMPORTANCE_HIGH
+            )
+        )
+        // 免打扰时段内触发的提醒走静默渠道（不响铃不振动，醒来可见）
+        nm.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_REMINDER_SILENT, "提醒（静默）", NotificationManager.IMPORTANCE_LOW
+            )
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_BRIEFING, "清晨简报", NotificationManager.IMPORTANCE_DEFAULT
             )
         )
     }
@@ -65,6 +78,37 @@ object Notifier {
         send(context, CHANNEL_REMINDER, id, title, body)
     }
 
+    /** 免打扰时段内的提醒：静默通知（不响铃不振动） */
+    fun notifyReminderSilent(context: Context, title: String, body: String, id: Int = 2000) {
+        send(context, CHANNEL_REMINDER_SILENT, id, title, body)
+    }
+
+    /** 清晨简报通知：点击打开 App 并弹窗显示简报全文 */
+    fun notifyBriefing(context: Context, briefing: String) {
+        val contentIntent = PendingIntent.getActivity(
+            context,
+            REQUEST_BRIEFING_OPEN,
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(EXTRA_ACTION, ACTION_SHOW_BRIEFING)
+                .putExtra(EXTRA_BRIEFING_TEXT, briefing),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_BRIEFING)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("🌅 清晨简报")
+            .setContentText(briefing.take(200))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(briefing))
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .build()
+        try {
+            NotificationManagerCompat.from(context).notify(NOTIFY_ID_BRIEFING, notification)
+        } catch (e: SecurityException) {
+            // 未授予 POST_NOTIFICATIONS 权限：通知静默丢弃
+        }
+    }
+
     private fun send(context: Context, channelId: String, id: Int, title: String, body: String) {
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification)
@@ -82,8 +126,12 @@ object Notifier {
 
     /** Intent extra：通知点击动作 */
     const val EXTRA_ACTION = "assistant_action"
+    const val EXTRA_BRIEFING_TEXT = "briefing_text"
     const val ACTION_SHOW_SUMMARY = "show_summary"
+    const val ACTION_SHOW_BRIEFING = "show_briefing"
 
     private const val REQUEST_SUMMARY_OPEN = 100
+    private const val REQUEST_BRIEFING_OPEN = 101
     private const val NOTIFY_ID_DIARY_SUMMARY = 1001
+    private const val NOTIFY_ID_BRIEFING = 1002
 }

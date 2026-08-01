@@ -45,8 +45,16 @@ class SecretStore(context: Context) {
         prefs.edit().putString(KEY_PROFILES, json.encodeToString<List<ProviderProfile>>(profiles)).apply()
     }
 
+    // ---- 搜索 API Key（Tavily；空串 = 用 keyless 模式） ----
+    fun searchApiKey(): String = prefs.getString(KEY_SEARCH_KEY, "").orEmpty()
+
+    fun saveSearchApiKey(key: String) {
+        prefs.edit().putString(KEY_SEARCH_KEY, key.trim()).apply()
+    }
+
     companion object {
         private const val TAG = "SecretStore"
         private const val KEY_PROFILES = "provider_profiles"
+        private const val KEY_SEARCH_KEY = "search_api_key"
     }
 }

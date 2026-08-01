@@ -2,11 +2,20 @@ package com.example.assistant.di
 
 import android.content.Context
 import com.example.assistant.core.agent.Agent
+import com.example.assistant.core.agent.DailyBriefingGenerator
 import com.example.assistant.core.agent.DailySummaryGenerator
+import com.example.assistant.core.agent.EventExtractor
+import com.example.assistant.core.agent.EventHitJudge
 import com.example.assistant.core.agent.IntentRouter
 import com.example.assistant.core.agent.MemoryExtractor
 import com.example.assistant.core.agent.PromptBuilder
+import com.example.assistant.core.agent.ReminderTimeParser
+import com.example.assistant.core.agent.SearchJudger
+import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.network.ProviderRegistry
+import com.example.assistant.core.network.SearchClient
+import com.example.assistant.core.network.TavilySearchClient
+import com.example.assistant.core.quiet.QuietHours
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
@@ -46,11 +55,15 @@ class AppContainer(context: Context) {
     val providerRegistry: ProviderRegistry by lazy {
         ProviderRegistry(secretStore, settingsStore)
     }
+    val searchClient: SearchClient by lazy { TavilySearchClient(secretStore) }
 
     // ---- Agent 编排 ----
     val promptBuilder: PromptBuilder by lazy { PromptBuilder(promptStore) }
     val intentRouter: IntentRouter by lazy { IntentRouter(providerRegistry, promptStore) }
-    val agent: Agent by lazy { Agent(providerRegistry, promptBuilder, intentRouter) }
+    val searchJudger: SearchJudger by lazy { SearchJudger(providerRegistry, promptStore) }
+    val agent: Agent by lazy {
+        Agent(providerRegistry, promptBuilder, intentRouter, searchJudger, searchClient)
+    }
     val memoryExtractor: MemoryExtractor by lazy { MemoryExtractor(providerRegistry, promptStore) }
     val dailySummaryGenerator: DailySummaryGenerator by lazy {
         DailySummaryGenerator(
@@ -60,6 +73,22 @@ class AppContainer(context: Context) {
             summaryStore = summaryStore,
             summaryRepository = summaryRepository,
             appContext = appContext
+        )
+    }
+
+    // ---- P4：提醒 / 免打扰 / 搜索 / 事件监控 ----
+    val reminderTimeParser: ReminderTimeParser by lazy { ReminderTimeParser(providerRegistry, promptStore) }
+    val reminderScheduler: ReminderScheduler by lazy { ReminderScheduler(appContext) }
+    val quietHours: QuietHours by lazy { QuietHours(settingsStore) }
+    val eventExtractor: EventExtractor by lazy { EventExtractor(providerRegistry, promptStore) }
+    val eventHitJudge: EventHitJudge by lazy { EventHitJudge(providerRegistry, promptStore) }
+    val dailyBriefingGenerator: DailyBriefingGenerator by lazy {
+        DailyBriefingGenerator(
+            reminderRepository = reminderRepository,
+            summaryRepository = summaryRepository,
+            providerRegistry = providerRegistry,
+            promptStore = promptStore,
+            summaryStore = summaryStore
         )
     }
 }

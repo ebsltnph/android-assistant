@@ -36,8 +36,24 @@ class SummaryStore(context: Context) {
 
     suspend fun currentSummary(): String? = latestSummary.first()
 
+    // ---- 最新一份清晨简报（App 内随时可看，不必等通知） ----
+    val latestBriefing: Flow<String?> =
+        dataStore.data.map { it[KEY_BRIEFING_TEXT] }
+
+    val latestBriefingDate: Flow<String?> =
+        dataStore.data.map { it[KEY_BRIEFING_DATE] }
+
+    suspend fun saveBriefing(text: String, date: String) {
+        dataStore.edit {
+            it[KEY_BRIEFING_TEXT] = text
+            it[KEY_BRIEFING_DATE] = date
+        }
+    }
+
     companion object {
         private val KEY_SUMMARY_TEXT = stringPreferencesKey("latest_summary_text")
         private val KEY_SUMMARY_DATE = stringPreferencesKey("latest_summary_date")
+        private val KEY_BRIEFING_TEXT = stringPreferencesKey("latest_briefing_text")
+        private val KEY_BRIEFING_DATE = stringPreferencesKey("latest_briefing_date")
     }
 }

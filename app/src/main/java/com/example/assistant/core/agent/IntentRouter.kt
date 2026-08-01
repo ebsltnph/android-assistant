@@ -4,24 +4,18 @@ import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.network.dto.ChatRequest
-import com.example.assistant.core.network.dto.ResponseFormat
 import com.example.assistant.core.storage.PromptStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * 意图路由：关键词快速路径（免网络、省电）→ LLM 分类兜底 → 聊天兜底。
+ * 分类不用 response_format=json_object（v4 flash 支持不稳定），见 JsonExtract 说明。
  */
 class IntentRouter(
     private val providerRegistry: ProviderRegistry,
     private val promptStore: PromptStore
 ) {
-
-    private val json = Json { ignoreUnknownKeys = true }
 
     /** 关键词路由（纯本地，不联网）。返回 null 表示未命中，需要 LLM 或聊天兜底 */
     fun keywordRoute(text: String): AssistantIntent? {
@@ -78,16 +72,15 @@ class IntentRouter(
                     ChatMessage("user", text)
                 ),
                 temperature = 0.0,
-                // 512：推理模型思考占配额（v4 flash 曾因 100 被吃光返回空分类）
-                maxTokens = 512,
-                responseFormat = ResponseFormat("json_object"),
+                // 1024：推理模型思考占配额（v4 flash 曾因 512 被吃光返回空分类）
+                maxTokens = 1024,
                 thinking = thinking,
                 reasoningEffort = effort
             )
             val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
             val content = response.choices.firstOrNull()?.message?.textContent ?: return@withContext null
-            val obj = json.parseToJsonElement(content).jsonObject
-            when (obj["intent"]?.jsonPrimitive?.content) {
+            val obj = JsonExtract.objectOf(content) ?: return@withContext null
+            when (JsonExtract.str(obj, "intent")) {
                 "record_diary" -> AssistantIntent.RecordDiary(text)
                 "set_reminder" -> AssistantIntent.SetReminder(text, text)
                 "screen_sense" -> AssistantIntent.ScreenSense(ScreenAction.EXTRACT_TEXT)
@@ -116,6 +109,7 @@ class IntentRouter(
         private val KEYWORDS_DIARY = listOf("记录", "记一下", "写日记", "记到", "帮我记")
         private val KEYWORDS_REMINDER = listOf("提醒", "闹钟", "到点", "待办")
         private val KEYWORDS_SCREEN = listOf("识屏", "截屏", "截个屏", "这个屏幕", "翻译这个")
-        private val KEYWORDS_MONITOR = listOf("搜索", "查一下", "帮我留意", "关注", "新闻", "盯一下")
+        // 监控只保留"持续关注"类明确意图；"搜索/查一下/新闻"走聊天 → 对话搜索（全 LLM 判断）
+        private val KEYWORDS_MONITOR = listOf("关注", "帮我留意", "盯一下", "持续关注")
     }
 }

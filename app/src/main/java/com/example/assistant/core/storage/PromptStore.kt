@@ -75,7 +75,66 @@ importance 是 1-10 的整数，标准：
         /** 意图分类提示词：关键词未命中时兜底分类 */
         INTENT_CLASSIFIER(
             stringPreferencesKey("intent_classifier_prompt"),
-            """判断用户这句话的意图，只输出一个 JSON 对象：{"intent":"chat|record_diary|set_reminder|screen_sense|monitor_event","reason":"一句话理由"}。规则：record_diary=记录/写日记；set_reminder=设置提醒/闹钟；screen_sense=识屏/截屏/翻译屏幕内容；monitor_event=搜索/关注某个话题或新闻事件；chat=其他日常问答。不要输出其他内容。"""
+            """判断用户这句话的意图，只输出一个 JSON 对象：{"intent":"chat|record_diary|set_reminder|screen_sense|monitor_event","reason":"一句话理由"}。规则：record_diary=记录/写日记；set_reminder=设置提醒/闹钟；screen_sense=识屏/截屏/翻译屏幕内容；monitor_event=持续关注某个话题或新闻事件（明确的"关注/帮我留意/盯"类长期监控请求）；chat=其他日常问答（包括"查一下/搜一下"这种一次性查询，会走联网搜索）。不要输出其他内容。"""
+        ),
+
+        /** 提醒时间解析提示词：把自然语言时间解析成结构化描述（时间戳由代码计算，模型不算日期） */
+        REMINDER_PARSE(
+            stringPreferencesKey("reminder_parse_prompt"),
+            """把用户的提醒需求解析成结构化 JSON。只输出一个 JSON 对象：{"title":"提醒内容","dayOffset":数字,"hour":数字,"minute":数字,"offsetMinutes":数字或null,"repeat":"daily或weekly或null","weekday":数字}。
+规则：
+- dayOffset：相对今天的偏移（0=今天，1=明天，2=后天）；"X分钟后"时 offsetMinutes 填分钟数，dayOffset/hour/minute 都填 0
+- hour/minute：24 小时制（"下午3点"=15和0；"12点半"=12和30）
+- "每天上午9点"→repeat=daily，hour=9；"每周一上午10点"→repeat=weekly，weekday=1（周一=1，周日=7），dayOffset=0
+- title 是去掉时间表述后的提醒内容（"明天下午3点开会"→"开会"）
+不要输出其他内容。"""
+        ),
+
+        /** 事件监控抽取提示词：把"关注 XX"需求解析成结构化 JSON */
+        MONITOR_EXTRACT(
+            stringPreferencesKey("monitor_extract_prompt"),
+            """把用户的"关注/监控"需求解析成结构化 JSON。只输出一个 JSON 对象：{"displayName":"显示名称","searchQuery":"搜索词","conditionKeywords":"命中关键词（逗号分隔，没有则空字符串）","customRule":"自定义判断规则（空字符串）","includeDomains":"限定来源域名（逗号分隔，空字符串）"}。
+规则：
+- displayName 是简短的关注事项名称（如"华为新品发布"）
+- searchQuery 是给搜索引擎的搜索词（精简，如"华为 新品 发布"）
+- conditionKeywords 是"出现什么内容算命中"的关键词；用户没给具体条件时留空（交给智能判断）
+- customRule：用户额外要求的判断标准原文；**当用户说"只关注/只看"某个具体页面、文档或来源时，必须把该标准写入 customRule**（如"只关注 /zh-cn/updates 更新文档的内容变更"、"忽略谣言"、"只看官方公告"）；用户没提时留空
+- includeDomains：用户指定只看的网站域名（从 URL 提取域名，如 https://api-docs.deepseek.com/zh-cn/updates → api-docs.deepseek.com）；没指定时留空
+不要输出其他内容。"""
+        ),
+
+        /** 事件命中判断提示词：搜索结果是否命中关注事件 */
+        EVENT_HIT(
+            stringPreferencesKey("event_hit_prompt"),
+            """判断搜索结果是否命中用户关注的新闻事件。只输出一个 JSON 对象：{"hit":true或false,"reason":"一句话理由"}。
+关注事件：{event}
+搜索结果：
+{results}
+命中标准：结果与关注主题直接相关（提到搜索词对应的实体/事件），且满足条件关键词（如有）。笼统提一句或完全无关不算命中。不要输出其他内容。"""
+        ),
+
+        /** 清晨简报提示词：今日提醒 + 昨日小结 → 简报文本 */
+        BRIEFING(
+            stringPreferencesKey("briefing_prompt"),
+            """你是一位清晨播报助手。根据下面的素材生成一份温暖的清晨简报（简体中文，不超过 6 句）：
+素材：
+今日提醒：{reminders}
+昨日小结：{summary}
+要求：
+- 先问候，然后逐条列出今日提醒（没有则说"今天没有预设提醒"）
+- 最后引用昨日小结里的一两个亮点（没有小结则省略）
+- 不要编造素材里没有的内容"""
+        ),
+
+        /** 搜索判断提示词：每条对话消息先判断是否需要联网搜索（全 LLM 判断） */
+        SEARCH_JUDGE(
+            stringPreferencesKey("search_judge_prompt"),
+            """判断用户这句话是否需要联网搜索。只输出一个 JSON 对象：{"need_search": 布尔值, "query": "搜索词（不需要搜索则为空字符串）", "reason": "一句话理由"}。
+强制规则（满足任意一条就必须 need_search=true）：
+- 消息包含"查一下""搜一下""搜索""最新""最近""怎么样了""多少钱""天气""新闻""进展""发布"等查询词
+- 询问任何需要实时/最新/外部信息的问题（新闻事件、产品发布、价格、天气、人物背景、技术动态等）
+不需要搜索：日常闲聊、记录/提醒类、纯计算/翻译/写作。
+query 是精简后的搜索关键词（去掉语气词）。不要输出其他内容。"""
         )
     }
 }

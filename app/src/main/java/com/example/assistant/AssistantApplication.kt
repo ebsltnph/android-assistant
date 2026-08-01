@@ -2,11 +2,15 @@ package com.example.assistant
 
 import android.app.Application
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.example.assistant.core.notification.Notifier
 import com.example.assistant.di.AppContainer
 import com.example.assistant.worker.DailySummaryWorker
+import com.example.assistant.worker.EventPollWorker
+import com.example.assistant.worker.MorningBriefingWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -32,30 +36,99 @@ class AssistantApplication : Application() {
         }
         Notifier.ensureChannels(this)
         scheduleDailySummaryWithSetting()
+        scheduleEventPoll()
+        scheduleBriefingWithSetting()
+        // 提醒清理：已触发超 24h 的一次性提醒 + 已过期未触发的僵尸提醒（列表不堆积）
+        appScope.launch {
+            val now = System.currentTimeMillis()
+            // 僵尸提醒先取消闹钟（过期时间戳的精确闹钟可能立即触发），再删除
+            container.reminderRepository.stalePending(now).forEach {
+                container.reminderScheduler.cancel(it.id)
+            }
+            container.reminderRepository.deleteStalePending(now)
+            container.reminderRepository.cleanupFired(now - 24 * 3600_000L)
+        }
+    }
+
+    /** 新闻事件轮询：周期 6 小时（各事件按 pollHours 在 Worker 内过滤） */
+    private fun scheduleEventPoll() {
+        val request = PeriodicWorkRequestBuilder<EventPollWorker>(6, TimeUnit.HOURS)
+            .build()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            WORK_EVENT_POLL_NAME,
+            ExistingPeriodicWorkPolicy.REPLACE,
+            request
+        )
     }
 
     /**
-     * 每日总结：按设置的小时（默认 21:00）调度 WorkManager 周期任务。
+     * 清晨简报：按设置的时间（分钟数，默认 7:30=450）调度周期任务。
+     * 设置页修改后调用 [rescheduleBriefing] 重排（REPLACE 原子替换）。
+     */
+    fun rescheduleBriefing(minuteOfDay: Int) {
+        appScope.launch { scheduleBriefing(minuteOfDay) }
+    }
+
+    private fun scheduleBriefingWithSetting() {
+        appScope.launch {
+            scheduleBriefing(container.settingsStore.briefingMinuteOfDay.first())
+        }
+    }
+
+    private fun scheduleBriefing(minuteOfDay: Int) {
+        val request = PeriodicWorkRequestBuilder<MorningBriefingWorker>(24, TimeUnit.HOURS)
+            .setInitialDelay(initialDelayToMinute(minuteOfDay), TimeUnit.MILLISECONDS)
+            .build()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            WORK_BRIEFING_NAME,
+            ExistingPeriodicWorkPolicy.REPLACE,
+            request
+        )
+    }
+
+    /** 距下一个指定分钟时刻（当日 0 点起算的分钟数）的毫秒数 */
+    private fun initialDelayToMinute(minuteOfDay: Int): Long {
+        val cal = Calendar.getInstance()
+        val now = cal.timeInMillis
+        cal.set(Calendar.HOUR_OF_DAY, minuteOfDay / 60)
+        cal.set(Calendar.MINUTE, minuteOfDay % 60)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        var target = cal.timeInMillis
+        if (target <= now) target += 24 * 60 * 60 * 1000L
+        return target - now
+    }
+
+    /** 立即检查一次事件监控（提醒页「立即检查」按钮 / 调试用） */
+    fun runEventPollNow() {
+        WorkManager.getInstance(this).enqueueUniqueWork(
+            WORK_EVENT_POLL_NOW,
+            ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<EventPollWorker>().build()
+        )
+    }
+
+    /**
+     * 每日总结：按设置的时间（分钟数，默认 21:00=1260）调度 WorkManager 周期任务。
      * 设置页修改时间后调用 [rescheduleDailySummary] 重排任务。
-     * 注意：hour 由调用方直接传入（用户刚选的值），
+     * 注意：minute 由调用方直接传入（用户刚选的值），
      * 不要在这里异步读 DataStore——写入与读取并发时可能读到旧值，重排到错误时间。
      */
-    fun rescheduleDailySummary(hour: Int) {
+    fun rescheduleDailySummary(minute: Int) {
         appScope.launch {
-            scheduleDailySummary(hour)
+            scheduleDailySummary(minute)
         }
     }
 
     private fun scheduleDailySummaryWithSetting() {
         appScope.launch {
-            val hour = container.settingsStore.dailySummaryHour.first()
-            scheduleDailySummary(hour)
+            scheduleDailySummary(container.settingsStore.dailySummaryMinute.first())
         }
     }
 
-    private fun scheduleDailySummary(hour: Int) {
+    private fun scheduleDailySummary(minute: Int) {
         val request = PeriodicWorkRequestBuilder<DailySummaryWorker>(24, TimeUnit.HOURS)
-            .setInitialDelay(initialDelayToHour(hour), TimeUnit.MILLISECONDS)
+            .setInitialDelay(initialDelayToMinute(minute), TimeUnit.MILLISECONDS)
             .build()
         // REPLACE：直接替换同名任务（原子操作）。
         // 不能用 KEEP+cancel——cancel 是异步的，KEEP 会先看到旧任务而拒绝替换（竞态，改时间不生效）。
@@ -66,20 +139,10 @@ class AssistantApplication : Application() {
         )
     }
 
-    /** 距下一个指定小时（24h 制）的毫秒数（若已过则顺延到明天） */
-    private fun initialDelayToHour(hour: Int): Long {
-        val cal = Calendar.getInstance()
-        val now = cal.timeInMillis
-        cal.set(Calendar.HOUR_OF_DAY, hour)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
-        var target = cal.timeInMillis
-        if (target <= now) target += 24 * 60 * 60 * 1000L
-        return target - now
-    }
-
     companion object {
         private const val WORK_SUMMARY_NAME = "daily_summary"
+        private const val WORK_EVENT_POLL_NAME = "event_poll"
+        private const val WORK_EVENT_POLL_NOW = "event_poll_now"
+        private const val WORK_BRIEFING_NAME = "morning_briefing"
     }
 }

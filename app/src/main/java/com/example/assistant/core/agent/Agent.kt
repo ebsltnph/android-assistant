@@ -3,6 +3,8 @@ package com.example.assistant.core.agent
 import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.ChatStream
 import com.example.assistant.core.network.ProviderRegistry
+import com.example.assistant.core.network.SearchClient
+import com.example.assistant.core.network.SearchResult
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.network.dto.ChatRequest
 import com.example.assistant.core.network.dto.ChatResponse
@@ -14,13 +16,17 @@ import kotlinx.coroutines.flow.flow
  * Agent 编排器：
  * 1. 意图路由（关键词 → LLM 分类 → 聊天兜底）
  * 2. 记录类意图（说"记录…"或 LLM 判定）不拦截：聊天照常回复 + 同步写日记（recordHint）
- * 3. 命令类意图（识屏/提醒/监控）由上层分发到对应处理器（P4 起逐步接入）
+ * 3. 命令类意图（识屏/提醒/监控）由上层分发到对应处理器
  * 4. 对话类意图走 LLM 流式回复（缓存友好的消息结构，见 PromptBuilder）
+ * 5. 对话搜索（全 LLM 判断）：每条消息先由 LLM 判断是否需要联网搜索，
+ *    需要则搜索并注入上下文（extraContext），LLM 基于结果回答
  */
 class Agent(
     private val providerRegistry: ProviderRegistry,
     private val promptBuilder: PromptBuilder,
-    private val intentRouter: IntentRouter
+    private val intentRouter: IntentRouter,
+    private val searchJudger: SearchJudger,
+    private val searchClient: SearchClient
 ) {
 
     sealed interface AgentResult {
@@ -83,9 +89,36 @@ class Agent(
             return AgentResult.Error("模型提供商未配置完整，请到「设置」检查")
         }
 
+        // 对话搜索（全 LLM 判断）：需要搜索则搜索并注入上下文；搜索失败不阻塞聊天
+        val extraContext = searchExtraContext(text)
         val conversation = if (history.isNotEmpty()) history else listOf(ChatMessage("user", text))
-        val messages = promptBuilder.buildChatMessages(memoryText, conversation)
+        val messages = promptBuilder.buildChatMessages(memoryText, conversation, extraContext)
         return AgentResult.ChatRequested(messages, recordHint)
+    }
+
+    /**
+     * 判断是否需要联网搜索并组装搜索结果上下文。
+     * 返回 null = 无需搜索或搜索失败（正常聊天即可，不打扰用户）。
+     */
+    private suspend fun searchExtraContext(text: String): String? {
+        val judge = searchJudger.judge(text) ?: return null
+        if (!judge.needSearch || judge.query.isBlank()) return null
+        return try {
+            val results = searchClient.search(judge.query, maxResults = 5)
+            if (results.isEmpty()) null else buildSearchContext(judge.query, results)
+        } catch (e: Exception) {
+            null // 搜索失败不阻塞聊天
+        }
+    }
+
+    /** 搜索结果 → 注入消息[2] 当前上下文的文本（易变，不破坏缓存前缀） */
+    private fun buildSearchContext(query: String, results: List<SearchResult>): String = buildString {
+        append("以下是关于「").append(query).append("」的网络搜索结果，请基于它们回答，必要时注明来源：\n")
+        results.forEachIndexed { i, r ->
+            append(i + 1).append(". ").append(r.title).append("\n")
+            append("   ").append(r.url).append("\n")
+            append("   ").append(r.content.take(300)).append("\n")
+        }
     }
 
     /** 发送流式对话请求（会话尾部由调用方维护，这里只发一次请求） */

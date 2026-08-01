@@ -46,7 +46,12 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             agent = app.container.agent,
             diaryRepository = app.container.diaryRepository,
             memoryRepository = app.container.memoryRepository,
-            memoryExtractor = app.container.memoryExtractor
+            memoryExtractor = app.container.memoryExtractor,
+            reminderRepository = app.container.reminderRepository,
+            reminderTimeParser = app.container.reminderTimeParser,
+            reminderScheduler = app.container.reminderScheduler,
+            eventRepository = app.container.eventRepository,
+            eventExtractor = app.container.eventExtractor
         )
     }
 

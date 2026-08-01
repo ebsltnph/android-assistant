@@ -150,6 +150,15 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         item { HorizontalDivider() }
+        item { Text("搜索（联网）", style = MaterialTheme.typography.titleLarge) }
+        item {
+            SearchSettingsCard(
+                apiKey = vm.searchApiKey.collectAsState().value,
+                onSaveKey = { vm.saveSearchApiKey(it) }
+            )
+        }
+
+        item { HorizontalDivider() }
         item { Text("高级设置", style = MaterialTheme.typography.titleLarge) }
         item {
             Text(
@@ -171,12 +180,35 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         item { Text("每日小结", style = MaterialTheme.typography.titleLarge) }
         item {
             DailySummarySettingsCard(
-                summaryHour = vm.summaryHour.collectAsState().value,
-                onHourChange = { hour ->
-                    vm.setSummaryHour(hour)
-                    // 重排 WorkManager 周期任务（直接用刚选的小时，避免读到旧值）
-                    app.rescheduleDailySummary(hour)
+                summaryMinute = vm.summaryMinute.collectAsState().value,
+                onMinuteChange = { minute ->
+                    vm.setSummaryMinute(minute)
+                    // 重排 WorkManager 周期任务（直接用刚选的分钟，避免读到旧值）
+                    app.rescheduleDailySummary(minute)
                 }
+            )
+        }
+
+        item { HorizontalDivider() }
+        item { Text("清晨简报", style = MaterialTheme.typography.titleLarge) }
+        item {
+            BriefingSettingsCard(
+                briefingMinute = vm.briefingMinute.collectAsState().value,
+                onMinuteChange = { minute ->
+                    vm.setBriefingMinute(minute)
+                    // 重排 WorkManager（直接用刚选的值）
+                    app.rescheduleBriefing(minute)
+                }
+            )
+        }
+
+        item { HorizontalDivider() }
+        item { Text("免打扰", style = MaterialTheme.typography.titleLarge) }
+        item {
+            QuietHoursSettingsCard(
+                startMinute = vm.quietStartMinute.collectAsState().value,
+                endMinute = vm.quietEndMinute.collectAsState().value,
+                onWindowChange = { start, end -> vm.setQuietWindow(start, end) }
             )
         }
 
@@ -221,15 +253,49 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     }
 }
 
+/** 分钟级时间选择器：小时 + 分钟两个下拉并排（所有时间设置统一用） */
+@Composable
+private fun MinutePicker(current: Int, onChange: (Int) -> Unit) {
+    val hour = current / 60
+    val minute = current % 60
+    var hourExpanded by remember { mutableStateOf(false) }
+    var minuteExpanded by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(onClick = { hourExpanded = true }) {
+            Text("%02d".format(hour), style = MaterialTheme.typography.bodyMedium)
+        }
+        Text(":", style = MaterialTheme.typography.bodyMedium)
+        OutlinedButton(onClick = { minuteExpanded = true }) {
+            Text("%02d".format(minute), style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+    DropdownMenu(expanded = hourExpanded, onDismissRequest = { hourExpanded = false }) {
+        (0..23).forEach { h ->
+            DropdownMenuItem(
+                text = { Text("%02d:00".format(h)) },
+                onClick = { onChange(h * 60 + minute); hourExpanded = false }
+            )
+        }
+    }
+    DropdownMenu(expanded = minuteExpanded, onDismissRequest = { minuteExpanded = false }) {
+        (0..59).forEach { m ->
+            DropdownMenuItem(
+                text = { Text(":%02d".format(m)) },
+                onClick = { onChange(hour * 60 + m); minuteExpanded = false }
+            )
+        }
+    }
+}
+
 /**
  * 每日小结设置卡片：
- * - 自动总结时间（小时下拉，保存后重排周期任务）
+ * - 自动总结时间（小时+分钟，保存后重排周期任务）
  * - 系统日历同步开关（需 WRITE_CALENDAR 权限）
  */
 @Composable
 private fun DailySummarySettingsCard(
-    summaryHour: Int,
-    onHourChange: (Int) -> Unit
+    summaryMinute: Int,
+    onMinuteChange: (Int) -> Unit
 ) {
     val context = LocalContext.current
     // 系统日历 Provider 要求 READ + WRITE 两个权限同时具备（只给 WRITE 会写入失败）
@@ -242,7 +308,6 @@ private fun DailySummarySettingsCard(
     val calendarLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { }
-    val hours = (0..23).toList()
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -251,18 +316,7 @@ private fun DailySummarySettingsCard(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("自动总结时间", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                var expanded by remember { mutableStateOf(false) }
-                OutlinedButton(onClick = { expanded = true }) {
-                    Text("%02d:00".format(summaryHour))
-                }
-                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    hours.forEach { h ->
-                        DropdownMenuItem(
-                            text = { Text("%02d:00".format(h)) },
-                            onClick = { onHourChange(h); expanded = false }
-                        )
-                    }
-                }
+                MinutePicker(current = summaryMinute, onChange = onMinuteChange)
             }
             Text(
                 "每天此时自动汇总当天日记，生成小结并推送通知（当天无日记则不打扰）。",
@@ -288,6 +342,127 @@ private fun DailySummarySettingsCard(
                         )
                     }) { Text("授权") }
                 }
+            }
+        }
+    }
+}
+
+/** 清晨简报设置卡片：时间选择（小时+分钟），保存后重排周期任务 */
+@Composable
+private fun BriefingSettingsCard(
+    briefingMinute: Int,
+    onMinuteChange: (Int) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("简报时间", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                MinutePicker(current = briefingMinute, onChange = onMinuteChange)
+            }
+            Text(
+                "每天此时推送清晨简报：今日提醒 + 昨日小结。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 免打扰设置卡片：开关 + 起止时间（跨午夜支持，如 23:00-07:00） */
+@Composable
+private fun QuietHoursSettingsCard(
+    startMinute: Int,
+    endMinute: Int,
+    onWindowChange: (Int, Int) -> Unit
+) {
+    // 起止相同 = 未启用
+    val enabled = startMinute != endMinute
+    var enabledState by remember { mutableStateOf(enabled) }
+    var startState by remember { mutableStateOf(startMinute) }
+    var endState by remember { mutableStateOf(endMinute) }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("启用免打扰", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                Switch(
+                    checked = enabledState,
+                    onCheckedChange = { on ->
+                        enabledState = on
+                        // 关闭 = 起止相同；开启 = 用当前选的时段
+                        if (!on) onWindowChange(startState, startState)
+                        else onWindowChange(startState, endState)
+                    }
+                )
+            }
+            // 起止时间选择（仅开启时显示，精确到分钟）
+            if (enabledState) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("开始", modifier = Modifier.weight(1f))
+                    MinutePicker(current = startState) { m ->
+                        startState = m
+                        onWindowChange(m, endState)
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("结束", modifier = Modifier.weight(1f))
+                    MinutePicker(current = endState) { m ->
+                        endState = m
+                        onWindowChange(startState, m)
+                    }
+                }
+            }
+            Text(
+                if (enabledState) "免打扰时段内：提醒静默（不响铃）、事件监控不打扰。"
+                else "免打扰时段内：提醒静默（不响铃）、事件监控不打扰。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * 搜索设置卡片（Tavily）：留空 = keyless 免费模式（免注册、有限流）；
+ * 填 API Key = 免费 1000 次/月，注册 https://tavily.com 获取。
+ */
+@Composable
+private fun SearchSettingsCard(
+    apiKey: String,
+    onSaveKey: (String) -> Unit
+) {
+    var key by remember { mutableStateOf(apiKey) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "对话搜索与新闻监控共用。留空则用免注册免费模式（有限流）；注册 Tavily（tavily.com）填 Key 后每月 1000 次免费。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = key,
+                onValueChange = { key = it },
+                label = { Text("Tavily API Key（可选）") },
+                placeholder = { Text("tvly-…，留空用免费模式") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { onSaveKey(key) }) { Text("保存") }
+                Text(
+                    if (key.isBlank()) "当前：免费模式（keyless）" else "已配置 API Key",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

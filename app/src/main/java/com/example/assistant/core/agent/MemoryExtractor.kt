@@ -5,7 +5,6 @@ import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.network.dto.ChatRequest
-import com.example.assistant.core.network.dto.ResponseFormat
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.data.db.entity.MemoryEntity
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +34,19 @@ class MemoryExtractor(
         val importance: Int = 5
     )
 
+    /** 从模型输出中提取事实数组（容忍 ```json 围栏与前后废话文本） */
+    private fun extractItems(content: String): List<ExtractItem> {
+        val t = content.trim()
+        val start = t.indexOf('[')
+        val end = t.lastIndexOf(']')
+        val arrayText = if (start >= 0 && end > start) t.substring(start, end + 1) else t
+        return try {
+            json.decodeFromString<List<ExtractItem>>(arrayText)
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
     /**
      * 从文本中抽取长期记忆（importance ≥ 7 才存）。
      * 任何失败（未配置/网络/解析）都返回空列表，不抛异常。
@@ -57,7 +69,6 @@ class MemoryExtractor(
                 temperature = 0.0,
                 // 1024：推理模型思考占配额，300 在长文本时可能被吃光
                 maxTokens = 1024,
-                responseFormat = ResponseFormat("json_object"),
                 thinking = thinking,
                 reasoningEffort = effort
             )
@@ -65,9 +76,8 @@ class MemoryExtractor(
             val content = response.choices.firstOrNull()?.message?.textContent
                 ?: return@withContext emptyList()
 
-            // 模型可能返回带 ```json 围栏的内容，剥掉再解析
-            val cleaned = content.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-            val items = json.decodeFromString<List<ExtractItem>>(cleaned)
+            // 模型可能返回数组 JSON 或带围栏/前后废话，取数组子串解析
+            val items = extractItems(content)
             val filtered = items.filter { it.fact.isNotBlank() && it.importance >= IMPORTANCE_THRESHOLD }
             // 调试日志：看模型评分与过滤结果（不含密钥），便于按使用体验调整阈值/提示词
             Log.i(TAG, "抽取 ${items.size} 条，过滤后 ${filtered.size} 条：$items")

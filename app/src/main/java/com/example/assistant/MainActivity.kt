@@ -78,6 +78,12 @@ class MainActivity : ComponentActivity() {
                 AppSharedState.currentTab.value = MainTab.Diary
                 AppSharedState.showSummaryRequested.value = true
             }
+            Notifier.ACTION_SHOW_BRIEFING -> {
+                // 清晨简报：切首页并弹窗显示全文（文本随 intent 传递）
+                AppSharedState.currentTab.value = MainTab.Home
+                AppSharedState.briefingText.value =
+                    intent.getStringExtra(Notifier.EXTRA_BRIEFING_TEXT) ?: "（简报内容缺失）"
+            }
         }
     }
 

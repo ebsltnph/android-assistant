@@ -35,17 +35,17 @@ class SettingsStore(context: Context) {
     val ttsEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_TTS] ?: false }
     suspend fun setTtsEnabled(v: Boolean) = dataStore.edit { it[KEY_TTS] = v }
 
-    /** 每日日记总结时间（24h 小时，默认 21:00） */
-    val dailySummaryHour: Flow<Int> = dataStore.data.map { it[KEY_SUMMARY_HOUR] ?: 21 }
+    /** 每日日记总结时间（分钟数，默认 21:00=1260，可精确到分钟） */
+    val dailySummaryMinute: Flow<Int> = dataStore.data.map { it[KEY_SUMMARY_MINUTE] ?: 21 * 60 }
 
-    /** 清晨简报时间（默认 7:30，存分钟数） */
+    /** 清晨简报时间（默认 7:30，存分钟数，可精确到分钟） */
     val briefingMinuteOfDay: Flow<Int> = dataStore.data.map { it[KEY_BRIEFING_MINUTES] ?: 7 * 60 + 30 }
 
     /** 免打扰：开始/结束（分钟数，如 23*60=1380 / 7*60=420） */
     val quietStartMinute: Flow<Int> = dataStore.data.map { it[KEY_QUIET_START] ?: 23 * 60 }
     val quietEndMinute: Flow<Int> = dataStore.data.map { it[KEY_QUIET_END] ?: 7 * 60 }
 
-    suspend fun setDailySummaryHour(hour: Int) = dataStore.edit { it[KEY_SUMMARY_HOUR] = hour }
+    suspend fun setDailySummaryMinute(minute: Int) = dataStore.edit { it[KEY_SUMMARY_MINUTE] = minute }
     suspend fun setBriefingMinuteOfDay(minutes: Int) = dataStore.edit { it[KEY_BRIEFING_MINUTES] = minutes }
     suspend fun setQuietWindow(startMinute: Int, endMinute: Int) = dataStore.edit {
         it[KEY_QUIET_START] = startMinute
@@ -64,7 +64,7 @@ class SettingsStore(context: Context) {
     companion object {
         private const val TAG = "SettingsStore"
         private val KEY_TTS = booleanPreferencesKey("tts_enabled")
-        private val KEY_SUMMARY_HOUR = intPreferencesKey("daily_summary_hour")
+        private val KEY_SUMMARY_MINUTE = intPreferencesKey("daily_summary_minute")
         private val KEY_BRIEFING_MINUTES = intPreferencesKey("briefing_minutes")
         private val KEY_QUIET_START = intPreferencesKey("quiet_start_minute")
         private val KEY_QUIET_END = intPreferencesKey("quiet_end_minute")

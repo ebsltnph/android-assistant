@@ -5,16 +5,22 @@ import androidx.lifecycle.viewModelScope
 import com.example.assistant.core.agent.Agent
 import com.example.assistant.core.agent.Agent.AgentResult
 import com.example.assistant.core.agent.AssistantIntent
+import com.example.assistant.core.agent.EventExtractor
 import com.example.assistant.core.agent.MemoryExtractor
+import com.example.assistant.core.agent.ReminderTimeParser
 import com.example.assistant.core.agent.Session
+import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.data.repo.DiaryRepository
+import com.example.assistant.data.repo.EventRepository
 import com.example.assistant.data.repo.MemoryRepository
+import com.example.assistant.data.repo.ReminderRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 /** 聊天界面的一条消息 */
 data class ChatUiMessage(
@@ -30,7 +36,12 @@ class ChatViewModel(
     private val agent: Agent,
     private val diaryRepository: DiaryRepository,
     private val memoryRepository: MemoryRepository,
-    private val memoryExtractor: MemoryExtractor
+    private val memoryExtractor: MemoryExtractor,
+    private val reminderRepository: ReminderRepository,
+    private val reminderTimeParser: ReminderTimeParser,
+    private val reminderScheduler: ReminderScheduler,
+    private val eventRepository: EventRepository,
+    private val eventExtractor: EventExtractor
 ) : ViewModel() {
 
     private val _messages = MutableStateFlow<List<ChatUiMessage>>(emptyList())
@@ -131,18 +142,72 @@ class ChatViewModel(
 
     /**
      * 执行命令类意图（本地执行，不走 LLM），返回展示给用户的提示文本。
-     * 已实现：无（记录类已改为聊天+同步写日记，见 saveDiaryFromChat）；其余命令后续阶段接入。
+     * 已实现：设提醒（LLM 解析时间 + AlarmManager 排程）；记录类见 saveDiaryFromChat；
+     * 事件监控（MonitorEvent）在 P4 事件监控部分接入。
      */
     private suspend fun executeCommand(intent: AssistantIntent): String = when (intent) {
         // 防御：正常路由下 RecordDiary 不会走到这里（Agent 已转为聊天+recordHint）
         is AssistantIntent.RecordDiary -> "📔 已记入日记本"
-        is AssistantIntent.SetReminder ->
-            "⏰ 收到提醒需求：\"${intent.title}\"\n（定时提醒功能将在后续阶段开放）"
+        is AssistantIntent.SetReminder -> createReminder(intent)
         is AssistantIntent.ScreenSense ->
             "👁️ 收到识屏指令（${intent.action}）\n（识屏功能将在后续阶段开放）"
-        is AssistantIntent.MonitorEvent ->
-            "🔎 收到事件关注需求：\"${intent.query}\"\n（事件监控功能将在后续阶段开放）"
+        is AssistantIntent.MonitorEvent -> createMonitoredEvent(intent)
         is AssistantIntent.Chat -> intent.text
+    }
+
+    /** 创建事件监控：LLM 抽取搜索配置 → 入库（轮询由 EventPollWorker 周期执行） */
+    private suspend fun createMonitoredEvent(intent: AssistantIntent.MonitorEvent): String {
+        val extracted = eventExtractor.extract(intent.query)
+            ?: return "🔎 没听清要关注什么。请再说一次，比如：\n\"关注华为手机新品发布\""
+        eventRepository.add(
+            displayName = extracted.displayName,
+            searchQuery = extracted.searchQuery,
+            conditionKeywords = extracted.conditionKeywords,
+            customRule = extracted.customRule,
+            includeDomains = extracted.includeDomains
+        )
+        return buildString {
+            append("🔎 已开始关注「").append(extracted.displayName).append("」（").append(extracted.searchQuery).append("）")
+            append("\n来源：").append(extracted.includeDomains.ifBlank { "不限" })
+            if (extracted.customRule.isNotBlank()) append("\n规则：").append(extracted.customRule)
+            append("\n有重要动态会通知你")
+        }
+    }
+
+    /** 创建提醒：LLM 解析结构化时间 → 本地算时间戳 → 入库 → AlarmManager 排程 */
+    private suspend fun createReminder(intent: AssistantIntent.SetReminder): String {
+        val parsed = reminderTimeParser.parse(intent.timeText) ?: return missingTimeHint()
+        val triggerAt = reminderTimeParser.resolveTrigger(Calendar.getInstance(), parsed)
+        val id = reminderRepository.add(
+            title = parsed.title,
+            triggerAtEpochMillis = triggerAt,
+            repeatRule = parsed.repeat
+        )
+        reminderScheduler.schedule(reminderRepository.byId(id)!!)
+        val timeText = formatTriggerTime(triggerAt)
+        val repeatText = when (parsed.repeat) {
+            "daily" -> "，每天重复"
+            "weekly" -> "，每周重复"
+            else -> ""
+        }
+        return "⏰ 已设置：$timeText 提醒「${parsed.title}」$repeatText"
+    }
+
+    private fun missingTimeHint(): String =
+        "⏰ 没听清具体时间。请告诉我时间，比如：\n\"提醒我明天下午3点开会\""
+
+    /** 触发时间显示：今天/明天 + HH:mm */
+    private fun formatTriggerTime(millis: Long): String {
+        val cal = java.util.Calendar.getInstance()
+        val now = java.util.Calendar.getInstance()
+        cal.timeInMillis = millis
+        val time = "%02d:%02d".format(cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE))
+        val dayDiff = (cal.get(java.util.Calendar.DAY_OF_YEAR) - now.get(java.util.Calendar.DAY_OF_YEAR))
+        return when {
+            dayDiff == 0 -> "今天 $time"
+            dayDiff == 1 -> "明天 $time"
+            else -> "${cal.get(java.util.Calendar.MONTH) + 1}月${cal.get(java.util.Calendar.DAY_OF_MONTH)}日 $time"
+        }
     }
 
     /** 聊天同时记录：把用户这句话（原文）写入日记本（按指定名/默认本匹配） */

@@ -32,7 +32,7 @@ import com.example.assistant.data.db.entity.ReminderEntity
         MonitoredEventEntity::class,
         DailySummaryEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -46,7 +46,7 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "assistant.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
 
         /** v1 → v2：新增每日小结表（历史小结） */
@@ -61,6 +61,18 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE UNIQUE INDEX IF NOT EXISTS `index_daily_summaries_date` ON `daily_summaries` (`date`)"
+                )
+            }
+        }
+
+        /** v2 → v3：事件监控加自定义规则与限定域名列 */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `monitored_events` ADD COLUMN `customRule` TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "ALTER TABLE `monitored_events` ADD COLUMN `includeDomains` TEXT NOT NULL DEFAULT ''"
                 )
             }
         }
