@@ -1,25 +1,29 @@
 package com.example.assistant.feature.diary
 
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.assistant.core.agent.DailySummaryGenerator
 import com.example.assistant.core.agent.MemoryExtractor
 import com.example.assistant.core.notification.Notifier
+import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.data.db.entity.DiaryBookEntity
 import com.example.assistant.data.db.entity.DiaryEntryEntity
 import com.example.assistant.data.db.entity.MemoryEntity
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.MemoryRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * 日记页 ViewModel：日记本管理 + 条目列表 + 新增/删除 + 记忆抽取。
@@ -91,8 +95,35 @@ class DiaryViewModel(
         }
     }
 
+    /** 删除条目：先删图片文件再删记录（文件删不掉也只删记录，不阻塞） */
     fun deleteEntry(id: Long) {
-        viewModelScope.launch { diaryRepository.deleteEntry(id) }
+        viewModelScope.launch {
+            val entry = diaryRepository.entryById(id)
+            if (entry?.imagePath != null) {
+                try {
+                    File(entry.imagePath).delete()
+                } catch (_: Exception) {
+                }
+            }
+            diaryRepository.deleteEntry(id)
+        }
+    }
+
+    /** 给条目补图/换图（相册 Photo Picker 回调）：读图缩放 → 存 filesDir → 更新 DB */
+    fun setEntryImage(entryId: Long, uri: Uri) {
+        viewModelScope.launch {
+            val path = withContext(Dispatchers.IO) {
+                ImageUtils.readUriBitmap(appContext, uri)?.let { bmp ->
+                    ImageUtils.saveToFilesDir(appContext, bmp, "diary_${System.currentTimeMillis()}.jpg")
+                }
+            }
+            if (path != null) {
+                diaryRepository.updateEntryImage(entryId, path)
+                message.value = "📷 已添加图片"
+            } else {
+                message.value = "⚠️ 图片读取失败，请换一张试试"
+            }
+        }
     }
 
     /** 新增日记本（重名自动跳过） */

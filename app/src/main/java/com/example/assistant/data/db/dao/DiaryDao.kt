@@ -38,6 +38,13 @@ interface DiaryDao {
     @Insert
     suspend fun insertEntry(entry: DiaryEntryEntity): Long
 
+    @Query("SELECT * FROM diary_entries WHERE id = :id")
+    suspend fun entryById(id: Long): DiaryEntryEntity?
+
+    /** 给条目补图/换图（相册选图后更新路径） */
+    @Query("UPDATE diary_entries SET imagePath = :path WHERE id = :id")
+    suspend fun updateEntryImage(id: Long, path: String)
+
     @Query("DELETE FROM diary_entries WHERE id = :entryId")
     suspend fun deleteEntry(entryId: Long)
 

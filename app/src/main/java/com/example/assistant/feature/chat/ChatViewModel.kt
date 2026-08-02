@@ -6,12 +6,15 @@ import android.net.Uri
 import com.example.assistant.core.agent.Agent
 import com.example.assistant.core.agent.Agent.AgentResult
 import com.example.assistant.core.agent.AssistantIntent
+import com.example.assistant.core.agent.DiarySummarizer
 import com.example.assistant.core.agent.EventExtractor
+import com.example.assistant.core.agent.IntentRouter
 import com.example.assistant.core.agent.MemoryExtractor
 import com.example.assistant.core.agent.ReminderTimeParser
 import com.example.assistant.core.agent.Session
 import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.network.dto.ChatMessage
+import com.example.assistant.core.storage.SettingsStore
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.core.vision.ScreenSenseController
 import com.example.assistant.core.vision.VisionAnalyzer
@@ -26,7 +29,6 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -59,6 +61,9 @@ data class PendingImage(
 class ChatViewModel(
     private val context: Context,
     private val agent: Agent,
+    private val intentRouter: IntentRouter,
+    private val diarySummarizer: DiarySummarizer,
+    private val settingsStore: SettingsStore,
     private val diaryRepository: DiaryRepository,
     private val memoryRepository: MemoryRepository,
     private val memoryExtractor: MemoryExtractor,
@@ -129,6 +134,11 @@ class ChatViewModel(
             screenSenseController.textShares.collect { text ->
                 _inputText.value = text
             }
+        }
+        // 设置页「聊天上下文长度」实时生效（DataStore 首帧即发当前值，
+        // Session.setMaxTurns 会立即按新阈值截断已有历史）
+        scope.launch {
+            settingsStore.conversationMaxTurns.collect { session.setMaxTurns(it) }
         }
     }
 
@@ -284,7 +294,7 @@ class ChatViewModel(
         val t = text.trim()
         if (t.isEmpty()) return
         scope.launch {
-            writeDiary(t, null)
+            writeDiary(t)
             val hint = "📔 已记入日记本"
             append(ChatUiMessage(counter++, "assistant", hint))
             session.addAssistant(hint)
@@ -310,8 +320,9 @@ class ChatViewModel(
                 session.addAssistant(msg)
             }
             is AgentResult.ChatRequested -> {
-                // 记录类请求：聊天照常流式回复，同时把用户原话同步写入日记本（不丢失）
-                result.recordHint?.let { hint -> writeDiary(text, hint.bookName) }
+                // 记录类请求：聊天照常流式回复，同时后台 LLM 总结后写入日记
+                // （不阻塞流式；总结失败回退原文，记录不丢失）
+                result.recordHint?.let { writeDiaryInBackground(text) }
                 // 所有对话都后台做记忆抽取（importance 过滤兜底）——
                 // 防止"你要记得"这类不带"记录"关键词但值得记住的信息被漏掉
                 extractMemoryInBackground(text)
@@ -328,8 +339,19 @@ class ChatViewModel(
     /**
      * 附件消息：文字要求 + 图片**一起**发给「识屏」视觉模型（流式）。
      * 图片不重发进会话（占位文本），后续追问基于回复文本走普通聊天。
+     * 若文字是记录意图（关键词/LLM 判断），后台把图片+总结文字一并存入日记
+     * （视觉分析照常进行，用户确认：记录 + 照常分析）。
      */
     private suspend fun sendWithImage(text: String, image: PendingImage) {
+        // 记录意图检测（图片消息不经过 agent.route，这里单独检测）：
+        // 关键词命中优先，LLM 分类兜底；纯图片无文字不检测。
+        if (text.isNotBlank()) {
+            scope.launch {
+                val isRecord = intentRouter.keywordRoute(text) is AssistantIntent.RecordDiary ||
+                    intentRouter.llmClassify(text) is AssistantIntent.RecordDiary
+                if (isRecord) saveDiaryWithImageInBackground(text, image)
+            }
+        }
         val placeholder = if (text.isNotEmpty()) "[📷 用户发送了一张图片]\n$text" else "[📷 用户发送了一张图片]"
         session.addUser(placeholder)
         _messages.update { it + ChatUiMessage(counter++, "user", text, image = image.thumbnail) }
@@ -506,14 +528,34 @@ class ChatViewModel(
         }
     }
 
-    /** 聊天同时记录：把用户这句话（原文）写入日记本（按指定名/默认本匹配） */
-    private suspend fun writeDiary(text: String, bookName: String?) {
-        val books = diaryRepository.books.first()
-        val book = books.firstOrNull { it.name == bookName }
-            ?: books.firstOrNull { it.isDefault }
-            ?: books.firstOrNull()
-            ?: return // 还没有日记本（启动时已种子创建，这里防御）
-        diaryRepository.addEntry(book.id, text, source = "chat")
+    /** 聊天同时记录：写入默认「日记」本（启动时已种子创建，这里防御） */
+    private suspend fun writeDiary(content: String, imagePath: String? = null) {
+        val book = diaryRepository.defaultBook() ?: return
+        diaryRepository.addEntry(book.id, content, source = "chat", imagePath = imagePath)
+    }
+
+    /** 聊天记录：后台 LLM 总结后写日记（独立协程，不阻塞流式回复；总结失败回退原文） */
+    private fun writeDiaryInBackground(text: String) {
+        scope.launch {
+            val content = diarySummarizer.summarize(text)
+            writeDiary(content)
+        }
+    }
+
+    /** 图片记录：图片存 filesDir + 文字 LLM 总结（失败回退原文）后一并入日记，均后台执行 */
+    private fun saveDiaryWithImageInBackground(text: String, image: PendingImage) {
+        scope.launch {
+            val path = withContext(Dispatchers.IO) {
+                ImageUtils.decodeBase64Bitmap(image.base64)?.let { bmp ->
+                    ImageUtils.saveToFilesDir(
+                        context, ImageUtils.scaleBitmap(bmp), "diary_${System.currentTimeMillis()}.jpg"
+                    )
+                }
+            }
+            // 图片保存失败（path=null）文字仍照常入日记
+            val content = diarySummarizer.summarize(text)
+            writeDiary(content, imagePath = path)
+        }
     }
 
     /** 后台静默抽取长期记忆（带重要性过滤，评分不足的不存），失败不打扰用户 */

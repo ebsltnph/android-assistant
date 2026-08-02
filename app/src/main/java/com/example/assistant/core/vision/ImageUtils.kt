@@ -53,14 +53,34 @@ object ImageUtils {
     }
 
     /** 聊天列表缩略图（宽 ≤ 256，省内存）；失败返回 null */
-    fun decodeThumbnail(path: String): Bitmap? {
+    fun decodeThumbnail(path: String): Bitmap? = decodeFit(path, 256)
+
+    /**
+     * 按目标宽度采样解码本地图片（inSampleSize 防 OOM，解码后不再放大）。
+     * 缩略图/大图展示通用；失败返回 null。
+     */
+    fun decodeFit(path: String, maxWidth: Int): Bitmap? {
         return try {
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(path, opts)
             var sample = 1
-            while (opts.outWidth / sample > 256 * 2) sample *= 2
+            while (opts.outWidth / sample > maxWidth * 2) sample *= 2
             val decode = BitmapFactory.Options().apply { inSampleSize = sample }
             BitmapFactory.decodeFile(path, decode)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * base64 → Bitmap（聊天附件存的 PNG base64 解码，供转存日记图片用）。
+     * 失败返回 null。
+     */
+    fun decodeBase64Bitmap(base64: String): Bitmap? {
+        return try {
+            BitmapFactory.decodeByteArray(
+                Base64.decode(base64, Base64.NO_WRAP), 0, 0
+            )
         } catch (e: Exception) {
             null
         }
@@ -82,6 +102,23 @@ object ImageUtils {
             val file = File(dir, name)
             FileOutputStream(file).use { out ->
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            file.absolutePath
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 保存 Bitmap 到 filesDir/diary_images 下（内部存储，系统清理不掉），JPEG 90 压缩。
+     * 日记图片存这里，DB 只存路径；失败返回 null。
+     */
+    fun saveToFilesDir(context: Context, bitmap: Bitmap, name: String): String? {
+        return try {
+            val dir = File(context.filesDir, "diary_images").apply { mkdirs() }
+            val file = File(dir, name)
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
             }
             file.absolutePath
         } catch (e: Exception) {

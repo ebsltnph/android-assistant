@@ -32,15 +32,10 @@ class IntentRouter(
             return AssistantIntent.ScreenSense(action)
         }
 
-        // 记录（日记）
+        // 记录（日记）：合并为单一「日记」本后一律写默认本（不再按关键词选本）
         if (t.containsAny(KEYWORDS_DIARY)) {
-            val book = when {
-                t.containsAny(listOf("工作", "上班", "开会")) -> "工作"
-                t.containsAny(listOf("生活", "日常")) -> "生活"
-                else -> null
-            }
             val content = stripKeywords(t, KEYWORDS_DIARY)
-            return AssistantIntent.RecordDiary(content.ifBlank { t }, book)
+            return AssistantIntent.RecordDiary(content.ifBlank { t }, null)
         }
 
         // 提醒

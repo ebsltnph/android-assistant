@@ -24,5 +24,7 @@ data class DiaryEntryEntity(
     val content: String,
     /** 来源："voice" 语音记录 | "text" 文字 | "chat" 聊天转存 */
     val source: String = "text",
-    val createdAtEpochMillis: Long = System.currentTimeMillis()
+    val createdAtEpochMillis: Long = System.currentTimeMillis(),
+    /** 条目附图（filesDir/diary_images 下的 JPEG 路径），null = 无图 */
+    val imagePath: String? = null
 )

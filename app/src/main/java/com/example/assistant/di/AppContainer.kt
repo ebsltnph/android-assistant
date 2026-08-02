@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.assistant.core.agent.Agent
 import com.example.assistant.core.agent.DailyBriefingGenerator
 import com.example.assistant.core.agent.DailySummaryGenerator
+import com.example.assistant.core.agent.DiarySummarizer
 import com.example.assistant.core.agent.EventExtractor
 import com.example.assistant.core.agent.EventHitJudge
 import com.example.assistant.core.agent.IntentRouter
@@ -84,6 +85,7 @@ class AppContainer(context: Context) {
         Agent(providerRegistry, promptBuilder, intentRouter, searchJudger, searchClient)
     }
     val memoryExtractor: MemoryExtractor by lazy { MemoryExtractor(providerRegistry, promptStore) }
+    val diarySummarizer: DiarySummarizer by lazy { DiarySummarizer(providerRegistry, promptStore) }
     val dailySummaryGenerator: DailySummaryGenerator by lazy {
         DailySummaryGenerator(
             diaryRepository = diaryRepository,
@@ -120,6 +122,9 @@ class AppContainer(context: Context) {
         ChatViewModel(
             context = appContext,
             agent = agent,
+            intentRouter = intentRouter,
+            diarySummarizer = diarySummarizer,
+            settingsStore = settingsStore,
             diaryRepository = diaryRepository,
             memoryRepository = memoryRepository,
             memoryExtractor = memoryExtractor,

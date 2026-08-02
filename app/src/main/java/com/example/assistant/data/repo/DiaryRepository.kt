@@ -9,11 +9,10 @@ class DiaryRepository(private val dao: DiaryDao) {
 
     val books: Flow<List<DiaryBookEntity>> = dao.booksFlow()
 
-    /** 首次启动时确保存在默认日记本（生活/工作） */
+    /** 首次启动时确保存在默认日记本（单一「日记」本） */
     suspend fun ensureSeedBooks() {
         if (dao.allBooks().isEmpty()) {
-            dao.insertBook(DiaryBookEntity(name = "生活", isDefault = true))
-            dao.insertBook(DiaryBookEntity(name = "工作", isDefault = false))
+            dao.insertBook(DiaryBookEntity(name = "日记", isDefault = true))
         }
     }
 
@@ -26,8 +25,19 @@ class DiaryRepository(private val dao: DiaryDao) {
 
     fun entriesFor(bookId: Long): Flow<List<DiaryEntryEntity>> = dao.entriesFlow(bookId)
 
-    suspend fun addEntry(bookId: Long, content: String, source: String = "text"): Long =
-        dao.insertEntry(DiaryEntryEntity(bookId = bookId, content = content, source = source))
+    suspend fun addEntry(
+        bookId: Long,
+        content: String,
+        source: String = "text",
+        imagePath: String? = null
+    ): Long = dao.insertEntry(
+        DiaryEntryEntity(bookId = bookId, content = content, source = source, imagePath = imagePath)
+    )
+
+    suspend fun entryById(id: Long): DiaryEntryEntity? = dao.entryById(id)
+
+    /** 给条目补图/换图（相册选图后更新路径） */
+    suspend fun updateEntryImage(id: Long, path: String) = dao.updateEntryImage(id, path)
 
     suspend fun deleteEntry(entryId: Long) = dao.deleteEntry(entryId)
 
