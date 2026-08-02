@@ -33,15 +33,35 @@
 | P4 | **对话搜索 + 定时提醒 + 事件监控 + 清晨简报 + 免打扰** | ✅ 完成 |
 | P5 | **智能识屏 + 分享到助手 + 识屏悬浮小窗** | ✅ 完成 |
 | P6 | **悬浮球 + 浮动界面**（识图/提醒/记录/对话全功能悬浮调用，玻璃拟态 UI） | ✅ 完成 |
+| UI | **主界面改版**（深墨夜景主题统一、首页仪表盘、设置页重构、思考强度 per-provider） | ✅ 完成 |
 | P7 | 真·语音唤醒词（可选） | 待开发 |
 
-## 如何构建运行（新手向）
+**v1.0.0 正式版**（2026-08-02）：第一阶段功能全部完成，发布安装包（GitHub Releases）。
+
+## 安装指南（v1.0.0 正式版）
+
+### 方式一：直接安装 APK（推荐）
+
+1. 在 GitHub **Releases** 页面（https://github.com/ebsltnph/android-assistant/releases）下载最新版 `app-release.apk`
+2. 把 APK 传到手机（微信/QQ 传文件、网盘、数据线复制均可），点击安装
+3. 如果提示"未知来源"，按提示允许"安装未知应用"即可
+4. 首次使用：打开 App → 设置 → 模型配置 → 添加提供商（填 Base URL + API Key + 模型名，如 DeepSeek `https://api.deepseek.com`）→ 测试连接 → 设为默认
+
+> 荣耀手机提示无法安装时：设置 → 安全 → 更多安全设置 → 开启「外部来源应用」；或用开发者选项 + 数据线 `adb install`（见下方）。
+
+### 方式二：开发者模式安装（adb）
+
+```bash
+# 手机开启开发者选项（设置 → 关于手机 → 连点"版本号"7 次）→ USB 调试
+adb install -r app-release.apk
+```
+
+### 方式三：源码构建
 
 1. 安装 [Android Studio](https://developer.android.com/studio)（官方免费，自带 JDK 和 Android SDK）
-2. 用 Android Studio 打开本项目文件夹（`File → Open`）
-3. 等待首次 Gradle 同步完成（会自动下载依赖）
-4. 手机开启开发者选项 + USB 调试（设置 → 关于手机 → 连点"版本号"7 次 → 开发者选项 → USB 调试）
-5. 连接手机，点 Android Studio 的 ▶ Run 按钮
+2. 用 Android Studio 打开本项目文件夹（`File → Open`），等待 Gradle 同步完成
+3. 手机开启开发者选项 + USB 调试，连接手机
+4. 点 Android Studio 的 ▶ Run 按钮（调试版）；或终端 `./gradlew assembleRelease` 生成正式版 APK
 
 ## 使用说明
 

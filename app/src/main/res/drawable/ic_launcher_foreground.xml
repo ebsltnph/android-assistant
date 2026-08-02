@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 应用图标前景：一个简洁的 AI 对话气泡 -->
+<!-- 应用图标前景：香槟金 AutoAwesome 星光（与悬浮球图标同款，glassmorphism 强调色） -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,32 C39.1,32 27,42.4 27,55.2 C27,62.1 30.4,68.4 35.8,72.6 L34.2,80 L42.7,75.5 C46.1,76.7 49.9,77.4 54,77.4 C68.9,77.4 81,67 81,55.2 C81,42.4 68.9,32 54,32 Z M41,51 C41,49.3 42.3,48 44,48 C45.7,48 47,49.3 47,51 C47,52.7 45.7,54 44,54 C42.3,54 41,52.7 41,51 Z M54,51 C54,49.3 55.3,48 57,48 C58.7,48 60,49.3 60,51 C60,52.7 58.7,54 57,54 C55.3,54 54,52.7 54,51 Z M67,51 C67,49.3 68.3,48 70,48 C71.7,48 73,49.3 73,51 C73,52.7 71.7,54 70,54 C68.3,54 67,52.7 67,51 Z" />
+    <group
+        android:scaleX="2"
+        android:scaleY="2"
+        android:translateX="30"
+        android:translateY="30">
+        <path
+            android:fillColor="#E4B863"
+            android:pathData="M19,9l1.25,-2.75L23,5l-2.75,-1.25L19,1l-1.25,2.75L15,5l2.75,1.25L19,9z M11.5,9.5L9,4L6.5,9.5L1,12l5.5,2.5L9,20l2.5,-5.5L17,12L11.5,9.5z M19,15l-1.25,2.75L15,19l2.75,1.25L19,23l1.25,-2.75L23,19l-2.75,-1.25L19,15z" />
+    </group>
 </vector>
