@@ -247,14 +247,6 @@ class ChatViewModel(
     fun quickSendVision(text: String, imageBase64: String, thumbnail: Bitmap?) {
         val t = text.trim()
         if (t.isEmpty() || _isStreaming.value) return
-        // 记录意图检测（浮动界面截图 + 文字，走与聊天附件相同的检测与存图逻辑）
-        if (t.isNotBlank()) {
-            scope.launch {
-                val isRecord = intentRouter.keywordRoute(t) is AssistantIntent.RecordDiary ||
-                    intentRouter.llmClassify(t) is AssistantIntent.RecordDiary
-                if (isRecord) saveDiaryWithImageInBackground(t, imageBase64)
-            }
-        }
         scope.launch {
             _isStreaming.value = true
             _error.value = null
@@ -271,6 +263,8 @@ class ChatViewModel(
                 val answer = streamVisionReply(imageBase64, instruction, streamingId)
                 session.addAssistant(answer)
             }
+            // 记录意图（关键词/LLM 判断）：视觉回复完成后，后台把图片+总结文字一并存入日记
+            detectRecordAndSave(t, imageBase64)
             _isStreaming.value = false
         }
     }
@@ -329,9 +323,6 @@ class ChatViewModel(
                 session.addAssistant(msg)
             }
             is AgentResult.ChatRequested -> {
-                // 记录类请求：聊天照常流式回复，同时后台 LLM 总结后写入日记
-                // （不阻塞流式；总结失败回退原文，记录不丢失）
-                result.recordHint?.let { writeDiaryInBackground(text) }
                 // 所有对话都后台做记忆抽取（importance 过滤兜底）——
                 // 防止"你要记得"这类不带"记录"关键词但值得记住的信息被漏掉
                 extractMemoryInBackground(text)
@@ -341,6 +332,11 @@ class ChatViewModel(
                 append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
                 val answer = streamReply(result.messages, streamingId)
                 session.addAssistant(answer)
+                // 记录类请求：**回复完成后**后台用「最近几轮对话 + 本次助手回复」
+                // LLM 总结入日记——总结模型能看到主聊天模型的回复与上下文，
+                // 避免孤立总结丢上下文（如「记录一下刚才说的方案」单独看没有信息）；
+                // 总结失败回退原文，记录不丢失
+                result.recordHint?.let { writeDiaryInBackground() }
             }
         }
     }
@@ -352,22 +348,14 @@ class ChatViewModel(
      * （视觉分析照常进行，用户确认：记录 + 照常分析）。
      */
     private suspend fun sendWithImage(text: String, image: PendingImage) {
-        // 记录意图检测（图片消息不经过 agent.route，这里单独检测）：
-        // 关键词命中优先，LLM 分类兜底；纯图片无文字不检测。
-        if (text.isNotBlank()) {
-            scope.launch {
-                val isRecord = intentRouter.keywordRoute(text) is AssistantIntent.RecordDiary ||
-                    intentRouter.llmClassify(text) is AssistantIntent.RecordDiary
-                if (isRecord) saveDiaryWithImageInBackground(text, image.base64)
-            }
-        }
         val placeholder = if (text.isNotEmpty()) "[📷 用户发送了一张图片]\n$text" else "[📷 用户发送了一张图片]"
         session.addUser(placeholder)
         _messages.update { it + ChatUiMessage(counter++, "user", text, image = image.thumbnail) }
-        // 未配置视觉模型 → 明确引导，不发起无意义的调用
+        // 未配置视觉模型 → 明确引导，不发起无意义的调用（记录意图仍照常入日记）
         if (visionAnalyzer.visionProfile() == null) {
             append(ChatUiMessage(counter++, "assistant", VisionAnalyzer.GUIDE_TEXT))
             session.addAssistant(VisionAnalyzer.GUIDE_TEXT)
+            detectRecordAndSave(text, image.base64)
             return
         }
         val streamingId = counter++
@@ -375,6 +363,18 @@ class ChatViewModel(
         val instruction = text.ifBlank { "请描述这张图片" }
         val answer = streamVisionReply(image.base64, instruction, streamingId)
         session.addAssistant(answer)
+        // 记录意图（关键词/LLM 判断）：视觉回复完成后，后台把图片+总结文字一并存入日记
+        detectRecordAndSave(text, image.base64)
+    }
+
+    /** 记录意图检测 + 图片入日记（聊天附件与悬浮球识图共用；后台执行，不拖慢视觉回复） */
+    private fun detectRecordAndSave(text: String, imageBase64: String) {
+        if (text.isBlank()) return
+        scope.launch {
+            val isRecord = intentRouter.keywordRoute(text) is AssistantIntent.RecordDiary ||
+                intentRouter.llmClassify(text) is AssistantIntent.RecordDiary
+            if (isRecord) saveDiaryWithImageInBackground(imageBase64)
+        }
     }
 
     /**
@@ -543,16 +543,16 @@ class ChatViewModel(
         diaryRepository.addEntry(book.id, content, source = "chat", imagePath = imagePath)
     }
 
-    /** 聊天记录：后台 LLM 总结后写日记（独立协程，不阻塞流式回复；总结失败回退原文） */
-    private fun writeDiaryInBackground(text: String) {
+    /** 聊天记录：回复完成后后台 LLM 总结后写日记（独立协程；总结失败回退原文） */
+    private fun writeDiaryInBackground() {
         scope.launch {
-            val content = diarySummarizer.summarize(text)
+            val content = diarySummarizer.summarize(diaryContext())
             writeDiary(content)
         }
     }
 
     /** 图片记录：图片存 filesDir + 文字 LLM 总结（失败回退原文）后一并入日记，均后台执行 */
-    private fun saveDiaryWithImageInBackground(text: String, imageBase64: String) {
+    private fun saveDiaryWithImageInBackground(imageBase64: String) {
         scope.launch {
             val path = withContext(Dispatchers.IO) {
                 ImageUtils.decodeBase64Bitmap(imageBase64)?.let { bmp ->
@@ -562,10 +562,21 @@ class ChatViewModel(
                 }
             }
             // 图片保存失败（path=null）文字仍照常入日记
-            val content = diarySummarizer.summarize(text)
+            val content = diarySummarizer.summarize(diaryContext())
             writeDiary(content, imagePath = path)
         }
     }
+
+    /**
+     * 记录总结用的对话上下文：**只取最近一轮**（本次用户消息 + 本次助手回复）。
+     * 用户话题可能非常跳跃，多轮上下文容易把记录带偏（记到不想记的内容），
+     * 所以只用本轮；助手回复能让总结模型看到主聊天模型的确认/回放内容。
+     * 调用时机：必须在 session.addAssistant(回复) 之后（见 sendText/视觉回复后）。
+     */
+    private fun diaryContext(): String =
+        session.all.takeLast(2).joinToString("\n") { msg ->
+            "${if (msg.role == "user") "用户" else "助手"}：${msg.textContent}"
+        }
 
     /** 后台静默抽取长期记忆（带重要性过滤，评分不足的不存），失败不打扰用户 */
     private fun extractMemoryInBackground(text: String) {
