@@ -60,12 +60,17 @@ class DiaryViewModel(
     /** 操作提示（保存/删除结果），显示后自动消失 */
     val message = MutableStateFlow<String?>(null)
 
-    /** 确保默认选中一个日记本（首次进入选中默认本/第一本） */
+    /**
+     * 确保默认选中日记本（首次进入选中默认本）。
+     * 注意：直接查库（suspend DAO），不要读 books.value——books 是 WhileSubscribed
+     * 的 StateFlow，没人订阅时永远不会更新（删掉切本 UI 后已无订阅者），
+     * 读缓存值会导致 selectedBookId 永远是 0、日记页空白。
+     */
     fun initSelectedBook() {
         if (selectedBookId.value == 0L) {
             viewModelScope.launch {
-                val list = books.value
-                if (list.isNotEmpty()) selectedBookId.value = list.firstOrNull { it.isDefault }?.id ?: list.first().id
+                val book = diaryRepository.defaultBook() ?: return@launch
+                selectedBookId.value = book.id
             }
         }
     }
