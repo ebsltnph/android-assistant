@@ -1,5 +1,7 @@
 # 随身助手（Android AI 助手）
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 一个跑在你手机上的 AI 助手 App：聊天（含联网搜索）、记日记、定时提醒、关注新闻、清晨简报、长期记忆，全部数据保存在手机本地。
 
 ## 已实现功能
@@ -86,3 +88,7 @@ adb install -r app-release.apk
 - 持久化：Room（日记/记忆/提醒/事件/小结）+ DataStore（设置/提示词）+ 加密存储（API Key）
 - 后台任务：WorkManager 周期任务（每日小结/事件轮询/清晨简报）+ AlarmManager 精确闹钟（提醒）
 - 数据全部保存在手机本地（不联网上传你的日记和记忆，只调用你自己配置的模型 API）
+
+## 许可证
+
+[MIT License](LICENSE) © 2026 ebsltnph
