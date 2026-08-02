@@ -42,7 +42,7 @@
 
 ### 方式一：直接安装 APK（推荐）
 
-1. 在 GitHub **Releases** 页面（https://github.com/ebsltnph/android-assistant/releases）下载最新版 `app-release.apk`
+1. 在 GitHub [Releases 页面](https://github.com/ebsltnph/android-assistant/releases) 下载最新版 `app-release.apk`
 2. 把 APK 传到手机（微信/QQ 传文件、网盘、数据线复制均可），点击安装
 3. 如果提示"未知来源"，按提示允许"安装未知应用"即可
 4. 首次使用：打开 App → 设置 → 模型配置 → 添加提供商（填 Base URL + API Key + 模型名，如 DeepSeek `https://api.deepseek.com`）→ 测试连接 → 设为默认
