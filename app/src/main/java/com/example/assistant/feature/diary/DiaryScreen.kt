@@ -21,7 +21,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
@@ -345,17 +344,23 @@ private fun DiaryEntryCard(
                 )
             }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(
+                // 「补图」用文字按钮（原来裸 + 图标太不显眼，用户找不到）
+                TextButton(
                     onClick = {
                         pickImageLauncher.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                         )
-                    }
+                    },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
                 ) {
-                    Icon(Icons.Filled.Add, contentDescription = "添加图片")
+                    Text("补图", style = MaterialTheme.typography.labelMedium)
                 }
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Filled.Delete, contentDescription = "删除")
+                IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "删除",
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
         }

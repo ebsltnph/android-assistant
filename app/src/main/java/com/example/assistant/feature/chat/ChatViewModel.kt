@@ -242,10 +242,19 @@ class ChatViewModel(
     /**
      * 浮动界面识图模式对话：文字要求 + 截图**一起**发给视觉模型
      * （与聊天页附件行为一致：不重发图片进会话，用占位文本，后续追问走普通聊天）。
+     * 文字为记录意图时，后台把图片+总结文字一并存入日记（与聊天附件一致）。
      */
     fun quickSendVision(text: String, imageBase64: String, thumbnail: Bitmap?) {
         val t = text.trim()
         if (t.isEmpty() || _isStreaming.value) return
+        // 记录意图检测（浮动界面截图 + 文字，走与聊天附件相同的检测与存图逻辑）
+        if (t.isNotBlank()) {
+            scope.launch {
+                val isRecord = intentRouter.keywordRoute(t) is AssistantIntent.RecordDiary ||
+                    intentRouter.llmClassify(t) is AssistantIntent.RecordDiary
+                if (isRecord) saveDiaryWithImageInBackground(t, imageBase64)
+            }
+        }
         scope.launch {
             _isStreaming.value = true
             _error.value = null
@@ -349,7 +358,7 @@ class ChatViewModel(
             scope.launch {
                 val isRecord = intentRouter.keywordRoute(text) is AssistantIntent.RecordDiary ||
                     intentRouter.llmClassify(text) is AssistantIntent.RecordDiary
-                if (isRecord) saveDiaryWithImageInBackground(text, image)
+                if (isRecord) saveDiaryWithImageInBackground(text, image.base64)
             }
         }
         val placeholder = if (text.isNotEmpty()) "[📷 用户发送了一张图片]\n$text" else "[📷 用户发送了一张图片]"
@@ -543,10 +552,10 @@ class ChatViewModel(
     }
 
     /** 图片记录：图片存 filesDir + 文字 LLM 总结（失败回退原文）后一并入日记，均后台执行 */
-    private fun saveDiaryWithImageInBackground(text: String, image: PendingImage) {
+    private fun saveDiaryWithImageInBackground(text: String, imageBase64: String) {
         scope.launch {
             val path = withContext(Dispatchers.IO) {
-                ImageUtils.decodeBase64Bitmap(image.base64)?.let { bmp ->
+                ImageUtils.decodeBase64Bitmap(imageBase64)?.let { bmp ->
                     ImageUtils.saveToFilesDir(
                         context, ImageUtils.scaleBitmap(bmp), "diary_${System.currentTimeMillis()}.jpg"
                     )
