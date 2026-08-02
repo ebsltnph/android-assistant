@@ -109,12 +109,20 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **思考强度 per-provider**：ProviderProfile 加 thinkingMode/reasoningEffort 字段（SecretStore JSON 自动持久化）；ProviderRegistry.thinkingParamsFor(profile)——档案非 default 用之，否则 **fallback 旧全局 SettingsStore 值**（老用户免迁移）；12 个调用点统一替换（模式：profile 已在上方）；Agent.testConnection(profile) 签名化
   - 聊天页复制/重做文字按钮 → **图标**（ContentCopy/Refresh）；浮动界面消息气泡同款（图标在气泡外侧靠中心侧、同排不占行、气泡 0.9 宽）
   - 通用玻璃卡片组件 `core/ui/GlassCard.kt`（白 5-12% 玻璃 + 1dp 白描边 + 20dp 圆角 + 柔和阴影）
+- [x] **v1.1 记录/日记/提醒/设置 一批优化**（2026-08-02 完成并真机验证，已推送）
+  - **记录走 LLM 总结**：聊天记录（关键词/LLM 判断）→ **回复完成后**用「最近一轮用户消息 + 助手回复」总结入日记（总结模型能看到主聊天模型的回复；**只用一轮**——用户话题跳跃，多轮易记偏；失败回退原文不丢记录）；浮动面板「记录」气泡直接记原文
+  - **助手系统提示词明确无主动记录能力**：主模型不假装已记录；用户明确记录意愿时在回复里输出「📔 记录内容：…」，由另一次调用（`DiarySummarizer`）落库；意图分类（record_diary 判据）、记忆抽取（≥7 才存，6 分及以下不存）、记录整理提示词同步对齐实际
+  - **日记图片**：DB v5（imagePath 列 + 合并单本迁移一次完成）；图片存 `filesDir/diary_images`（JPEG 90，DB 只存路径）；聊天发图+记录 / 悬浮球识图+记录自动带图（视觉回复完成后后台存图+总结）；日记页卡片「+」补图/换图/看大图，删条目同步删文件；每日小结/记忆抽取只处理文字，图片不参与（用户确认）
+  - **合并单一「日记」本**：迁移自动把工作/生活条目并回「日记」本（新装机 seed 单本）；IntentRouter 不再按关键词选本；日记页去掉切本/新建本 UI
+  - **提醒重复修复（B1/B2/B3）**：App 启动/开机恢复时，未确认的重复提醒**同时重排下一次主闹钟**（原来只排 5 分钟确认闹钟——错过触发后每日/每周提醒永久失效，用户反馈的根因）；`ReminderScheduler.nextOccurrence`（daily+1天/weekly+7天，过期自动推进）统一 3 处：触发后重排/启动恢复/添加对话框；添加对话框选当天已过时间自动推进；每周提醒本来就有，修复后可靠
+  - **设置页「聊天上下文长度」**：5-50 轮（默认 10），`Session.maxTurns` 可变 + ChatViewModel 订阅实时生效
+  - **思考展开收起**：聊天页/浮动界面气泡的模型思考内容默认收起（60 字摘要），点击展开/收起
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细计划见 `C:\Users\98662\.claude\plans\indexed-booping-mccarthy.md`。
 
-**下次会话待办**：① P7 真·语音唤醒词（可选，真机验证语音方案）；② 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）；③ 桌面小部件（用户决定本次不做，留待后续）；④ 主界面 UI 重构已完成（2026-08-02 推送），用户后续可能继续提 UI 细节调整；⑤ **开源准备**（2026-08-02 记录，未开始）：仓库 README、许可证、敏感信息检查（API Key/路径等不要进公开仓库）；⑥ **不同安卓设备兼容性改造**（记录，未开始）：目前只在荣耀 X50 GT 验证过，需考虑分辨率/刘海屏/其他厂商后台限制/无 GMS 场景；⑦ **语音输出**（记录，未开始）：TTS 朗读回复，需适配荣耀/华为语音引擎。
+**下次会话待办**：① P7 真·语音唤醒词（可选，真机验证语音方案）；② 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）；③ 桌面小部件（用户决定暂不做，留待后续）；④ UI 细节调整（用户会继续提，见记忆 [[ui-polish-needed]]）；⑤ **开源准备**（记录，未开始）：仓库 README、许可证、敏感信息检查（API Key/路径等不要进公开仓库）；⑥ **不同安卓设备兼容性改造**（记录，未开始）：目前只在荣耀 X50 GT 验证过，需考虑分辨率/刘海屏/其他厂商后台限制/无 GMS 场景；⑦ **语音输出**（记录，未开始）：TTS 朗读回复，需适配荣耀/华为语音引擎。
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 
@@ -141,3 +149,6 @@ GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段�
 - **adb input 注入触摸到不了 overlay 悬浮窗（P6 踩坑）**：`adb shell input tap/swipe` 的注入事件不投递给 TYPE_APPLICATION_OVERLAY 窗口——悬浮球点击没法自动化验证，必须真人手点
 - **窗口级模糊在荣耀不可用（P6 踩坑）**：FLAG_BLUR_BEHIND + 反射 setBlurBehindRadius 均无效（荣耀没开放）——用「深墨变暗层 + 噪点蒙层 + 动态光晕」模拟毛玻璃氛围
 - **FGS(specialUse) 后台启动 Activity（P6 已验证可用）**：悬浮球服务（FGS specialUse）startActivity 开浮动界面，SYSTEM_ALERT_WINDOW 权限豁免后台启动限制（荣耀上有效）；BOOT_COMPLETED 启动 FGS 是豁免场景
+- **WhileSubscribed StateFlow 无订阅者不更新（v1.1 踩坑）**：`stateIn(SharingStarted.WhileSubscribed(5000))` 只在**有订阅者**时收集上游——删掉唯一 collect 它的 UI（如日记切本 FilterChip 行）后 `.value` 永远停在初始空值，初始化逻辑读它必然失败（日记页空白回归）。对策：初始化直接查库（suspend DAO，如 `diaryRepository.defaultBook()`），不要读 WhileSubscribed 流的缓存值
+- **BitmapFactory.decodeByteArray 长度传 0（v1.1 踩坑）**：`decodeByteArray(bytes, 0, 0)` 的 length=0 会被当作空数据**解码返回 null（不抛异常）**——发图+记录只存文字不存图（真机数据确认 imagePath 全 null 而手动补图正常）。必须传真实长度 `0, bytes.size`
+- **DataStore 提示词键缺失=用代码默认值（v1.1 验证）**：设置页「恢复默认」（`PromptStore.resetPrompt` 删键）后该键消失，`prompt(key)` 回退 `key.default`——改 PromptStore 默认值要生效需用户恢复默认或删除存储值；存过的旧值会覆盖新默认（可 `run-as cat files/datastore/prompts.preferences_pb` 检查，protobuf 字段：Entry=field1(key=1/value=2)，Value 内 string=field5/int=field3）
