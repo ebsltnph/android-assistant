@@ -75,12 +75,13 @@ object ImageUtils {
     /**
      * base64 → Bitmap（聊天附件存的 PNG base64 解码，供转存日记图片用）。
      * 失败返回 null。
+     * 注意：decodeByteArray 的 length 必须传 bytes.size——传 0 会被当成空数据
+     * 解码返回 null（曾导致发图+记录只存文字不存图）。
      */
     fun decodeBase64Bitmap(base64: String): Bitmap? {
         return try {
-            BitmapFactory.decodeByteArray(
-                Base64.decode(base64, Base64.NO_WRAP), 0, 0
-            )
+            val bytes = Base64.decode(base64, Base64.NO_WRAP)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (e: Exception) {
             null
         }
