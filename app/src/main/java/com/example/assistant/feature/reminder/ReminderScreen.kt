@@ -53,6 +53,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.assistant.AssistantApplication
+import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.data.db.entity.MonitoredEventEntity
 import com.example.assistant.data.db.entity.ReminderEntity
 import java.text.SimpleDateFormat
@@ -475,7 +476,14 @@ private fun AddReminderDialog(
                         )
                         set(Calendar.MILLISECOND, 0)
                     }
-                    onConfirm(title.trim(), local.timeInMillis, repeatRule)
+                    // 重复提醒选当天已过时间：推进到下一次（daily+1天/weekly+7天），
+                    // 避免闹钟排在过去立刻触发；一次性提醒维持现状
+                    val trigger = if (repeatRule != null) {
+                        ReminderScheduler.nextOccurrence(
+                            local.timeInMillis, repeatRule, System.currentTimeMillis()
+                        ) ?: local.timeInMillis
+                    } else local.timeInMillis
+                    onConfirm(title.trim(), trigger, repeatRule)
                 }
             ) { Text("添加") }
         },

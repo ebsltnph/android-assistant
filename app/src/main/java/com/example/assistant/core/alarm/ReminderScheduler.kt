@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Build
 import com.example.assistant.data.db.entity.ReminderEntity
 import com.example.assistant.receiver.ReminderReceiver
+import java.util.Calendar
 
 /**
  * 提醒排程器：封装 AlarmManager。
@@ -28,6 +29,23 @@ class ReminderScheduler(private val context: Context) {
 
         /** 确认重复闹钟的 requestCode 偏移（与主闹钟区分，避免互相取消） */
         private const val ACK_REPEAT_REQUEST_OFFSET = 1_000_000
+
+        /**
+         * 下一次触发时间：daily +1 天 / weekly +7 天（时刻不变）。
+         * 结果过期（<= now）则继续推进（错过触发/闹钟延迟后恢复到未来时刻）；
+         * 一次性（repeatRule == null）或未知规则返回 null。
+         */
+        fun nextOccurrence(triggerAt: Long, repeatRule: String?, now: Long): Long? {
+            if (repeatRule == null) return null
+            val dayStep = when (repeatRule) {
+                "daily" -> 1
+                "weekly" -> 7
+                else -> return null
+            }
+            val cal = Calendar.getInstance().apply { timeInMillis = triggerAt }
+            while (cal.timeInMillis <= now) cal.add(Calendar.DAY_OF_MONTH, dayStep)
+            return cal.timeInMillis
+        }
     }
 
     /** 排程一个提醒 */

@@ -9,7 +9,6 @@ import com.example.assistant.core.notification.Notifier
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.util.Calendar
 
 /**
  * 提醒到点广播（含 5 分钟确认重复触发）。
@@ -66,8 +65,11 @@ class ReminderReceiver : BroadcastReceiver() {
                     )
                 }
 
-                // 重复提醒：重排下一次（daily 加 1 天 / weekly 加 7 天，时刻不变）
-                val nextTime = nextTrigger(reminder.triggerAtEpochMillis, reminder.repeatRule)
+                // 重复提醒：重排下一次（daily 加 1 天 / weekly 加 7 天，时刻不变；
+                // 闹钟延迟/错过触发导致结果已过期时会继续推进到未来时刻）
+                val nextTime = ReminderScheduler.nextOccurrence(
+                    reminder.triggerAtEpochMillis, reminder.repeatRule, System.currentTimeMillis()
+                )
                 if (nextTime != null) {
                     repo.reschedule(id, nextTime)
                     scheduler.schedule(reminder.copy(triggerAtEpochMillis = nextTime, status = "pending"))
@@ -78,17 +80,5 @@ class ReminderReceiver : BroadcastReceiver() {
                 pendingResult.finish()
             }
         }
-    }
-
-    /** 计算下一次触发时间：daily = 明天同时刻；weekly = 下周日同时刻；null = 一次性 */
-    private fun nextTrigger(triggerAt: Long, repeatRule: String?): Long? {
-        if (repeatRule == null) return null
-        val cal = Calendar.getInstance().apply { timeInMillis = triggerAt }
-        when (repeatRule) {
-            "daily" -> cal.add(Calendar.DAY_OF_MONTH, 1)
-            "weekly" -> cal.add(Calendar.DAY_OF_WEEK, 7)
-            else -> return null
-        }
-        return cal.timeInMillis
     }
 }

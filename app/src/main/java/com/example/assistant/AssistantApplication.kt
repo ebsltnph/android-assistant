@@ -6,6 +6,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.notification.Notifier
 import com.example.assistant.di.AppContainer
 import com.example.assistant.service.FloatingBallService
@@ -42,7 +43,8 @@ class AssistantApplication : Application() {
         // 提醒清理与恢复：
         // - 已触发超 24h 的一次性提醒清理（列表不堆积）
         // - 已确认的过期僵尸提醒清理（未确认的还在 5 分钟确认流程中，跳过）
-        // - 已触发但未确认的提醒：恢复 5 分钟重复闹钟（进程被杀/重启后继续提醒直到确认）
+        // - 已触发但未确认的提醒：恢复 5 分钟重复闹钟（进程被杀/重启后继续提醒直到确认）；
+        //   重复提醒同时重排下一次主闹钟（否则错过触发后每日/每周提醒永久失效）
         appScope.launch {
             val now = System.currentTimeMillis()
             container.reminderRepository.stalePending(now).forEach {
@@ -51,6 +53,15 @@ class AssistantApplication : Application() {
             container.reminderRepository.deleteStalePending(now)
             container.reminderRepository.unackedFiredPending(now).forEach {
                 container.reminderScheduler.scheduleAckRepeat(it.id)
+                if (it.repeatRule != null) {
+                    val next = ReminderScheduler.nextOccurrence(
+                        it.triggerAtEpochMillis, it.repeatRule, now
+                    ) ?: return@forEach
+                    container.reminderRepository.reschedule(it.id, next)
+                    container.reminderScheduler.schedule(
+                        it.copy(triggerAtEpochMillis = next, status = "pending")
+                    )
+                }
             }
             container.reminderRepository.cleanupFired(now - 24 * 3600_000L)
         }
