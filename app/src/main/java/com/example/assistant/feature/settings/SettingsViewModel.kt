@@ -77,6 +77,14 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setFloatingBallEnabled(v) }
     }
 
+    // ---- 对话：聊天上下文长度（轮数，默认 10） ----
+    val conversationMaxTurns: StateFlow<Int> = settingsStore.conversationMaxTurns
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 10)
+
+    fun setConversationMaxTurns(v: Int) {
+        viewModelScope.launch { settingsStore.setConversationMaxTurns(v) }
+    }
+
     init {
         refresh()
     }

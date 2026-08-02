@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -47,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -89,6 +91,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val briefingMinute by vm.briefingMinute.collectAsState()
     val quietStart by vm.quietStartMinute.collectAsState()
     val quietEnd by vm.quietEndMinute.collectAsState()
+    val conversationMaxTurns by vm.conversationMaxTurns.collectAsState()
 
     // 子页面导航（null = 顶层列表；系统返回键回退）
     var subPage by rememberSaveable { mutableStateOf<SettingsSubPage?>(null) }
@@ -129,6 +132,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 briefingMinute = briefingMinute,
                 quietStart = quietStart,
                 quietEnd = quietEnd,
+                conversationMaxTurns = conversationMaxTurns,
                 overlayGranted = overlayGranted,
                 onOpenSubPage = { subPage = it },
                 onOpenOverlaySettings = openOverlaySettings,
@@ -213,6 +217,7 @@ private fun SettingsMainList(
     briefingMinute: Int,
     quietStart: Int,
     quietEnd: Int,
+    conversationMaxTurns: Int,
     overlayGranted: Boolean,
     onOpenSubPage: (SettingsSubPage) -> Unit,
     onOpenOverlaySettings: () -> Unit,
@@ -294,12 +299,20 @@ private fun SettingsMainList(
             )
         }
 
-        // ---- 6. 搜索（keyless 默认） ----
+        // ---- 6. 聊天上下文长度 ----
+        item {
+            ConversationLengthCard(
+                current = conversationMaxTurns,
+                onSave = { vm.setConversationMaxTurns(it) }
+            )
+        }
+
+        // ---- 7. 搜索（keyless 默认） ----
         item {
             SearchSettingsCard(apiKey = searchApiKey, onSaveKey = { vm.saveSearchApiKey(it) })
         }
 
-        // ---- 7. 提示词：只保留两个常用项，其余进「高级设置」 ----
+        // ---- 8. 提示词：只保留两个常用项，其余进「高级设置」 ----
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
@@ -788,6 +801,46 @@ private fun PromptCard(key: PromptStore.PromptKey, onEdit: () -> Unit) {
                 )
             }
             TextButton(onClick = onEdit) { Text("编辑") }
+        }
+    }
+}
+
+// ======================= 聊天上下文长度 =======================
+
+/**
+ * 聊天上下文长度设置：对话能记住的最近轮数（5-50，默认 10）。
+ * 输入即改本地态，点「保存」才持久化（与搜索 API Key 卡片同一交互）。
+ */
+@Composable
+private fun ConversationLengthCard(current: Int, onSave: (Int) -> Unit) {
+    var text by remember(current) { mutableStateOf(current.toString()) }
+    val parsed = text.toIntOrNull()
+    val valid = parsed != null && parsed in 5..50
+    GlassCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("聊天上下文长度", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "对话能记住的最近轮数（5-50，默认 10）。越大上下文越全、越费 token。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it.filter(Char::isDigit).take(2) },
+                label = { Text("轮数（5-50）") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(enabled = valid, onClick = { parsed?.let(onSave) }) { Text("保存") }
+                Text(
+                    if (valid) "输入 $parsed 轮"
+                    else "当前 $current 轮 · 输入 5-50 之间",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

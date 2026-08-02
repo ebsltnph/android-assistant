@@ -66,6 +66,11 @@ class SettingsStore(context: Context) {
     val floatingBallEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_FLOATING_BALL] ?: false }
     suspend fun setFloatingBallEnabled(v: Boolean) = dataStore.edit { it[KEY_FLOATING_BALL] = v }
 
+    // ---- 对话 ----
+    /** 聊天上下文长度（对话轮数，默认 10；范围 5-50 由设置页 UI 约束） */
+    val conversationMaxTurns: Flow<Int> = dataStore.data.map { it[KEY_MAX_TURNS] ?: 10 }
+    suspend fun setConversationMaxTurns(v: Int) = dataStore.edit { it[KEY_MAX_TURNS] = v }
+
     companion object {
         private const val TAG = "SettingsStore"
         private val KEY_TTS = booleanPreferencesKey("tts_enabled")
@@ -76,6 +81,7 @@ class SettingsStore(context: Context) {
         private val KEY_THINKING_MODE = stringPreferencesKey("thinking_mode")
         private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
+        private val KEY_MAX_TURNS = intPreferencesKey("conversation_max_turns")
 
         private fun capabilityKey(c: Capability) = stringPreferencesKey("capability_${c.name}")
     }

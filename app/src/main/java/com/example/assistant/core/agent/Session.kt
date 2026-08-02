@@ -6,9 +6,19 @@ import com.example.assistant.core.network.dto.ChatMessage
  * 会话对话尾部管理：只保留最近约 10 轮。
  * 截断时永远删最早的消息（消息 0/1/2 的缓存前缀由 PromptBuilder 重建，不在此维护）。
  */
-class Session(private val maxTurns: Int = 10) {
+class Session(private var maxTurns: Int = 10) {
 
     private val messages = ArrayDeque<ChatMessage>()
+
+    /**
+     * 调整上下文长度并立即按新阈值截断（永远删最早的消息，不丢新消息）。
+     * 设置页「聊天上下文长度」实时生效时调用。
+     */
+    fun setMaxTurns(turns: Int) {
+        if (turns < 1) return
+        maxTurns = turns
+        trim()
+    }
 
     val all: List<ChatMessage> get() = messages.toList()
 
