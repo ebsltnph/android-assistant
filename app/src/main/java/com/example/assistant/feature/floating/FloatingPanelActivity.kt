@@ -669,12 +669,34 @@ private fun MessageBubble(
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
+                // 思考过程：默认收起只显示摘要，点击展开/收起（与聊天页一致）
                 if (msg.thinking.isNotBlank()) {
-                    Text(
-                        "💭 " + msg.thinking.take(60) + (if (msg.thinking.length > 60) "…" else ""),
-                        fontSize = 11.sp,
-                        color = Color.White.copy(alpha = 0.45f)
-                    )
+                    var thinkingExpanded by remember { mutableStateOf(false) }
+                    Column(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { thinkingExpanded = !thinkingExpanded }
+                            .padding(vertical = 2.dp)
+                    ) {
+                        Text(
+                            if (thinkingExpanded) "💭 思考过程（点击收起）" else "💭 思考过程（点击展开）",
+                            fontSize = 11.sp,
+                            color = Color.White.copy(alpha = 0.45f)
+                        )
+                        if (thinkingExpanded) {
+                            Text(
+                                msg.thinking,
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.45f)
+                            )
+                        } else {
+                            Text(
+                                msg.thinking.take(60) + (if (msg.thinking.length > 60) "…" else ""),
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.45f)
+                            )
+                        }
+                    }
                     Spacer(Modifier.height(2.dp))
                 }
                 Text(

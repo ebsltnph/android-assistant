@@ -6,6 +6,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -39,7 +40,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -252,18 +255,34 @@ private fun MessageBubble(
                                 .background(MaterialTheme.colorScheme.surface)
                         )
                     }
-                    // 思考过程：灰色小字 + 标注（与正式回答分开）
+                    // 思考过程：默认收起只显示摘要，点击展开/收起（思考可能很长）
                     if (msg.thinking.isNotEmpty()) {
-                        Text(
-                            "🧠 思考过程",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            msg.thinking + if (msg.streaming && msg.text.isEmpty()) "▍" else "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        var thinkingExpanded by remember { mutableStateOf(false) }
+                        Column(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { thinkingExpanded = !thinkingExpanded }
+                                .padding(vertical = 2.dp)
+                        ) {
+                            Text(
+                                if (thinkingExpanded) "🧠 思考过程（点击收起）" else "🧠 思考过程（点击展开）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (thinkingExpanded) {
+                                Text(
+                                    msg.thinking + if (msg.streaming && msg.text.isEmpty()) "▍" else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                Text(
+                                    msg.thinking.take(60) + (if (msg.thinking.length > 60) "…" else ""),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                     if (msg.text.isNotEmpty()) {
                         Text(
