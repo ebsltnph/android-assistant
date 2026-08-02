@@ -102,12 +102,19 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - 截屏延迟按入口区分：悬浮球 1.2s（通知栏已收起）/ 聊天磁贴 2.5s（通知栏可能展开）
   - 输入"识屏/识图"类指令：本地关键词直连 + **LLM 分类命中（screenSenseRequested 事件）也直连**浮动界面识图流程（不依赖后台 MainActivity 中转）
   - 设置页「悬浮球」开关卡片 + Application/BootReceiver 开机自启
+- [x] **主界面 UI 重构**（2026-08-02 完成并真机验证，已推送）
+  - **深墨夜景主题**：固定深色 darkColorScheme（背景 #0B1322、香槟金 #E4B863 primary），聊天/日记/提醒页布局不动、配色自动统一；`Theme.Assistant` windowBackground 同步改深色防启动闪白
+  - **首页改版**：标题 + 悬浮球开关（LaunchedEffect 启停服务，与设置页同状态）+ 清晨简报/昨日小结并排气泡（点击弹窗）+ 最近提醒（pending 前 4 条直显）+ 事件监控列表；提醒/事件点击跳提醒页（`AppSharedState.openEventTab` 让 ReminderScreen 打开事件 tab）
+  - **设置页重构**：内部子页面导航（`SettingsSubPage` enum + rememberSaveable + BackHandler，无 NavHost）；「模型配置」独立页——每提供商卡片内嵌**测试连接（per-provider，testResult 按 profileId 记录）+ 思考模式/深度下拉 + 能力指派 + 视觉模型说明**；悬浮球开关+「说明」按钮弹窗；每日小结/清晨简报/免打扰列表只显时间、点进子页改；搜索 keyless 徽标+「填入 API Key」折叠展开；提示词只留「助手系统提示词」「识屏提示词」，其余 8 组进「高级设置」子页
+  - **思考强度 per-provider**：ProviderProfile 加 thinkingMode/reasoningEffort 字段（SecretStore JSON 自动持久化）；ProviderRegistry.thinkingParamsFor(profile)——档案非 default 用之，否则 **fallback 旧全局 SettingsStore 值**（老用户免迁移）；12 个调用点统一替换（模式：profile 已在上方）；Agent.testConnection(profile) 签名化
+  - 聊天页复制/重做文字按钮 → **图标**（ContentCopy/Refresh）；浮动界面消息气泡同款（图标在气泡外侧靠中心侧、同排不占行、气泡 0.9 宽）
+  - 通用玻璃卡片组件 `core/ui/GlassCard.kt`（白 5-12% 玻璃 + 1dp 白描边 + 20dp 圆角 + 柔和阴影）
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，用户要求每个功能阶段完成后推送）
 详细计划见 `C:\Users\98662\.claude\plans\indexed-booping-mccarthy.md`。
 
-**下次会话待办**：① P6 已完成并真机验证（2026-08-02），待推送 GitHub；② P7 真·语音唤醒词（可选，真机验证语音方案）；③ 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）；④ 桌面小部件（原 P6 范围，用户决定本次不做，留待后续）。
+**下次会话待办**：① P7 真·语音唤醒词（可选，真机验证语音方案）；② 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）；③ 桌面小部件（用户决定本次不做，留待后续）；④ 主界面 UI 重构已完成（2026-08-02 推送），用户后续可能继续提 UI 细节调整。
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 

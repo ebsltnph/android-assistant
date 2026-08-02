@@ -2,6 +2,7 @@ package com.example.assistant.core.agent
 
 import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.ChatStream
+import com.example.assistant.core.network.ProviderProfile
 import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.SearchClient
 import com.example.assistant.core.network.SearchResult
@@ -126,7 +127,7 @@ class Agent(
         val profile = providerRegistry.profileFor(Capability.CHAT)
             ?: throw IllegalStateException("未配置对话提供商")
         val api = providerRegistry.apiFor(profile)
-        val (thinking, effort) = providerRegistry.thinkingParams()
+        val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
         val request = ChatRequest(
             model = profile.model,
             messages = messages,
@@ -145,13 +146,11 @@ class Agent(
         }
     }
 
-    /** 测试连接：发一个最小请求验证配置是否正确 */
-    suspend fun testConnection(): Result<String> {
-        val profile = providerRegistry.profileFor(Capability.CHAT)
-            ?: return Result.failure(IllegalStateException("未配置提供商"))
+    /** 测试连接：对指定档案发一个最小请求验证配置是否正确（per-provider） */
+    suspend fun testConnection(profile: ProviderProfile): Result<String> {
         return try {
             val api = providerRegistry.apiFor(profile)
-            val (thinking, effort) = providerRegistry.thinkingParams()
+            val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(ChatMessage("user", "你好，请回复\"连接成功\"四个字")),

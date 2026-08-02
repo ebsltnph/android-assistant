@@ -56,7 +56,7 @@ class EventHitJudge(
                 }
                 prompt = prompt.replace("{event}", eventText).replace("{results}", resultsText)
 
-                val (thinking, effort) = providerRegistry.thinkingParams()
+                val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
                 val request = ChatRequest(
                     model = profile.model,
                     messages = listOf(

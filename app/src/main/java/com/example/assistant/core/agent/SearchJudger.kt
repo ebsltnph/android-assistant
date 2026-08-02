@@ -33,7 +33,7 @@ class SearchJudger(
         try {
             val api = providerRegistry.apiFor(profile)
             val prompt = promptStore.prompt(PromptStore.PromptKey.SEARCH_JUDGE)
-            val (thinking, effort) = providerRegistry.thinkingParams()
+            val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(

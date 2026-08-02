@@ -23,7 +23,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -226,58 +228,74 @@ private fun MessageBubble(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = if (isUser) {
-                    MaterialTheme.colorScheme.primaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant
+        // 气泡 + 外侧操作按钮：用户消息按钮在右下，助手消息按钮在左下
+        Column(horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isUser) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    }
+                ),
+                modifier = Modifier.widthIn(max = 320.dp)
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    // 消息附带图片（识屏截图 / 上传图片）
+                    msg.image?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "消息图片",
+                            modifier = Modifier
+                                .width(180.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surface)
+                        )
+                    }
+                    // 思考过程：灰色小字 + 标注（与正式回答分开）
+                    if (msg.thinking.isNotEmpty()) {
+                        Text(
+                            "🧠 思考过程",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            msg.thinking + if (msg.streaming && msg.text.isEmpty()) "▍" else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (msg.text.isNotEmpty()) {
+                        Text(
+                            // 流式输出时追加光标，提示"正在打字"
+                            text = msg.text + if (msg.streaming) "▍" else "",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                 }
-            ),
-            modifier = Modifier.widthIn(max = 320.dp)
-        ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                // 消息附带图片（识屏截图 / 上传图片）
-                msg.image?.let {
-                    Image(
-                        bitmap = it.asImageBitmap(),
-                        contentDescription = "消息图片",
-                        modifier = Modifier
-                            .width(180.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surface)
-                    )
-                }
-                // 思考过程：灰色小字 + 标注（与正式回答分开）
-                if (msg.thinking.isNotEmpty()) {
-                    Text(
-                        "🧠 思考过程",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        msg.thinking + if (msg.streaming && msg.text.isEmpty()) "▍" else "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (msg.text.isNotEmpty()) {
-                    Text(
-                        // 流式输出时追加光标，提示"正在打字"
-                        text = msg.text + if (msg.streaming) "▍" else "",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-                // 操作按钮：复制（全部消息）；重新生成（仅最后一条助手回复）
-                if (!msg.streaming && (msg.text.isNotEmpty() || msg.thinking.isNotEmpty())) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(onClick = onCopy, contentPadding = PaddingValues(horizontal = 6.dp)) {
-                            Text("复制", style = MaterialTheme.typography.labelSmall)
-                        }
-                        if (isLastAssistant) {
-                            TextButton(onClick = onRegenerate, contentPadding = PaddingValues(horizontal = 6.dp)) {
-                                Text("重做", style = MaterialTheme.typography.labelSmall)
-                            }
+            }
+            // 气泡外操作按钮（图标）：复制（全部消息）；重做（仅最后一条助手回复）
+            if (!msg.streaming && (msg.text.isNotEmpty() || msg.thinking.isNotEmpty())) {
+                Row(
+                    horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
+                    IconButton(onClick = onCopy, modifier = Modifier.size(30.dp)) {
+                        Icon(
+                            Icons.Filled.ContentCopy,
+                            contentDescription = "复制",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                    if (isLastAssistant) {
+                        IconButton(onClick = onRegenerate, modifier = Modifier.size(30.dp)) {
+                            Icon(
+                                Icons.Filled.Refresh,
+                                contentDescription = "重做",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
                         }
                     }
                 }

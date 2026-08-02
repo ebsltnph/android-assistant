@@ -56,17 +56,21 @@ class ProviderRegistry(
     }
 
     /**
-     * 高级设置里的思考参数（所有请求统一应用）。
-     * - thinking："default" 不发；on/off 发 DeepSeek 格式 {"type":"enabled"/"disabled"}
-     * - reasoningEffort："default" 不发；low/medium/high 直接透传（OpenAI 兼容格式）
+     * 某档案的思考参数（per-provider）。
+     * - 档案自己的 thinkingMode/reasoningEffort 非 "default" 时用之；
+     * - 否则 fallback 到旧全局设置（兼容 2026-08-02 之前的用户配置，无需迁移）。
+     * - thinking："on"/"off" 发 DeepSeek 格式 {"type":"enabled"/"disabled"}，"default" 不发
+     * - reasoningEffort："low"/"medium"/"high" 直接透传（OpenAI 兼容格式），"default" 不发
      */
-    suspend fun thinkingParams(): Pair<JsonObject?, String?> {
-        val thinking = when (settingsStore.thinkingMode.first()) {
+    suspend fun thinkingParamsFor(profile: ProviderProfile): Pair<JsonObject?, String?> {
+        val mode = profile.thinkingMode.takeIf { it != "default" } ?: settingsStore.thinkingMode.first()
+        val effort = profile.reasoningEffort.takeIf { it != "default" }
+            ?: settingsStore.reasoningEffort.first()
+        val thinking = when (mode) {
             "on" -> buildJsonObject { put("type", JsonPrimitive("enabled")) }
             "off" -> buildJsonObject { put("type", JsonPrimitive("disabled")) }
             else -> null
         }
-        val effort = settingsStore.reasoningEffort.first().takeIf { it != "default" }
-        return thinking to effort
+        return thinking to effort.takeIf { it != "default" }
     }
 }

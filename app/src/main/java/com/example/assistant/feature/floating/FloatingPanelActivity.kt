@@ -1,5 +1,6 @@
 package com.example.assistant.feature.floating
 
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -47,7 +48,9 @@ import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Screenshot
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.TextFields
@@ -370,7 +373,15 @@ private fun FloatingPanelScreen(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                OutputArea(messages = messages, isStreaming = isStreaming)
+                val clipboard = context.getSystemService(ClipboardManager::class.java)
+                OutputArea(
+                    messages = messages,
+                    isStreaming = isStreaming,
+                    onCopy = { msg ->
+                        clipboard?.setText(android.text.SpannableString(msg.text))
+                    },
+                    onRegenerate = { vm.regenerate(it) }
+                )
             }
 
             AnimatedVisibility(
@@ -572,12 +583,18 @@ private fun FloatingPanelScreen(
 
 /** 输出区：最近会话消息列表（与 App 聊天页同一份数据） */
 @Composable
-private fun OutputArea(messages: List<ChatUiMessage>, isStreaming: Boolean) {
+private fun OutputArea(
+    messages: List<ChatUiMessage>,
+    isStreaming: Boolean,
+    onCopy: (ChatUiMessage) -> Unit,
+    onRegenerate: (Long) -> Unit
+) {
     val listState = rememberLazyListState()
     // 新消息/流式更新自动滚到底
     LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
     }
+    val lastId = messages.lastOrNull()?.id
     Column(modifier = Modifier.fillMaxSize().padding(vertical = 6.dp)) {
         if (messages.isEmpty()) {
             Text(
@@ -588,7 +605,14 @@ private fun OutputArea(messages: List<ChatUiMessage>, isStreaming: Boolean) {
             )
         } else {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                items(messages.takeLast(30)) { msg -> MessageBubble(msg) }
+                items(messages.takeLast(30)) { msg ->
+                    MessageBubble(
+                        msg = msg,
+                        isLastAssistant = msg.role == "assistant" && msg.id == lastId,
+                        onCopy = { onCopy(msg) },
+                        onRegenerate = { onRegenerate(msg.id) }
+                    )
+                }
             }
         }
     }
@@ -596,7 +620,13 @@ private fun OutputArea(messages: List<ChatUiMessage>, isStreaming: Boolean) {
 
 /** 单条消息气泡：用户右侧香槟金玻璃、助手左侧白色低透明玻璃（glassmorphism） */
 @Composable
-private fun MessageBubble(msg: ChatUiMessage) {
+private fun MessageBubble(
+    msg: ChatUiMessage,
+    isLastAssistant: Boolean,
+    onCopy: () -> Unit,
+    onRegenerate: () -> Unit
+) {
+    // （onRegenerate 参数为 () -> Unit，外层已绑定 msg.id）
     val isUser = msg.role == "user"
     val bubbleBg: Brush = if (isUser) {
         Brush.linearGradient(
@@ -608,13 +638,27 @@ private fun MessageBubble(msg: ChatUiMessage) {
         )
     }
     val shape = RoundedCornerShape(14.dp)
+    val showActions = !msg.streaming && (msg.text.isNotEmpty() || msg.thinking.isNotEmpty())
+    // 气泡 + 同一行的侧边操作按钮（不单独占一行）：
+    // 用户消息图标在气泡左侧（行内最左），助手消息图标在气泡右侧（行内最右）；
+    // 图标都靠屏幕中心侧，两边对称；气泡间距保持紧凑
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom
     ) {
+        if (isUser && showActions) {
+            BubbleActions(
+                isUser = true,
+                showRegenerate = false,
+                onCopy = onCopy,
+                onRegenerate = onRegenerate
+            )
+        }
         Box(
             modifier = Modifier
-                .fillMaxWidth(0.82f)
+                // 横向稍窄（0.9 权重），留出行内余量，玻璃气泡不撑满
+                .weight(0.9f)
                 .clip(shape)
                 .background(bubbleBg)
                 .border(
@@ -638,6 +682,44 @@ private fun MessageBubble(msg: ChatUiMessage) {
                     fontSize = 14.sp,
                     lineHeight = 19.sp,
                     color = Color.White.copy(alpha = 0.92f)
+                )
+            }
+        }
+        if (!isUser && showActions) {
+            BubbleActions(
+                isUser = false,
+                showRegenerate = isLastAssistant,
+                onCopy = onCopy,
+                onRegenerate = onRegenerate
+            )
+        }
+    }
+}
+
+/** 气泡侧边的操作按钮列（贴底部）：复制；重做（仅最后一条助手回复） */
+@Composable
+private fun BubbleActions(
+    isUser: Boolean,
+    showRegenerate: Boolean,
+    onCopy: () -> Unit,
+    onRegenerate: () -> Unit
+) {
+    Column(horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
+        IconButton(onClick = onCopy, modifier = Modifier.size(26.dp)) {
+            Icon(
+                Icons.Filled.ContentCopy,
+                contentDescription = "复制",
+                tint = Color.White.copy(alpha = 0.55f),
+                modifier = Modifier.size(13.dp)
+            )
+        }
+        if (showRegenerate) {
+            IconButton(onClick = onRegenerate, modifier = Modifier.size(26.dp)) {
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = "重做",
+                    tint = Color.White.copy(alpha = 0.55f),
+                    modifier = Modifier.size(14.dp)
                 )
             }
         }

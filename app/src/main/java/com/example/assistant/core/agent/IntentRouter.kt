@@ -64,7 +64,7 @@ class IntentRouter(
         try {
             val api = providerRegistry.apiFor(profile)
             val prompt = promptStore.prompt(PromptStore.PromptKey.INTENT_CLASSIFIER)
-            val (thinking, effort) = providerRegistry.thinkingParams()
+            val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(

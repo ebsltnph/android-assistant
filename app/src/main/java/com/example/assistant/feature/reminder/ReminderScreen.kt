@@ -40,6 +40,7 @@ import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import com.example.assistant.core.AppSharedState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,6 +84,15 @@ fun ReminderScreen(modifier: Modifier = Modifier) {
 
     var showAdd by remember { mutableStateOf(false) }
     var subTab by rememberSaveable { mutableStateOf(0) } // 0=提醒 1=事件监控
+
+    // 首页「事件监控」气泡点击 → 打开事件 tab（消费后置回）
+    val openEventTab by AppSharedState.openEventTab.collectAsState()
+    LaunchedEffect(openEventTab) {
+        if (openEventTab) {
+            subTab = 1
+            AppSharedState.openEventTab.value = false
+        }
+    }
 
     // 精确闹钟权限提示（未授权时提醒可能延迟到 ±10 分钟窗口内）
     val exactAlarmGranted = remember { app.container.reminderScheduler.canExact() }

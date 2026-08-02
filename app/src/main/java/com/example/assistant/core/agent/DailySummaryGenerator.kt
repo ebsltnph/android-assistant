@@ -55,7 +55,7 @@ class DailySummaryGenerator(
                 val api = providerRegistry.apiFor(profile)
                 val prompt = promptStore.prompt(PromptStore.PromptKey.DAILY_SUMMARY)
                 val diaryText = entries.joinToString("\n") { "· ${entryTime(it.createdAtEpochMillis)} ${it.content}" }
-                val (thinking, effort) = providerRegistry.thinkingParams()
+                val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
                 val request = ChatRequest(
                     model = profile.model,
                     messages = listOf(

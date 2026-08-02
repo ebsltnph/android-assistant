@@ -30,9 +30,9 @@ class SettingsViewModel(
     private val _assignments = MutableStateFlow<Map<Capability, String?>>(emptyMap())
     val assignments: StateFlow<Map<Capability, String?>> = _assignments
 
-    /** 测试连接的结果 */
-    private val _testResult = MutableStateFlow<TestResult?>(null)
-    val testResult: StateFlow<TestResult?> = _testResult
+    /** 测试连接的结果（per-provider：profileId -> 结果；Testing 表示该档案正在测试） */
+    private val _testResult = MutableStateFlow<Map<String, TestResult>>(emptyMap())
+    val testResult: StateFlow<Map<String, TestResult>> = _testResult
 
     /** 每日小结自动总结时间（分钟数，默认 21:00=1260，可精确到分钟） */
     val summaryMinute: StateFlow<Int> = settingsStore.dailySummaryMinute
@@ -67,21 +67,6 @@ class SettingsViewModel(
 
     fun setQuietWindow(startMinute: Int, endMinute: Int) {
         viewModelScope.launch { settingsStore.setQuietWindow(startMinute, endMinute) }
-    }
-
-    // ---- 高级设置：思考开关与深度 ----
-    val thinkingMode: StateFlow<String> = settingsStore.thinkingMode
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "default")
-
-    val reasoningEffort: StateFlow<String> = settingsStore.reasoningEffort
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "default")
-
-    fun setThinkingMode(v: String) {
-        viewModelScope.launch { settingsStore.setThinkingMode(v) }
-    }
-
-    fun setReasoningEffort(v: String) {
-        viewModelScope.launch { settingsStore.setReasoningEffort(v) }
     }
 
     // ---- P6：悬浮球 ----
@@ -139,18 +124,24 @@ class SettingsViewModel(
         }
     }
 
-    fun testConnection() {
+    /** 对指定档案测试连接（per-provider，结果按档案 id 记录） */
+    fun testConnection(profileId: String) {
         viewModelScope.launch {
-            _testResult.value = TestResult.Testing
-            _testResult.value = agent.testConnection().fold(
+            _testResult.value = _testResult.value + (profileId to TestResult.Testing)
+            val result = _profiles.value.firstOrNull { it.id == profileId }
+                ?.let { agent.testConnection(it) }
+                ?: Result.failure(IllegalStateException("档案不存在"))
+            _testResult.value = _testResult.value + (profileId to result.fold(
                 onSuccess = { TestResult.Success(it) },
                 onFailure = { TestResult.Failure(it.message ?: "连接失败") }
-            )
+            ))
         }
     }
 
-    fun clearTestResult() {
-        _testResult.value = null
+    /** 设置某档案的思考强度（per-provider，随档案持久化） */
+    fun setProfileThinking(profileId: String, thinkingMode: String, reasoningEffort: String) {
+        val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        saveProfile(profile.copy(thinkingMode = thinkingMode, reasoningEffort = reasoningEffort))
     }
 
     sealed interface TestResult {

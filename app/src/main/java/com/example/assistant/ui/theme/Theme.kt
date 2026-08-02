@@ -1,45 +1,51 @@
 package com.example.assistant.ui.theme
 
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
-)
+/** 香槟金主色上的文字（深色保证对比度） */
+private val ColorOnPrimary = Color(0xFF1A1300)
 
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
+/**
+ * 深墨夜景配色（glassmorphism，与浮动界面 FloatingPanelActivity 一致）。
+ * App 固定深色主题（不跟随系统亮/暗，也不用 Material You 动态取色——统一视觉风格）。
+ */
+private val NightColorScheme = darkColorScheme(
+    primary = ChampagneGold,
+    onPrimary = ColorOnPrimary,
+    primaryContainer = ChampagneGoldContainer,
+    onPrimaryContainer = OnChampagneGoldContainer,
+    secondary = NightSecondary,
+    onSecondary = NightBackground,
+    secondaryContainer = NightSecondaryContainer,
+    onSecondaryContainer = OnNightSecondaryContainer,
+    tertiary = NightInfo,
+    onTertiary = NightBackground,
+    background = NightBackground,
+    onBackground = NightOnBackground,
+    surface = NightSurface,
+    onSurface = NightOnBackground,
+    surfaceVariant = NightSurfaceVariant,
+    onSurfaceVariant = NightOnSurfaceVariant,
+    surfaceContainerLowest = NightBackgroundDeep,
+    surfaceContainerLow = NightBackground,
+    surfaceContainer = NightSurface,
+    surfaceContainerHigh = NightSurfaceVariant,
+    surfaceContainerHighest = NightSurfaceHigh,
+    outline = NightOutline,
+    outlineVariant = NightOutline,
+    inverseSurface = NightOnBackground,
+    inverseOnSurface = NightBackground,
+    inversePrimary = ChampagneGold,
+    scrim = NightBackgroundDeep
 )
 
 @Composable
-fun AssistantTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Android 12+ 系统支持 Material You 动态取色时启用（荣耀 MagicOS 上一般不可用，回退默认色）
-    dynamicColor: Boolean = true,
-    content: @Composable () -> Unit
-) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
+fun AssistantTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = NightColorScheme,
         typography = Typography,
         content = content
     )

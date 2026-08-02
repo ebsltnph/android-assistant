@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Compose 全权接管界面，XML 主题只需无 ActionBar -->
+    <!-- Compose 全权接管界面，XML 主题只需无 ActionBar；背景用深墨夜景色（避免启动闪白） -->
     <style name="Theme.Assistant" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:windowBackground">#0B1322</item>
     </style>
 
     <!-- 浮动界面（悬浮球展开面板）用：透明窗口，让下层 App 可见，

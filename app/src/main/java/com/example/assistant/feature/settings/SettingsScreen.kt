@@ -4,10 +4,12 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,16 +17,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,11 +55,16 @@ import com.example.assistant.AssistantApplication
 import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.ProviderProfile
 import com.example.assistant.core.storage.PromptStore
+import com.example.assistant.core.ui.GlassCard
 import com.example.assistant.service.FloatingBallService
 import kotlinx.coroutines.launch
 
 /**
- * 设置页：模型提供商管理（多档案、能力指派、测试连接）+ 提示词编辑。
+ * 设置页（2026-08-02 重构，glassmorphism 深墨夜景）：
+ * 顶层列表只保留高频入口，详细配置各自点进子页面（内部导航，无 NavHost）。
+ *
+ * 子页面：模型配置 / 每日小结 / 清晨简报 / 免打扰 / 提示词高级设置。
+ * 思考强度已改为 per-provider（在「模型配置」里每个提供商单独设置）。
  */
 @Composable
 fun SettingsScreen(modifier: Modifier = Modifier) {
@@ -78,12 +83,18 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val profiles by vm.profiles.collectAsState()
     val assignments by vm.assignments.collectAsState()
     val testResult by vm.testResult.collectAsState()
+    val floatingBallEnabled by vm.floatingBallEnabled.collectAsState()
+    val searchApiKey by vm.searchApiKey.collectAsState()
+    val summaryMinute by vm.summaryMinute.collectAsState()
+    val briefingMinute by vm.briefingMinute.collectAsState()
+    val quietStart by vm.quietStartMinute.collectAsState()
+    val quietEnd by vm.quietEndMinute.collectAsState()
 
-    var editing by remember { mutableStateOf<ProviderProfile?>(null) }
-    var showAddDialog by remember { mutableStateOf(false) }
-    var editingPromptKey by remember { mutableStateOf<PromptStore.PromptKey?>(null) }
+    // 子页面导航（null = 顶层列表；系统返回键回退）
+    var subPage by rememberSaveable { mutableStateOf<SettingsSubPage?>(null) }
+    BackHandler(enabled = subPage != null) { subPage = null }
 
-    // 悬浮窗权限状态（识屏小窗需要）；从系统设置页返回时刷新
+    // 悬浮窗权限状态（悬浮球需要）；从系统设置页返回时刷新
     var overlayGranted by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -96,12 +107,275 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // 顶层共享的弹窗状态
+    var editingPromptKey by remember { mutableStateOf<PromptStore.PromptKey?>(null) }
+    var showBallHelp by remember { mutableStateOf(false) }
+
+    val openOverlaySettings: () -> Unit = {
+        context.startActivity(
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+        )
+    }
+
+    Column(modifier = modifier.fillMaxSize()) {
+        when (subPage) {
+            null -> SettingsMainList(
+                vm = vm,
+                profiles = profiles,
+                assignments = assignments,
+                floatingBallEnabled = floatingBallEnabled,
+                searchApiKey = searchApiKey,
+                summaryMinute = summaryMinute,
+                briefingMinute = briefingMinute,
+                quietStart = quietStart,
+                quietEnd = quietEnd,
+                overlayGranted = overlayGranted,
+                onOpenSubPage = { subPage = it },
+                onOpenOverlaySettings = openOverlaySettings,
+                onShowBallHelp = { showBallHelp = true },
+                onEditPrompt = { editingPromptKey = it },
+                onToggleFloatingBall = { on ->
+                    vm.setFloatingBallEnabled(on)
+                    if (on) FloatingBallService.start(context) else FloatingBallService.stop(context)
+                }
+            )
+            SettingsSubPage.MODEL_CONFIG -> ModelConfigPage(
+                vm = vm,
+                profiles = profiles,
+                assignments = assignments,
+                testResult = testResult,
+                onBack = { subPage = null },
+                onOpenOverlaySettings = openOverlaySettings
+            )
+            SettingsSubPage.DAILY_SUMMARY -> DailySummaryPage(
+                summaryMinute = summaryMinute,
+                onMinuteChange = { minute ->
+                    vm.setSummaryMinute(minute)
+                    // 重排 WorkManager 周期任务（直接用刚选的分钟，避免读到旧值）
+                    app.rescheduleDailySummary(minute)
+                },
+                onBack = { subPage = null }
+            )
+            SettingsSubPage.BRIEFING -> BriefingPage(
+                briefingMinute = briefingMinute,
+                onMinuteChange = { minute ->
+                    vm.setBriefingMinute(minute)
+                    app.rescheduleBriefing(minute)
+                },
+                onBack = { subPage = null }
+            )
+            SettingsSubPage.QUIET_HOURS -> QuietHoursPage(
+                startMinute = quietStart,
+                endMinute = quietEnd,
+                onWindowChange = { s, e -> vm.setQuietWindow(s, e) },
+                onBack = { subPage = null }
+            )
+            SettingsSubPage.PROMPTS_ADVANCED -> PromptsAdvancedPage(
+                onBack = { subPage = null },
+                onEditPrompt = { editingPromptKey = it }
+            )
+        }
+    }
+
+    editingPromptKey?.let { key ->
+        PromptEditDialog(key = key, onDismiss = { editingPromptKey = null })
+    }
+    if (showBallHelp) {
+        AlertDialog(
+            onDismissRequest = { showBallHelp = false },
+            title = { Text("悬浮球说明") },
+            text = {
+                Text(
+                    "需「显示在其他应用上层」权限；开启后通知栏常驻一条「悬浮球运行中」；" +
+                        "识图每次都要点一次系统授权。为保证悬浮球不被系统杀掉，建议在系统设置里" +
+                        "给随身助手开启「电池无限制」和「自启动」。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = { TextButton(onClick = { showBallHelp = false }) { Text("知道了") } }
+        )
+    }
+}
+
+/** 设置页子页面（内部导航，不引入 NavHost） */
+private enum class SettingsSubPage { MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED }
+
+// ======================= 顶层列表 =======================
+
+@Composable
+private fun SettingsMainList(
+    vm: SettingsViewModel,
+    profiles: List<ProviderProfile>,
+    assignments: Map<Capability, String?>,
+    floatingBallEnabled: Boolean,
+    searchApiKey: String,
+    summaryMinute: Int,
+    briefingMinute: Int,
+    quietStart: Int,
+    quietEnd: Int,
+    overlayGranted: Boolean,
+    onOpenSubPage: (SettingsSubPage) -> Unit,
+    onOpenOverlaySettings: () -> Unit,
+    onShowBallHelp: () -> Unit,
+    onEditPrompt: (PromptStore.PromptKey) -> Unit,
+    onToggleFloatingBall: (Boolean) -> Unit
+) {
     LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { Text("模型提供商", style = MaterialTheme.typography.titleLarge) }
+        item { Text("设置", style = MaterialTheme.typography.headlineSmall) }
+
+        // ---- 1. 模型配置入口 ----
+        item {
+            EntryCard(
+                title = "模型配置",
+                subtitle = "提供商、连接测试、思考强度、能力指派",
+                onClick = { onOpenSubPage(SettingsSubPage.MODEL_CONFIG) }
+            )
+        }
+
+        // ---- 2. 悬浮球 ----
+        item {
+            GlassCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("悬浮球", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "在任意应用上层悬浮一个小球，点开即可识屏 / 提醒 / 记录 / 对话",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = onShowBallHelp) { Text("说明") }
+                    Switch(
+                        checked = floatingBallEnabled,
+                        onCheckedChange = onToggleFloatingBall
+                    )
+                }
+                if (floatingBallEnabled && !overlayGranted) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        Text("悬浮窗权限：未开启", color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = onOpenOverlaySettings) { Text("去开启") }
+                    }
+                }
+            }
+        }
+
+        // ---- 3. 每日小结 ----
+        item {
+            EntryCard(
+                title = "每日小结 · ${formatMinute(summaryMinute)}",
+                subtitle = "每天定时汇总日记生成小结（可同步系统日历）",
+                onClick = { onOpenSubPage(SettingsSubPage.DAILY_SUMMARY) }
+            )
+        }
+
+        // ---- 4. 清晨简报 ----
+        item {
+            EntryCard(
+                title = "清晨简报 · ${formatMinute(briefingMinute)}",
+                subtitle = "每天推送今日提醒 + 昨日小结",
+                onClick = { onOpenSubPage(SettingsSubPage.BRIEFING) }
+            )
+        }
+
+        // ---- 5. 免打扰 ----
+        item {
+            val enabled = quietStart != quietEnd
+            EntryCard(
+                title = "免打扰" + if (enabled) " · ${formatMinute(quietStart)}-${formatMinute(quietEnd)}" else "",
+                subtitle = if (enabled) "时段内提醒静默、事件监控不打扰" else "未开启（提醒将随时响铃）",
+                onClick = { onOpenSubPage(SettingsSubPage.QUIET_HOURS) }
+            )
+        }
+
+        // ---- 6. 搜索（keyless 默认） ----
+        item {
+            SearchSettingsCard(apiKey = searchApiKey, onSaveKey = { vm.saveSearchApiKey(it) })
+        }
+
+        // ---- 7. 提示词：只保留两个常用项，其余进「高级设置」 ----
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "提示词",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { onOpenSubPage(SettingsSubPage.PROMPTS_ADVANCED) }) {
+                    Text("高级设置")
+                }
+            }
+        }
+        item {
+            PromptCard(
+                key = PromptStore.PromptKey.ASSISTANT_SYSTEM,
+                onEdit = { onEditPrompt(PromptStore.PromptKey.ASSISTANT_SYSTEM) }
+            )
+        }
+        item {
+            PromptCard(
+                key = PromptStore.PromptKey.SCREEN_SENSE,
+                onEdit = { onEditPrompt(PromptStore.PromptKey.SCREEN_SENSE) }
+            )
+        }
+    }
+}
+
+/** 列表入口卡片：标题 + 简述 + 右箭头（glassmorphism 玻璃卡） */
+@Composable
+private fun EntryCard(title: String, subtitle: String, onClick: () -> Unit) {
+    GlassCard(onClick = onClick) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                Icons.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+// ======================= 模型配置子页面 =======================
+
+@Composable
+private fun ModelConfigPage(
+    vm: SettingsViewModel,
+    profiles: List<ProviderProfile>,
+    assignments: Map<Capability, String?>,
+    testResult: Map<String, SettingsViewModel.TestResult>,
+    onBack: () -> Unit,
+    onOpenOverlaySettings: () -> Unit
+) {
+    var editing by remember { mutableStateOf<ProviderProfile?>(null) }
+    var showAddDialog by remember { mutableStateOf(false) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("模型配置", onBack) }
+        item {
+            Text(
+                "每个提供商可单独测试连接、设置思考强度；对话 / 识屏 / 分类可指派不同提供商。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         if (profiles.isEmpty()) {
             item {
@@ -114,10 +388,13 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         items(profiles, key = { it.id }) { profile ->
-            ProviderCard(
+            ModelProviderCard(
                 profile = profile,
+                testResult = testResult[profile.id],
                 onEdit = { editing = profile },
-                onDelete = { vm.deleteProfile(profile.id) }
+                onDelete = { vm.deleteProfile(profile.id) },
+                onTest = { vm.testConnection(profile.id) },
+                onThinkingChange = { t, e -> vm.setProfileThinking(profile.id, t, e) }
             )
         }
 
@@ -137,7 +414,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-
         Capability.entries.forEach { cap ->
             item {
                 CapabilityRow(
@@ -149,160 +425,35 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             }
         }
 
+        // 视觉模型状态说明（原「识屏」分区信息并入此处）
         item { HorizontalDivider() }
-        item { Text("连接测试", style = MaterialTheme.typography.titleLarge) }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(
-                    onClick = { vm.testConnection() },
-                    enabled = profiles.isNotEmpty()
-                ) {
-                    Text("测试当前「对话」配置")
-                }
-                when (val r = testResult) {
-                    null -> {}
-                    is SettingsViewModel.TestResult.Testing -> Text(" 测试中…")
-                    is SettingsViewModel.TestResult.Success ->
-                        Text(" ✓ ${r.reply}", color = MaterialTheme.colorScheme.primary)
-                    is SettingsViewModel.TestResult.Failure ->
-                        Text(" ✗ ${r.message}", color = MaterialTheme.colorScheme.error)
-                }
-            }
-        }
-
-        item { HorizontalDivider() }
-        item { Text("搜索（联网）", style = MaterialTheme.typography.titleLarge) }
-        item {
-            SearchSettingsCard(
-                apiKey = vm.searchApiKey.collectAsState().value,
-                onSaveKey = { vm.saveSearchApiKey(it) }
-            )
-        }
-
-        item { HorizontalDivider() }
-        item { Text("识屏", style = MaterialTheme.typography.titleLarge) }
-        item {
-            // 视觉模型状态：能力指派 → 默认档案兜底（与 ProviderRegistry.profileFor 一致）
             val visionProfile = remember(assignments, profiles) {
                 val assignedId = assignments[Capability.VISION]
                 profiles.firstOrNull { it.id == assignedId }
                     ?: profiles.firstOrNull { it.isDefault }
             }
-            ScreenSenseSettingsCard(
-                visionProfile = visionProfile,
-                overlayGranted = overlayGranted,
-                onOpenOverlaySettings = {
-                    context.startActivity(
-                        Intent(
-                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:${context.packageName}")
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("识屏（视觉）模型", style = MaterialTheme.typography.titleSmall)
+                    when {
+                        visionProfile == null || !visionProfile.isConfigured() -> Text(
+                            "⚠️ 未配置识屏模型。请在「能力指派」中把「识屏（视觉）」指派给支持图片输入的模型" +
+                                "（如通义 qwen-vl、智谱 GLM-4V、Kimi vision、OpenAI gpt-4o）；" +
+                                "DeepSeek 官方 API 不支持图片。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
                         )
-                    )
-                }
-            )
-        }
-
-        item { HorizontalDivider() }
-        item { Text("悬浮球", style = MaterialTheme.typography.titleLarge) }
-        item {
-            // 悬浮球开关：开 → 启动前台服务（常驻），关 → 停止
-            FloatingBallSettingsCard(
-                enabled = vm.floatingBallEnabled.collectAsState().value,
-                overlayGranted = overlayGranted,
-                onEnabledChange = { on ->
-                    vm.setFloatingBallEnabled(on)
-                    if (on) FloatingBallService.start(context) else FloatingBallService.stop(context)
-                },
-                onOpenOverlaySettings = {
-                    context.startActivity(
-                        Intent(
-                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:${context.packageName}")
+                        !visionProfile.supportsVision -> Text(
+                            "⚠️ 识屏模型：${visionProfile.name}（未勾选「支持图片输入」，编辑该提供商开启）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
                         )
-                    )
-                }
-            )
-        }
-
-        item { HorizontalDivider() }
-        item { Text("高级设置", style = MaterialTheme.typography.titleLarge) }
-        item {
-            Text(
-                "控制推理模型（如 DeepSeek v4 flash）的思考行为。关闭思考可省流量加快回复，调浅深度可减少思考消耗。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        item {
-            AdvancedSettingsCard(
-                thinkingMode = vm.thinkingMode.collectAsState().value,
-                reasoningEffort = vm.reasoningEffort.collectAsState().value,
-                onThinkingModeChange = { vm.setThinkingMode(it) },
-                onReasoningEffortChange = { vm.setReasoningEffort(it) }
-            )
-        }
-
-        item { HorizontalDivider() }
-        item { Text("每日小结", style = MaterialTheme.typography.titleLarge) }
-        item {
-            DailySummarySettingsCard(
-                summaryMinute = vm.summaryMinute.collectAsState().value,
-                onMinuteChange = { minute ->
-                    vm.setSummaryMinute(minute)
-                    // 重排 WorkManager 周期任务（直接用刚选的分钟，避免读到旧值）
-                    app.rescheduleDailySummary(minute)
-                }
-            )
-        }
-
-        item { HorizontalDivider() }
-        item { Text("清晨简报", style = MaterialTheme.typography.titleLarge) }
-        item {
-            BriefingSettingsCard(
-                briefingMinute = vm.briefingMinute.collectAsState().value,
-                onMinuteChange = { minute ->
-                    vm.setBriefingMinute(minute)
-                    // 重排 WorkManager（直接用刚选的值）
-                    app.rescheduleBriefing(minute)
-                }
-            )
-        }
-
-        item { HorizontalDivider() }
-        item { Text("免打扰", style = MaterialTheme.typography.titleLarge) }
-        item {
-            QuietHoursSettingsCard(
-                startMinute = vm.quietStartMinute.collectAsState().value,
-                endMinute = vm.quietEndMinute.collectAsState().value,
-                onWindowChange = { start, end -> vm.setQuietWindow(start, end) }
-            )
-        }
-
-        item { HorizontalDivider() }
-        item { Text("提示词（可编辑）", style = MaterialTheme.typography.titleLarge) }
-        item {
-            Text(
-                "各组提示词相互独立、各有默认值（含 LLM 判断类）。可随时编辑或恢复默认。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        PromptStore.PromptKey.entries.forEach { key ->
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(key.displayName, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                key.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        TextButton(onClick = { editingPromptKey = key }) { Text("编辑") }
+                        else -> Text(
+                            "✓ 识屏模型：${visionProfile.name}（${visionProfile.model}）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
             }
@@ -324,56 +475,175 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             }
         )
     }
+}
 
-    // 提示词编辑对话框（9 组提示词通用，含恢复默认）
-    editingPromptKey?.let { key ->
-        PromptEditDialog(
-            key = key,
-            onDismiss = { editingPromptKey = null }
-        )
+/** 提供商卡片：档案信息 + 连接测试 + 思考强度（per-provider） */
+@Composable
+private fun ModelProviderCard(
+    profile: ProviderProfile,
+    testResult: SettingsViewModel.TestResult?,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onTest: () -> Unit,
+    onThinkingChange: (String, String) -> Unit
+) {
+    GlassCard {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(profile.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (profile.isDefault) AssistChip(onClick = {}, label = { Text("默认") })
+                if (profile.supportsVision) AssistChip(onClick = {}, label = { Text("视觉") })
+                IconButton(onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = "编辑") }
+                IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "删除") }
+            }
+            Text(
+                "${profile.model.ifBlank { "（未填模型）" }} · ${profile.baseUrl.ifBlank { "（未填地址）" }}",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (profile.isConfigured()) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.error
+            )
+            if (!profile.isConfigured()) {
+                Text("配置不完整", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            }
+
+            // 连接测试（每个提供商独立）
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 4.dp)
+            ) {
+                OutlinedButton(onClick = onTest, enabled = profile.isConfigured()) {
+                    Text("测试连接")
+                }
+                when (val r = testResult) {
+                    null -> {}
+                    is SettingsViewModel.TestResult.Testing -> Text(
+                        " 测试中…", style = MaterialTheme.typography.bodySmall
+                    )
+                    is SettingsViewModel.TestResult.Success -> Text(
+                        " ✓ ${r.reply}", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    is SettingsViewModel.TestResult.Failure -> Text(
+                        " ✗ ${r.message}", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            // 思考强度（per-provider）
+            ThinkingSettingRow(
+                label = "思考模式",
+                options = thinkingOptions,
+                current = thinkingOptions.firstOrNull { it.second == profile.thinkingMode }?.first
+                    ?: thinkingOptions.first().first,
+                onSelect = { onThinkingChange(it.second, profile.reasoningEffort) }
+            )
+            ThinkingSettingRow(
+                label = "思考深度",
+                options = effortOptions,
+                current = effortOptions.firstOrNull { it.second == profile.reasoningEffort }?.first
+                    ?: effortOptions.first().first,
+                onSelect = { onThinkingChange(profile.thinkingMode, it.second) }
+            )
+        }
     }
 }
 
-/**
- * 悬浮球设置卡片（P6）：开关 + 悬浮窗权限引导 + 使用说明。
- * 开启 = 启动前台服务（通知栏常驻一条低优先级通知，悬浮球在任意应用上层）。
- */
+/** 思考模式选项（显示名 -> 存储值） */
+private val thinkingOptions = listOf(
+    "跟随模型默认" to "default",
+    "开启思考" to "on",
+    "关闭思考" to "off"
+)
+
+private val effortOptions = listOf(
+    "跟随模型默认" to "default",
+    "简洁（思考短）" to "low",
+    "均衡" to "medium",
+    "深入（思考长）" to "high"
+)
+
+/** 一行"标签 + 下拉选择"设置项 */
 @Composable
-private fun FloatingBallSettingsCard(
-    enabled: Boolean,
-    overlayGranted: Boolean,
-    onEnabledChange: (Boolean) -> Unit,
-    onOpenOverlaySettings: () -> Unit
+private fun ThinkingSettingRow(
+    label: String,
+    options: List<Pair<String, String>>,
+    current: String,
+    onSelect: (Pair<String, String>) -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("启用悬浮球", style = MaterialTheme.typography.titleSmall)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        var expanded by remember { mutableStateOf(false) }
+        OutlinedButton(onClick = { expanded = true }) { Text(current) }
+        androidx.compose.material3.DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { opt ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(opt.first) },
+                    onClick = { onSelect(opt); expanded = false }
+                )
+            }
+        }
+    }
+}
+
+// ======================= 时间设置子页面 =======================
+
+/** 每日小结子页面：时间 + 系统日历同步 */
+@Composable
+private fun DailySummaryPage(
+    summaryMinute: Int,
+    onMinuteChange: (Int) -> Unit,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    // 系统日历 Provider 要求 READ + WRITE 两个权限同时具备（只给 WRITE 会写入失败）
+    val calendarGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.READ_CALENDAR
+    ) == PackageManager.PERMISSION_GRANTED &&
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.WRITE_CALENDAR
+        ) == PackageManager.PERMISSION_GRANTED
+    val calendarLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("每日小结", onBack) }
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("自动总结时间", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        MinutePicker(current = summaryMinute, onChange = onMinuteChange)
+                    }
                     Text(
-                        "在任意应用上层悬浮一个小球，点开即可识屏 / 提醒 / 记录 / 对话",
+                        "每天此时自动汇总当天日记，生成小结并推送通知（当天无日记则不打扰）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
-                Switch(checked = enabled, onCheckedChange = onEnabledChange)
-            }
-            if (enabled) {
-                Text(
-                    "说明：需悬浮窗权限；开启后通知栏常驻一条「悬浮球运行中」（可手动关掉，不影响功能）；" +
-                        "识图每次都要点一次系统授权。为保证悬浮球不被系统杀掉，建议在系统设置里给随身助手开启" +
-                        "「电池无限制」和「自启动」。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-                if (!overlayGranted) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 8.dp)
-                    ) {
-                        Text("悬浮窗权限：未开启", color = MaterialTheme.colorScheme.error)
-                        TextButton(onClick = onOpenOverlaySettings) { Text("去开启") }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (calendarGranted) "✓ 已同步到系统日历（每天小结成为日历事件）"
+                            else "同步到系统日历（可在日历 App 查看每日小结）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (calendarGranted) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (!calendarGranted) {
+                            OutlinedButton(onClick = {
+                                calendarLauncher.launch(
+                                    arrayOf(
+                                        android.Manifest.permission.READ_CALENDAR,
+                                        android.Manifest.permission.WRITE_CALENDAR
+                                    )
+                                )
+                            }) { Text("授权") }
+                        }
                     }
                 }
             }
@@ -381,59 +651,216 @@ private fun FloatingBallSettingsCard(
     }
 }
 
-/**
- * 识屏设置卡片：视觉模型配置状态 + 悬浮窗权限引导。
- * （识屏入口：聊天说「识屏」/ 快捷磁贴 / 分享 / 聊天上传图片）
- */
+/** 清晨简报子页面：时间选择 */
 @Composable
-private fun ScreenSenseSettingsCard(
-    visionProfile: ProviderProfile?,
-    overlayGranted: Boolean,
-    onOpenOverlaySettings: () -> Unit
+private fun BriefingPage(
+    briefingMinute: Int,
+    onMinuteChange: (Int) -> Unit,
+    onBack: () -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text("识别屏幕 / 图片", style = MaterialTheme.typography.titleSmall)
-            // 视觉模型状态
-            when {
-                visionProfile == null || !visionProfile.isConfigured() -> Text(
-                    "⚠️ 未配置识屏模型。请在「能力指派」中把「识屏（视觉）」指派给支持图片输入的模型" +
-                        "（如通义 qwen-vl、智谱 GLM-4V、Kimi vision、OpenAI gpt-4o）；" +
-                        "DeepSeek 官方 API 不支持图片。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-                !visionProfile.supportsVision -> Text(
-                    "⚠️ 识屏模型：${visionProfile.name}（未勾选「支持图片输入」，编辑该提供商开启）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-                else -> Text(
-                    "✓ 识屏模型：${visionProfile.name}（${visionProfile.model}）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            // 悬浮窗权限状态（识屏小窗显示在其他 App 上层需要）
-            Text(
-                if (overlayGranted) "悬浮窗权限：已开启 ✓"
-                else "⚠️ 悬浮窗权限未开启（识屏小窗需要）",
-                style = MaterialTheme.typography.bodySmall,
-                color = if (overlayGranted) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.error
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("清晨简报", onBack) }
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("简报时间", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        MinutePicker(current = briefingMinute, onChange = onMinuteChange)
+                    }
+                    Text(
+                        "每天此时推送清晨简报：今日提醒 + 昨日小结。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-            )
-            if (!overlayGranted) {
-                Button(onClick = onOpenOverlaySettings) { Text("去开启悬浮窗权限") }
             }
         }
     }
 }
+
+/** 免打扰子页面：开关 + 起止时间（跨午夜支持，如 23:00-07:00） */
+@Composable
+private fun QuietHoursPage(
+    startMinute: Int,
+    endMinute: Int,
+    onWindowChange: (Int, Int) -> Unit,
+    onBack: () -> Unit
+) {
+    // 起止相同 = 未启用
+    val enabled = startMinute != endMinute
+    var enabledState by remember { mutableStateOf(enabled) }
+    var startState by remember { mutableStateOf(startMinute) }
+    var endState by remember { mutableStateOf(endMinute) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("免打扰", onBack) }
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("启用免打扰", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = enabledState,
+                            onCheckedChange = { on ->
+                                enabledState = on
+                                // 关闭 = 起止相同；开启 = 用当前选的时段
+                                if (!on) onWindowChange(startState, startState)
+                                else onWindowChange(startState, endState)
+                            }
+                        )
+                    }
+                    if (enabledState) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("开始", modifier = Modifier.weight(1f))
+                            MinutePicker(current = startState) { m ->
+                                startState = m
+                                onWindowChange(m, endState)
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("结束", modifier = Modifier.weight(1f))
+                            MinutePicker(current = endState) { m ->
+                                endState = m
+                                onWindowChange(startState, m)
+                            }
+                        }
+                    }
+                    Text(
+                        "免打扰时段内：提醒静默（不响铃）、事件监控不打扰。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ======================= 提示词高级设置子页面 =======================
+
+/** 提示词高级设置：除「助手系统提示词」「识屏提示词」外的其余 8 组 */
+@Composable
+private fun PromptsAdvancedPage(
+    onBack: () -> Unit,
+    onEditPrompt: (PromptStore.PromptKey) -> Unit
+) {
+    val advancedKeys = PromptStore.PromptKey.entries.filter {
+        it != PromptStore.PromptKey.ASSISTANT_SYSTEM && it != PromptStore.PromptKey.SCREEN_SENSE
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("提示词高级设置", onBack) }
+        item {
+            Text(
+                "低频提示词（记忆抽取 / 小结 / 分类 / 时间解析 / 事件 / 简报 / 搜索判断）。可随时编辑或恢复默认。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        items(advancedKeys) { key ->
+            PromptCard(key = key, onEdit = { onEditPrompt(key) })
+        }
+    }
+}
+
+/** 一行提示词卡片（显示名 + 简述 + 编辑按钮） */
+@Composable
+private fun PromptCard(key: PromptStore.PromptKey, onEdit: () -> Unit) {
+    GlassCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(key.displayName, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    key.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(onClick = onEdit) { Text("编辑") }
+        }
+    }
+}
+
+// ======================= 搜索（keyless 默认折叠） =======================
+
+/**
+ * 搜索设置卡片（Tavily）：默认 keyless 免费模式（免注册、有限流）；
+ * 点「填入 API Key」展开输入框；填 Key 后每月 1000 次免费（tavily.com 注册）。
+ */
+@Composable
+private fun SearchSettingsCard(
+    apiKey: String,
+    onSaveKey: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var key by remember { mutableStateOf(apiKey) }
+    GlassCard {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("搜索（联网）", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        if (apiKey.isBlank()) "对话搜索与新闻监控 · 当前为免费模式（keyless）"
+                        else "对话搜索与新闻监控 · 已配置 API Key",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (apiKey.isBlank()) {
+                    AssistChip(onClick = {}, label = { Text("免费模式") })
+                }
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "收起" else "填入 API Key")
+                }
+            }
+            if (expanded) {
+                OutlinedTextField(
+                    value = key,
+                    onValueChange = { key = it },
+                    label = { Text("Tavily API Key（可选）") },
+                    placeholder = { Text("tvly-…，留空用免费模式") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { onSaveKey(key) }) { Text("保存") }
+                    Text(
+                        if (key.isBlank()) "留空 = keyless 免费模式" else "已保存",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ======================= 通用组件 =======================
+
+/** 子页面顶部：返回按钮 + 标题 */
+@Composable
+private fun SubPageHeader(title: String, onBack: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+        }
+        Text(title, style = MaterialTheme.typography.titleLarge)
+    }
+}
+
+/** 分钟数 → "HH:mm"（用于列表里显示当前设定时间） */
+private fun formatMinute(minute: Int): String = "%02d:%02d".format(minute / 60, minute % 60)
 
 /** 分钟级时间选择器：小时 + 分钟两个下拉并排（所有时间设置统一用） */
 @Composable
@@ -451,302 +878,20 @@ private fun MinutePicker(current: Int, onChange: (Int) -> Unit) {
             Text("%02d".format(minute), style = MaterialTheme.typography.bodyMedium)
         }
     }
-    DropdownMenu(expanded = hourExpanded, onDismissRequest = { hourExpanded = false }) {
+    androidx.compose.material3.DropdownMenu(expanded = hourExpanded, onDismissRequest = { hourExpanded = false }) {
         (0..23).forEach { h ->
-            DropdownMenuItem(
+            androidx.compose.material3.DropdownMenuItem(
                 text = { Text("%02d:00".format(h)) },
                 onClick = { onChange(h * 60 + minute); hourExpanded = false }
             )
         }
     }
-    DropdownMenu(expanded = minuteExpanded, onDismissRequest = { minuteExpanded = false }) {
+    androidx.compose.material3.DropdownMenu(expanded = minuteExpanded, onDismissRequest = { minuteExpanded = false }) {
         (0..59).forEach { m ->
-            DropdownMenuItem(
+            androidx.compose.material3.DropdownMenuItem(
                 text = { Text(":%02d".format(m)) },
                 onClick = { onChange(hour * 60 + m); minuteExpanded = false }
             )
-        }
-    }
-}
-
-/**
- * 每日小结设置卡片：
- * - 自动总结时间（小时+分钟，保存后重排周期任务）
- * - 系统日历同步开关（需 WRITE_CALENDAR 权限）
- */
-@Composable
-private fun DailySummarySettingsCard(
-    summaryMinute: Int,
-    onMinuteChange: (Int) -> Unit
-) {
-    val context = LocalContext.current
-    // 系统日历 Provider 要求 READ + WRITE 两个权限同时具备（只给 WRITE 会写入失败）
-    val calendarGranted = androidx.core.content.ContextCompat.checkSelfPermission(
-        context, android.Manifest.permission.READ_CALENDAR
-    ) == PackageManager.PERMISSION_GRANTED &&
-        androidx.core.content.ContextCompat.checkSelfPermission(
-            context, android.Manifest.permission.WRITE_CALENDAR
-        ) == PackageManager.PERMISSION_GRANTED
-    val calendarLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { }
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("自动总结时间", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                MinutePicker(current = summaryMinute, onChange = onMinuteChange)
-            }
-            Text(
-                "每天此时自动汇总当天日记，生成小结并推送通知（当天无日记则不打扰）。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (calendarGranted) "✓ 已同步到系统日历（每天小结成为日历事件）"
-                    else "同步到系统日历（可在日历 App 查看每日小结）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (calendarGranted) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
-                if (!calendarGranted) {
-                    OutlinedButton(onClick = {
-                        calendarLauncher.launch(
-                            arrayOf(
-                                android.Manifest.permission.READ_CALENDAR,
-                                android.Manifest.permission.WRITE_CALENDAR
-                            )
-                        )
-                    }) { Text("授权") }
-                }
-            }
-        }
-    }
-}
-
-/** 清晨简报设置卡片：时间选择（小时+分钟），保存后重排周期任务 */
-@Composable
-private fun BriefingSettingsCard(
-    briefingMinute: Int,
-    onMinuteChange: (Int) -> Unit
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("简报时间", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                MinutePicker(current = briefingMinute, onChange = onMinuteChange)
-            }
-            Text(
-                "每天此时推送清晨简报：今日提醒 + 昨日小结。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-/** 免打扰设置卡片：开关 + 起止时间（跨午夜支持，如 23:00-07:00） */
-@Composable
-private fun QuietHoursSettingsCard(
-    startMinute: Int,
-    endMinute: Int,
-    onWindowChange: (Int, Int) -> Unit
-) {
-    // 起止相同 = 未启用
-    val enabled = startMinute != endMinute
-    var enabledState by remember { mutableStateOf(enabled) }
-    var startState by remember { mutableStateOf(startMinute) }
-    var endState by remember { mutableStateOf(endMinute) }
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("启用免打扰", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                Switch(
-                    checked = enabledState,
-                    onCheckedChange = { on ->
-                        enabledState = on
-                        // 关闭 = 起止相同；开启 = 用当前选的时段
-                        if (!on) onWindowChange(startState, startState)
-                        else onWindowChange(startState, endState)
-                    }
-                )
-            }
-            // 起止时间选择（仅开启时显示，精确到分钟）
-            if (enabledState) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("开始", modifier = Modifier.weight(1f))
-                    MinutePicker(current = startState) { m ->
-                        startState = m
-                        onWindowChange(m, endState)
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("结束", modifier = Modifier.weight(1f))
-                    MinutePicker(current = endState) { m ->
-                        endState = m
-                        onWindowChange(startState, m)
-                    }
-                }
-            }
-            Text(
-                if (enabledState) "免打扰时段内：提醒静默（不响铃）、事件监控不打扰。"
-                else "免打扰时段内：提醒静默（不响铃）、事件监控不打扰。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-/**
- * 搜索设置卡片（Tavily）：留空 = keyless 免费模式（免注册、有限流）；
- * 填 API Key = 免费 1000 次/月，注册 https://tavily.com 获取。
- */
-@Composable
-private fun SearchSettingsCard(
-    apiKey: String,
-    onSaveKey: (String) -> Unit
-) {
-    var key by remember { mutableStateOf(apiKey) }
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                "对话搜索与新闻监控共用。留空则用免注册免费模式（有限流）；注册 Tavily（tavily.com）填 Key 后每月 1000 次免费。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            OutlinedTextField(
-                value = key,
-                onValueChange = { key = it },
-                label = { Text("Tavily API Key（可选）") },
-                placeholder = { Text("tvly-…，留空用免费模式") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { onSaveKey(key) }) { Text("保存") }
-                Text(
-                    if (key.isBlank()) "当前：免费模式（keyless）" else "已配置 API Key",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-/**
- * 高级设置卡片：思考开关 + 思考深度。
- * 均为三态/多选下拉，"跟随默认"= 不发送参数（各厂商模型按自身默认行为）。
- */
-@Composable
-private fun AdvancedSettingsCard(
-    thinkingMode: String,
-    reasoningEffort: String,
-    onThinkingModeChange: (String) -> Unit,
-    onReasoningEffortChange: (String) -> Unit
-) {
-    // 下拉选项：显示名 -> 存储值
-    val thinkingOptions = listOf(
-        "跟随模型默认" to "default",
-        "开启思考" to "on",
-        "关闭思考" to "off"
-    )
-    val effortOptions = listOf(
-        "跟随模型默认" to "default",
-        "简洁（思考短）" to "low",
-        "均衡" to "medium",
-        "深入（思考长）" to "high"
-    )
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            DropdownSettingRow(
-                label = "思考模式",
-                options = thinkingOptions,
-                current = thinkingOptions.firstOrNull { it.second == thinkingMode }?.first ?: thinkingOptions.first().first,
-                onSelect = { onThinkingModeChange(it.second) }
-            )
-            DropdownSettingRow(
-                label = "思考深度",
-                options = effortOptions,
-                current = effortOptions.firstOrNull { it.second == reasoningEffort }?.first ?: effortOptions.first().first,
-                onSelect = { onReasoningEffortChange(it.second) }
-            )
-        }
-    }
-}
-
-/** 一行"标签 + 下拉选择"设置项 */
-@Composable
-private fun DropdownSettingRow(
-    label: String,
-    options: List<Pair<String, String>>,
-    current: String,
-    onSelect: (Pair<String, String>) -> Unit
-) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-        var expanded by remember { mutableStateOf(false) }
-        OutlinedButton(onClick = { expanded = true }) {
-            Text(current)
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { opt ->
-                DropdownMenuItem(
-                    text = { Text(opt.first) },
-                    onClick = { onSelect(opt); expanded = false }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProviderCard(
-    profile: ProviderProfile,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(profile.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                if (profile.isDefault) AssistChip(onClick = {}, label = { Text("默认") })
-                if (profile.supportsVision) AssistChip(onClick = {}, label = { Text("视觉") })
-                IconButton(onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = "编辑") }
-                IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "删除") }
-            }
-            Text(
-                "${profile.model.ifBlank { "（未填模型）" }} · ${profile.baseUrl.ifBlank { "（未填地址）" }}",
-                style = MaterialTheme.typography.bodySmall,
-                color = if (profile.isConfigured()) MaterialTheme.colorScheme.onSurfaceVariant
-                else MaterialTheme.colorScheme.error
-            )
-            if (!profile.isConfigured()) {
-                Text("配置不完整", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-            }
         }
     }
 }
@@ -761,32 +906,30 @@ private fun CapabilityRow(
     val defaultName = profiles.firstOrNull { it.isDefault }?.name ?: "（无默认档案）"
     val currentName = profiles.firstOrNull { it.id == assignedId }?.name ?: "默认"
 
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(capability.displayName, style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        capability.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+    GlassCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(capability.displayName, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    capability.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            var expanded by remember { mutableStateOf(false) }
+            OutlinedButton(onClick = { expanded = true }) {
+                Text(currentName)
+            }
+            androidx.compose.material3.DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("默认（$defaultName）") },
+                    onClick = { onAssign(null); expanded = false }
+                )
+                profiles.forEach { p ->
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(p.name) },
+                        onClick = { onAssign(p.id); expanded = false }
                     )
-                }
-                var expanded by remember { mutableStateOf(false) }
-                OutlinedButton(onClick = { expanded = true }) {
-                    Text(currentName)
-                }
-                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    DropdownMenuItem(
-                        text = { Text("默认（$defaultName）") },
-                        onClick = { onAssign(null); expanded = false }
-                    )
-                    profiles.forEach { p ->
-                        DropdownMenuItem(
-                            text = { Text(p.name) },
-                            onClick = { onAssign(p.id); expanded = false }
-                        )
-                    }
                 }
             }
         }
@@ -846,7 +989,7 @@ private fun ProviderEditDialog(
     )
 }
 
-/** 提示词编辑对话框（9 组通用）：加载当前值、保存、恢复默认 */
+/** 提示词编辑对话框：加载当前值、保存、恢复默认 */
 @Composable
 private fun PromptEditDialog(
     key: PromptStore.PromptKey,

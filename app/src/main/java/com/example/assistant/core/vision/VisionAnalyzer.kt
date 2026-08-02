@@ -48,7 +48,7 @@ class VisionAnalyzer(
             val profile = visionProfile() ?: return@withContext GUIDE_TEXT
             try {
                 val api = providerRegistry.apiFor(profile)
-                val (thinking, effort) = providerRegistry.thinkingParams()
+                val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
                 val request = ChatRequest(
                     model = profile.model,
                     messages = buildMessages(imageBase64, instruction),
@@ -79,7 +79,7 @@ class VisionAnalyzer(
     fun analyzeStream(imageBase64: String, instruction: String): Flow<ChatResponse> = flow {
         val profile = visionProfile() ?: throw IllegalStateException(GUIDE_TEXT)
         val api = providerRegistry.apiFor(profile)
-        val (thinking, effort) = providerRegistry.thinkingParams()
+        val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
         val request = ChatRequest(
             model = profile.model,
             messages = buildMessages(imageBase64, instruction),

@@ -21,4 +21,7 @@ object AppSharedState {
 
     /** 待确认的提醒 id（提醒通知点击 → App 弹确认窗，确认/稍后后置回 null） */
     val pendingReminderConfirmId = MutableStateFlow<Long?>(null)
+
+    /** 首页事件气泡点击 → 跳提醒页并打开「事件监控」tab（ReminderScreen 消费后置回 false） */
+    val openEventTab = MutableStateFlow(false)
 }

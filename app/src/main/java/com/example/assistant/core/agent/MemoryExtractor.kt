@@ -59,7 +59,7 @@ class MemoryExtractor(
         try {
             val api = providerRegistry.apiFor(profile)
             val prompt = promptStore.prompt(PromptStore.PromptKey.MEMORY_EXTRACT)
-            val (thinking, effort) = providerRegistry.thinkingParams()
+            val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(
