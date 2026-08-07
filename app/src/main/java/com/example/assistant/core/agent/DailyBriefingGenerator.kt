@@ -65,7 +65,7 @@ class DailyBriefingGenerator(
             val api = providerRegistry.apiFor(profile)
             var prompt = promptStore.prompt(PromptStore.PromptKey.BRIEFING)
             prompt = prompt.replace("{reminders}", remindersText).replace("{summary}", summaryText)
-            val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
+            val effort = providerRegistry.reasoningEffortFor(profile)
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(
@@ -76,7 +76,6 @@ class DailyBriefingGenerator(
                 temperature = 0.7,
                 // 1024：推理模型思考占配额
                 maxTokens = 1024,
-                thinking = thinking,
                 reasoningEffort = effort
             )
             val header = providerRegistry.authHeader(profile.apiKey)

@@ -56,7 +56,7 @@ class EventHitJudge(
                 }
                 prompt = prompt.replace("{event}", eventText).replace("{results}", resultsText)
 
-                val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
+                val effort = providerRegistry.reasoningEffortFor(profile)
                 val request = ChatRequest(
                     model = profile.model,
                     messages = listOf(
@@ -66,7 +66,6 @@ class EventHitJudge(
                     temperature = 0.0,
                     maxTokens = 1024,
                     responseFormat = ResponseFormat("json_object"),
-                    thinking = thinking,
                     reasoningEffort = effort
                 )
                 val header = providerRegistry.authHeader(profile.apiKey)

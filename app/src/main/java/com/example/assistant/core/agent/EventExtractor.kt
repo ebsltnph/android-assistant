@@ -58,7 +58,7 @@ class EventExtractor(
         try {
             val api = providerRegistry.apiFor(profile)
             val prompt = promptStore.prompt(PromptStore.PromptKey.MONITOR_EXTRACT)
-            val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
+            val effort = providerRegistry.reasoningEffortFor(profile)
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(
@@ -68,7 +68,6 @@ class EventExtractor(
                 temperature = 0.0,
                 maxTokens = 1024,
                 responseFormat = ResponseFormat("json_object"),
-                thinking = thinking,
                 reasoningEffort = effort
             )
             val header = providerRegistry.authHeader(profile.apiKey)

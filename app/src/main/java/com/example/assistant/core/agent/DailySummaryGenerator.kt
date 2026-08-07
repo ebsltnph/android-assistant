@@ -55,7 +55,7 @@ class DailySummaryGenerator(
                 val api = providerRegistry.apiFor(profile)
                 val prompt = promptStore.prompt(PromptStore.PromptKey.DAILY_SUMMARY)
                 val diaryText = entries.joinToString("\n") { "· ${entryTime(it.createdAtEpochMillis)} ${it.content}" }
-                val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
+                val effort = providerRegistry.reasoningEffortFor(profile)
                 val request = ChatRequest(
                     model = profile.model,
                     messages = listOf(
@@ -66,7 +66,6 @@ class DailySummaryGenerator(
                     // 4096：推理模型（如 deepseek-v4-flash）的思考过程占 max_tokens 配额，
                     // 800 会被思考吃光导致输出为空（finish=length），调大留出输出空间
                     maxTokens = 4096,
-                    thinking = thinking,
                     reasoningEffort = effort
                 )
                 val header = providerRegistry.authHeader(profile.apiKey)

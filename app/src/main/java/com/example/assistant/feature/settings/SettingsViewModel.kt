@@ -154,10 +154,10 @@ class SettingsViewModel(
         }
     }
 
-    /** 设置某档案的思考强度（per-provider，随档案持久化） */
-    fun setProfileThinking(profileId: String, thinkingMode: String, reasoningEffort: String) {
+    /** 设置某档案的思考深度（per-provider，随档案持久化） */
+    fun setProfileThinking(profileId: String, reasoningEffort: String) {
         val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
-        saveProfile(profile.copy(thinkingMode = thinkingMode, reasoningEffort = reasoningEffort))
+        saveProfile(profile.copy(reasoningEffort = reasoningEffort))
     }
 
     sealed interface TestResult {

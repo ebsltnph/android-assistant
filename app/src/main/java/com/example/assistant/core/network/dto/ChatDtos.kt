@@ -114,11 +114,12 @@ data class ChatRequest(
     @SerialName("response_format")
     val responseFormat: ResponseFormat? = null,
     /**
-     * 思考开关（DeepSeek 格式：{"type":"enabled"} / {"type":"disabled"}）。
+     * 思考深度（OpenAI 通用格式："low"/"medium"/"high"）。
+     * 只用通用参数：DeepSeek 的 thinking 开关格式（{"type":"enabled"/"disabled"}）
+     * 是它的专属参数，中转站/OpenAI 系模型不认识会直接 HTTP 400 拒绝，
+     * 故一律不发送（v1.2.x 起：思考跟随模型默认，深度可调）。
      * null = 不发送（跟随厂商/模型默认）。
      */
-    val thinking: JsonElement? = null,
-    /** 思考深度（OpenAI 格式："low"/"medium"/"high"，DeepSeek 兼容）。null = 不发送 */
     @SerialName("reasoning_effort")
     val reasoningEffort: String? = null
 )

@@ -45,7 +45,7 @@ class ReminderTimeParser(
         try {
             val api = providerRegistry.apiFor(profile)
             val prompt = promptStore.prompt(PromptStore.PromptKey.REMINDER_PARSE)
-            val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
+            val effort = providerRegistry.reasoningEffortFor(profile)
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(
@@ -56,7 +56,6 @@ class ReminderTimeParser(
                 // 1024：推理模型思考占配额（512 曾被思考吃光返回空内容）
                 maxTokens = 1024,
                 responseFormat = ResponseFormat("json_object"),
-                thinking = thinking,
                 reasoningEffort = effort
             )
             val header = providerRegistry.authHeader(profile.apiKey)

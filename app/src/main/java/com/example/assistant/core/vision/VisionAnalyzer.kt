@@ -48,14 +48,13 @@ class VisionAnalyzer(
             val profile = visionProfile() ?: return@withContext GUIDE_TEXT
             try {
                 val api = providerRegistry.apiFor(profile)
-                val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
+                val effort = providerRegistry.reasoningEffortFor(profile)
                 val request = ChatRequest(
                     model = profile.model,
                     messages = buildMessages(imageBase64, instruction),
                     temperature = 0.3,
                     // 4096：推理模型思考过程占 max_tokens 配额（P4 踩坑），一次分析给足
                     maxTokens = 4096,
-                    thinking = thinking,
                     reasoningEffort = effort
                 )
                 val header = providerRegistry.authHeader(profile.apiKey)
@@ -80,7 +79,7 @@ class VisionAnalyzer(
     fun analyzeStream(imageBase64: String, instruction: String): Flow<ChatResponse> = flow {
         val profile = visionProfile() ?: throw IllegalStateException(GUIDE_TEXT)
         val api = providerRegistry.apiFor(profile)
-        val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
+        val effort = providerRegistry.reasoningEffortFor(profile)
         val request = ChatRequest(
             model = profile.model,
             messages = buildMessages(imageBase64, instruction),
@@ -88,7 +87,6 @@ class VisionAnalyzer(
             // 4096：推理模型思考过程占 max_tokens 配额（2048 会被思考吃光，content 为空）
             maxTokens = 4096,
             stream = true,
-            thinking = thinking,
             reasoningEffort = effort
         )
         val header = providerRegistry.authHeader(profile.apiKey)

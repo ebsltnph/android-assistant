@@ -33,7 +33,7 @@ class SearchJudger(
         try {
             val api = providerRegistry.apiFor(profile)
             val prompt = promptStore.prompt(PromptStore.PromptKey.SEARCH_JUDGE)
-            val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
+            val effort = providerRegistry.reasoningEffortFor(profile)
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(
@@ -43,7 +43,6 @@ class SearchJudger(
                 temperature = 0.0,
                 // 1024：推理模型思考占配额（512 曾被吃光返回空内容）
                 maxTokens = 1024,
-                thinking = thinking,
                 reasoningEffort = effort
             )
             val header = providerRegistry.authHeader(profile.apiKey)

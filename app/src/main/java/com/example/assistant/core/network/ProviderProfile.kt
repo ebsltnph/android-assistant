@@ -17,8 +17,11 @@ data class ProviderProfile(
     val model: String = "",
     val supportsVision: Boolean = false, // 是否支持图片输入（识屏需要）
     val isDefault: Boolean = false,
-    // 思考强度（per-provider，2026-08-02 从全局设置改为每个提供商单独配置）：
-    // "default" 跟随模型默认（并用旧全局设置兜底，见 ProviderRegistry.thinkingParamsFor）
+    // 思考深度（per-provider）："default" | "low" | "medium" | "high"
+    // （OpenAI 通用参数 reasoning_effort；"default" 跟随模型默认并用旧全局设置兜底，
+    //   见 ProviderRegistry.reasoningEffortFor）
+    // thinkingMode 字段已废弃（2026-08-07 删思考开关——DeepSeek 专属参数不通用），
+    // 保留字段仅为兼容旧 JSON 反序列化，不再读写
     val thinkingMode: String = "default",
     val reasoningEffort: String = "default"
 ) {

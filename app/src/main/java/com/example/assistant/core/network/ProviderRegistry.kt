@@ -5,9 +5,6 @@ import com.example.assistant.core.network.dto.ChatResponse
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
 import kotlinx.coroutines.flow.first
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import okhttp3.ResponseBody
 import retrofit2.HttpException
 import retrofit2.Response
@@ -27,11 +24,10 @@ class ProviderRegistry(
     private val apiCache = mutableMapOf<String, OpenAiChatApi>()
     private var assignmentCache: Map<Capability, String>? = null
     /**
-     * 已知不支持思考参数的 (baseUrl|model) → 降级状态：
-     * 1 = 只去掉 thinking（保留 reasoning_effort）；2 = 两者都去掉。
+     * 已知不支持 reasoning_effort 参数的 (baseUrl|model) 集合。
      * 内存缓存即可（App 重启后第一次调用会重新探测一次并自动降级，用户无感）。
      */
-    private val thinkingUnsupported = mutableMapOf<String, Int>()
+    private val effortUnsupported = mutableSetOf<String>()
 
     fun allProfiles(): List<ProviderProfile> = secretStore.loadProfiles()
 
@@ -67,51 +63,40 @@ class ProviderRegistry(
     }
 
     /**
-     * 某档案的思考参数（per-provider）。
-     * - 档案自己的 thinkingMode/reasoningEffort 非 "default" 时用之；
+     * 某档案的思考深度（per-provider）。
+     * - 档案自己的 reasoningEffort 非 "default" 时用之；
      * - 否则 fallback 到旧全局设置（兼容 2026-08-02 之前的用户配置，无需迁移）。
-     * - thinking："on"/"off" 发 DeepSeek 格式 {"type":"enabled"/"disabled"}，"default" 不发
-     * - reasoningEffort："low"/"medium"/"high" 直接透传（OpenAI 兼容格式），"default" 不发
+     * - 只返回 OpenAI 通用参数 reasoning_effort（"low"/"medium"/"high"）；
+     *   不返回任何 DeepSeek 专属的 thinking 字段（v1.2.x 起，见 ChatRequest.reasoningEffort 注释）。
+     * - "default"（或 null）→ 不发送，跟随厂商/模型默认。
      */
-    suspend fun thinkingParamsFor(profile: ProviderProfile): Pair<JsonObject?, String?> {
-        val mode = profile.thinkingMode.takeIf { it != "default" } ?: settingsStore.thinkingMode.first()
+    suspend fun reasoningEffortFor(profile: ProviderProfile): String? {
         val effort = profile.reasoningEffort.takeIf { it != "default" }
             ?: settingsStore.reasoningEffort.first()
-        val thinking = when (mode) {
-            "on" -> buildJsonObject { put("type", JsonPrimitive("enabled")) }
-            "off" -> buildJsonObject { put("type", JsonPrimitive("disabled")) }
-            else -> null
-        }
-        return thinking to effort.takeIf { it != "default" }
+        return effort.takeIf { it != "default" }
     }
 
     /**
-     * 思考参数兼容调用：部分模型/中转站不认识 thinking（DeepSeek 格式）或
-     * reasoning_effort（OpenAI 格式）参数，带参调用会回 HTTP 400
-     * "Unknown parameter: 'thinking'"（如中转站的 gpt-5.6luna）。
+     * 思考参数兼容调用：极少数模型/中转站连 OpenAI 通用参数 reasoning_effort
+     * 也不认识，带参调用会回 HTTP 400 "Unknown parameter: 'reasoning_effort'"。
      * 自动降级策略：
-     * 1. 带思考参数正常调用；
-     * 2. HTTP 400 且错误信息明确指向未知参数 → 逐级降级重试（先去掉 thinking，
-     *    仍报错再去掉 reasoning_effort），最多两级；
+     * 1. 带 reasoning_effort 正常调用；
+     * 2. HTTP 400 且错误信息明确指向未知参数 → 去掉该参数重试一次；
      * 3. 降级成功后把该 (baseUrl|model) 记入内存缓存，后续调用直接发降级形态
      *    不再试错（App 重启后重新探测一次，用户无感）。
      * 请求本身不带思考参数时直接调用（零开销、零风险）。
      */
-    suspend fun <T> thinkingSafeCall(
+    suspend fun <T> effortSafeCall(
         profile: ProviderProfile,
         request: ChatRequest,
         header: String,
         api: OpenAiChatApi,
         call: suspend (String, ChatRequest) -> T
     ): T {
-        if (request.thinking == null && request.reasoningEffort == null) return call(header, request)
+        if (request.reasoningEffort == null) return call(header, request)
 
         val key = "${profile.normalizedBaseUrl()}|${profile.model}"
-        var req = when (thinkingUnsupported[key]) {
-            1 -> request.copy(thinking = null) // 已知 thinking 不支持：去掉它，保留 effort
-            2 -> request.copy(thinking = null, reasoningEffort = null) // 两个都不支持：全去掉
-            else -> request
-        }
+        var req = if (key in effortUnsupported) request.copy(reasoningEffort = null) else request
         while (true) {
             try {
                 return call(header, req)
@@ -132,19 +117,9 @@ class ProviderRegistry(
                 }
                 // 只对"不认识参数"类 400 降级；其他错误原样抛给上层
                 if (code != 400 || body.isNullOrBlank() || !looksLikeUnknownParameter(body)) throw e
-                // 逐级降级：先去掉 thinking（记为 1），再去掉 reasoning_effort（记为 2）
-                val next = when {
-                    req.thinking != null -> {
-                        thinkingUnsupported[key] = 1
-                        req.copy(thinking = null)
-                    }
-                    req.reasoningEffort != null -> {
-                        thinkingUnsupported[key] = 2
-                        req.copy(reasoningEffort = null)
-                    }
-                    else -> null
-                } ?: throw e
-                req = next
+                if (req.reasoningEffort == null) throw e // 已无参数可降级
+                effortUnsupported += key
+                req = req.copy(reasoningEffort = null)
             }
         }
     }
@@ -155,7 +130,7 @@ class ProviderRegistry(
         request: ChatRequest,
         header: String,
         api: OpenAiChatApi
-    ): ChatResponse = thinkingSafeCall(profile, request, header, api) { h, r -> api.chat(h, r) }
+    ): ChatResponse = effortSafeCall(profile, request, header, api) { h, r -> api.chat(h, r) }
 
     /** 流式调用兼容包装（api.chatStream + isSuccessful 检查 的直接替代） */
     suspend fun chatStreamCompat(
@@ -163,10 +138,10 @@ class ProviderRegistry(
         request: ChatRequest,
         header: String,
         api: OpenAiChatApi
-    ): Response<ResponseBody> = thinkingSafeCall(profile, request, header, api) { h, r ->
+    ): Response<ResponseBody> = effortSafeCall(profile, request, header, api) { h, r ->
         val resp = api.chatStream(h, r)
         if (!resp.isSuccessful) {
-            // 流式接口不抛异常，非 2xx 在这里转抛，由 thinkingSafeCall 判断是否降级重试
+            // 流式接口不抛异常，非 2xx 在这里转抛，由 effortSafeCall 判断是否降级重试
             throw ApiHttpException(resp.code(), resp.errorBody()?.string())
         }
         resp
@@ -176,7 +151,6 @@ class ProviderRegistry(
     private fun looksLikeUnknownParameter(body: String): Boolean {
         val b = body.lowercase()
         return b.contains("unknown parameter") || b.contains("unknown_parameter") ||
-            (b.contains("thinking") && b.contains("parameter")) ||
             (b.contains("reasoning_effort") && b.contains("parameter"))
     }
 }

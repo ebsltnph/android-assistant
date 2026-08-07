@@ -29,7 +29,7 @@ class DiarySummarizer(
         try {
             val api = providerRegistry.apiFor(profile)
             val prompt = promptStore.prompt(PromptStore.PromptKey.DIARY_SUMMARIZE)
-            val (thinking, effort) = providerRegistry.thinkingParamsFor(profile)
+            val effort = providerRegistry.reasoningEffortFor(profile)
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(
@@ -39,7 +39,6 @@ class DiarySummarizer(
                 temperature = 0.3,
                 // 1024：推理模型思考占配额（与意图分类同值）
                 maxTokens = 1024,
-                thinking = thinking,
                 reasoningEffort = effort
             )
             val header = providerRegistry.authHeader(profile.apiKey)

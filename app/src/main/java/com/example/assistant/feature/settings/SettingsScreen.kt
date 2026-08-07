@@ -457,7 +457,7 @@ private fun ModelConfigPage(
                 onEdit = { editing = profile },
                 onDelete = { vm.deleteProfile(profile.id) },
                 onTest = { vm.testConnection(profile.id) },
-                onThinkingChange = { t, e -> vm.setProfileThinking(profile.id, t, e) }
+                onThinkingChange = { e -> vm.setProfileThinking(profile.id, e) }
             )
         }
 
@@ -548,7 +548,7 @@ private fun ModelProviderCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onTest: () -> Unit,
-    onThinkingChange: (String, String) -> Unit
+    onThinkingChange: (String) -> Unit
 ) {
     GlassCard {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -593,31 +593,19 @@ private fun ModelProviderCard(
                 }
             }
 
-            // 思考强度（per-provider）
-            ThinkingSettingRow(
-                label = "思考模式",
-                options = thinkingOptions,
-                current = thinkingOptions.firstOrNull { it.second == profile.thinkingMode }?.first
-                    ?: thinkingOptions.first().first,
-                onSelect = { onThinkingChange(it.second, profile.reasoningEffort) }
-            )
+            // 思考深度（OpenAI 通用参数 reasoning_effort，2026-08-07 起只留这一个下拉：
+            // 思考开关跟随模型默认——DeepSeek 的 thinking 开关是它家专属参数，
+            // 中转站/OpenAI 系模型不认识会直接 HTTP 400 拒绝）
             ThinkingSettingRow(
                 label = "思考深度",
                 options = effortOptions,
                 current = effortOptions.firstOrNull { it.second == profile.reasoningEffort }?.first
                     ?: effortOptions.first().first,
-                onSelect = { onThinkingChange(profile.thinkingMode, it.second) }
+                onSelect = { onThinkingChange(it.second) }
             )
         }
     }
 }
-
-/** 思考模式选项（显示名 -> 存储值） */
-private val thinkingOptions = listOf(
-    "跟随模型默认" to "default",
-    "开启思考" to "on",
-    "关闭思考" to "off"
-)
 
 private val effortOptions = listOf(
     "跟随模型默认" to "default",
