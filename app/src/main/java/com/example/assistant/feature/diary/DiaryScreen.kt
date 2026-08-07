@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -444,19 +443,18 @@ private fun DiaryImageThumb(
                     .clickable(onClick = onView)
             )
         } ?: Box(Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surface))
-        // 删除按钮：右上角小黑圆点（整体小巧不遮缩略图，叉号仍清晰）
+        // 删除按钮：右上角白色叉号（无底色，不遮缩略图）
         IconButton(
             onClick = onDelete,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .size(10.dp)
-                .background(Color(0x99000000), CircleShape)
+                .size(24.dp)
         ) {
             Icon(
                 Icons.Filled.Close,
                 contentDescription = "删除这张图片",
-                tint = Color.White,
-                modifier = Modifier.size(8.dp)
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.size(12.dp)
             )
         }
     }
