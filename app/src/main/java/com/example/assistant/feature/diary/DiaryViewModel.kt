@@ -10,6 +10,8 @@ import com.example.assistant.core.notification.Notifier
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.data.db.entity.DiaryBookEntity
 import com.example.assistant.data.db.entity.DiaryEntryEntity
+import com.example.assistant.data.db.entity.DiaryEntryWithImages
+import com.example.assistant.data.db.entity.DiaryImageEntity
 import com.example.assistant.data.db.entity.MemoryEntity
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.MemoryRepository
@@ -26,7 +28,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * 日记页 ViewModel：日记本管理 + 条目列表 + 新增/删除 + 记忆抽取。
+ * 日记页 ViewModel：日记本管理 + 条目列表（含多图）+ 新增/删除 + 记忆抽取。
  */
 class DiaryViewModel(
     private val appContext: Context,
@@ -43,11 +45,11 @@ class DiaryViewModel(
     /** 当前选中的日记本 id */
     val selectedBookId = MutableStateFlow(0L)
 
-    /** 当前日记本条目（按时间倒序展示由 DAO 保证） */
-    val entries: StateFlow<List<DiaryEntryEntity>> = selectedBookId
+    /** 当前日记本条目（含图片列表，按时间倒序展示由 DAO 保证） */
+    val entries: StateFlow<List<DiaryEntryWithImages>> = selectedBookId
         .flatMapLatest { id ->
             if (id == 0L) flowOf(emptyList())
-            else diaryRepository.entriesFor(id)
+            else diaryRepository.entriesWithImagesFor(id)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -65,12 +67,18 @@ class DiaryViewModel(
      * 注意：直接查库（suspend DAO），不要读 books.value——books 是 WhileSubscribed
      * 的 StateFlow，没人订阅时永远不会更新（删掉切本 UI 后已无订阅者），
      * 读缓存值会导致 selectedBookId 永远是 0、日记页空白。
+     * 种子兜底：Application 的种子是异步的（启动期不阻塞主线程），用户快速进入
+     * 日记页时种子可能还没完成——这里查到空就自己补种再查一次。
      */
     fun initSelectedBook() {
         if (selectedBookId.value == 0L) {
             viewModelScope.launch {
-                val book = diaryRepository.defaultBook() ?: return@launch
-                selectedBookId.value = book.id
+                var book = diaryRepository.defaultBook()
+                if (book == null) {
+                    diaryRepository.ensureSeedBooks()
+                    book = diaryRepository.defaultBook()
+                }
+                selectedBookId.value = book?.id ?: 0L
             }
         }
     }
@@ -100,34 +108,70 @@ class DiaryViewModel(
         }
     }
 
-    /** 删除条目：先删图片文件再删记录（文件删不掉也只删记录，不阻塞） */
+    /**
+     * 删除条目：先删全部图片文件再删记录（文件删不掉也只删记录，不阻塞）。
+     * 图片记录随条目级联删除（FK CASCADE），这里只清理文件。
+     */
     fun deleteEntry(id: Long) {
         viewModelScope.launch {
-            val entry = diaryRepository.entryById(id)
-            if (entry?.imagePath != null) {
-                try {
-                    File(entry.imagePath).delete()
-                } catch (_: Exception) {
-                }
-            }
+            val images = diaryRepository.imagesFor(id)
+            images.forEach { deleteImageFile(it.path) }
             diaryRepository.deleteEntry(id)
         }
     }
 
-    /** 给条目补图/换图（相册 Photo Picker 回调）：读图缩放 → 存 filesDir → 更新 DB */
-    fun setEntryImage(entryId: Long, uri: Uri) {
+    /**
+     * 给条目补图（相册 Photo Picker 多选回调）：逐张读图缩放 → 存 filesDir → 追加进 DB。
+     * 一次选多张全部追加（保留已有图片）。
+     */
+    fun addImagesToEntry(entryId: Long, uris: List<Uri>) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
-            val path = withContext(Dispatchers.IO) {
-                ImageUtils.readUriBitmap(appContext, uri)?.let { bmp ->
-                    ImageUtils.saveToFilesDir(appContext, bmp, "diary_${System.currentTimeMillis()}.jpg")
+            val paths = mutableListOf<String>()
+            for (uri in uris) {
+                val path = withContext(Dispatchers.IO) {
+                    ImageUtils.readUriBitmap(appContext, uri)?.let { bmp ->
+                        ImageUtils.saveToFilesDir(
+                            appContext, bmp, "diary_${System.currentTimeMillis()}_${paths.size}.jpg"
+                        )
+                    }
                 }
+                if (path != null) paths.add(path)
             }
-            if (path != null) {
-                diaryRepository.updateEntryImage(entryId, path)
-                message.value = "📷 已添加图片"
+            if (paths.isNotEmpty()) {
+                diaryRepository.addImages(entryId, paths)
+                message.value = "📷 已添加 ${paths.size} 张图片"
             } else {
                 message.value = "⚠️ 图片读取失败，请换一张试试"
             }
+        }
+    }
+
+    /** 删除某张图片：删文件 + 删记录 */
+    fun deleteImage(image: DiaryImageEntity) {
+        viewModelScope.launch {
+            deleteImageFile(image.path)
+            diaryRepository.deleteImage(image.id)
+            message.value = "🗑️ 图片已删除"
+        }
+    }
+
+    /** 删除图片文件（失败不阻塞，忽略） */
+    private fun deleteImageFile(path: String) {
+        try {
+            File(path).delete()
+        } catch (_: Exception) {
+        }
+    }
+
+    /** 下载图片到系统相册（保存到"图片/随身助手"文件夹） */
+    fun downloadImage(image: DiaryImageEntity, onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                ImageUtils.saveToGallery(appContext, image.path)
+            }
+            message.value = if (ok) "💾 已保存到系统相册" else "⚠️ 保存失败，请检查存储权限"
+            onResult(ok)
         }
     }
 

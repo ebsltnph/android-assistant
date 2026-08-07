@@ -43,8 +43,9 @@ object ScreenSenseStarter {
     fun finishAuth(activity: Activity, resultCode: Int, data: Intent, delayMs: Long = ScreenCaptureService.DEFAULT_DELAY_MS) {
         // 提示用户关闭通知栏（荣耀无法编程收起，截屏会带上它）；截屏完成后服务自动取消
         Notifier.notifyScreenSensePreparing(activity)
-        // 授权流程结束：恢复 manifest 的 fullSensor（跟随传感器）
-        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        // 授权流程结束：恢复 manifest 的 sensor 方向（跟随传感器，且尊重系统「自动旋转」开关——
+        // 不能用 FULL_SENSOR：它会无视用户关闭自动旋转的设置，导致 App 仍自动旋转）
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
         // 退后台：截屏目标是"用户当前看到的屏幕"（其他 App），授权后前台是助手——
         // 退后台后服务延迟截屏，截到的是上一个 App 的画面
         activity.moveTaskToBack(true)

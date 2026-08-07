@@ -85,6 +85,14 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setConversationMaxTurns(v) }
     }
 
+    // ---- 秘密功能：对话历史记录开关 ----
+    val secretLogEnabled: StateFlow<Boolean> = settingsStore.secretLogEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setSecretLogEnabled(v: Boolean) {
+        viewModelScope.launch { settingsStore.setSecretLogEnabled(v) }
+    }
+
     init {
         refresh()
     }

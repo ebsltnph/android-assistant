@@ -92,6 +92,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val quietStart by vm.quietStartMinute.collectAsState()
     val quietEnd by vm.quietEndMinute.collectAsState()
     val conversationMaxTurns by vm.conversationMaxTurns.collectAsState()
+    val secretLogEnabled by vm.secretLogEnabled.collectAsState()
 
     // 子页面导航（null = 顶层列表；系统返回键回退）
     var subPage by rememberSaveable { mutableStateOf<SettingsSubPage?>(null) }
@@ -178,6 +179,11 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 onBack = { subPage = null },
                 onEditPrompt = { editingPromptKey = it }
             )
+            SettingsSubPage.SECRET -> SecretFeaturePage(
+                enabled = secretLogEnabled,
+                onToggle = { vm.setSecretLogEnabled(it) },
+                onBack = { subPage = null }
+            )
         }
     }
 
@@ -202,7 +208,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 }
 
 /** 设置页子页面（内部导航，不引入 NavHost） */
-private enum class SettingsSubPage { MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED }
+private enum class SettingsSubPage {
+    MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED, SECRET
+}
 
 // ======================= 顶层列表 =======================
 
@@ -336,6 +344,35 @@ private fun SettingsMainList(
                 key = PromptStore.PromptKey.SCREEN_SENSE,
                 onEdit = { onEditPrompt(PromptStore.PromptKey.SCREEN_SENSE) }
             )
+        }
+
+        // ---- 9. 秘密功能（低调入口，放最底部） ----
+        item {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                HorizontalDivider(modifier = Modifier.weight(1f))
+                Text(
+                    "🔮",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+                HorizontalDivider(modifier = Modifier.weight(1f))
+            }
+        }
+        item {
+            TextButton(
+                onClick = { onOpenSubPage(SettingsSubPage.SECRET) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    "秘密功能",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+            }
         }
     }
 }
@@ -803,6 +840,139 @@ private fun PromptCard(key: PromptStore.PromptKey, onEdit: () -> Unit) {
             TextButton(onClick = onEdit) { Text("编辑") }
         }
     }
+}
+
+// ======================= 秘密功能（对话历史记录） =======================
+
+/**
+ * 秘密功能子页：对话历史记录（数字分身素材）。
+ * - 开关：记录所有用户发出的对话内容（不含模型回复），只存本机文件
+ * - 统计：已记录条数 + 文件大小
+ * - 导出：通过系统分享（文件由 FileProvider 授权给目标应用）
+ * - 清空：删除记录文件
+ */
+@Composable
+private fun SecretFeaturePage(
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext as AssistantApplication
+    val scope = rememberCoroutineScope()
+
+    // 统计信息（条数/大小）：进入页面时读取一次，导出/清空后刷新
+    var stats by remember { mutableStateOf(0 to 0L) }
+    var hint by remember { mutableStateOf<String?>(null) }
+    fun refreshStats() {
+        scope.launch {
+            stats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                app.container.conversationLog.stats()
+            }
+        }
+    }
+    LaunchedEffect(Unit) { refreshStats() }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("秘密功能", onBack) }
+        item {
+            Text(
+                "（低调功能，请自行使用）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("记录对话历史", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (enabled) "开启中 · 每次对话后追加保存" else "已关闭 · 历史文件保留不删除",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = enabled, onCheckedChange = onToggle)
+                    }
+                    Text(
+                        "开启后，你发出的每一条消息（不含模型回复）都会追加保存到本机文件，用于后续提取你的特征、制作数字分身。文件只存在这台手机里，不会上传。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("已记录", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "${stats.first} 条 · ${formatBytes(stats.second)}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val file = app.container.conversationLog.file()
+                                if (!file.exists() || file.length() == 0L) {
+                                    hint = "还没有记录内容，先聊几句吧"
+                                    return@OutlinedButton
+                                }
+                                try {
+                                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                                        context, "${context.packageName}.fileprovider", file
+                                    )
+                                    val send = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(send, "导出对话历史"))
+                                    hint = null
+                                } catch (e: Exception) {
+                                    hint = "导出失败：${e.message}"
+                                }
+                            }
+                        ) { Text("导出") }
+                        OutlinedButton(
+                            onClick = {
+                                app.container.conversationLog.clear()
+                                refreshStats()
+                                hint = "已清空记录"
+                            }
+                        ) { Text("清空") }
+                    }
+                    hint?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            Text(
+                "提示：导出后会进入系统分享菜单，可选择保存到文件/发送到其他地方。建议定期导出备份，防止手机丢失后素材丢失。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 字节数 → 可读文本（B/KB/MB） */
+private fun formatBytes(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
+    else -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
 }
 
 // ======================= 聊天上下文长度 =======================

@@ -73,6 +73,10 @@ class ReminderViewModel(
         viewModelScope.launch { eventRepository.delete(id) }
     }
 
+    /** 某事件的触发历史 Flow（详情弹窗内 collect） */
+    fun hitsFor(eventId: Long): kotlinx.coroutines.flow.Flow<List<com.example.assistant.data.db.entity.EventHitEntity>> =
+        eventRepository.hitsFor(eventId)
+
     fun clearMessage() {
         message.value = null
     }

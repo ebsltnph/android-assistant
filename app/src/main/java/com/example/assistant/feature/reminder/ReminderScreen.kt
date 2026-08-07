@@ -1,6 +1,8 @@
 package com.example.assistant.feature.reminder
 
 import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,6 +26,7 @@ import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -54,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.assistant.AssistantApplication
 import com.example.assistant.core.alarm.ReminderScheduler
+import com.example.assistant.data.db.entity.EventHitEntity
 import com.example.assistant.data.db.entity.MonitoredEventEntity
 import com.example.assistant.data.db.entity.ReminderEntity
 import java.text.SimpleDateFormat
@@ -92,6 +96,19 @@ fun ReminderScreen(modifier: Modifier = Modifier) {
         if (openEventTab) {
             subTab = 1
             AppSharedState.openEventTab.value = false
+        }
+    }
+
+    // 事件命中通知点击 → 打开事件 tab 并弹出该事件详情（消费后置回）
+    // 用事件 id 而非实体：通知点击时列表可能还没加载，详情弹窗内再按 id 从列表解析
+    var detailEventId by remember { mutableStateOf<Long?>(null) }
+    val eventDetailRequest by AppSharedState.eventDetailId.collectAsState()
+    LaunchedEffect(eventDetailRequest) {
+        val eid = eventDetailRequest
+        if (eid != null) {
+            AppSharedState.eventDetailId.value = null
+            subTab = 1
+            detailEventId = eid
         }
     }
 
@@ -202,6 +219,7 @@ fun ReminderScreen(modifier: Modifier = Modifier) {
                         var editing by remember { mutableStateOf(false) }
                         EventCard(
                             event = event,
+                            onClick = { detailEventId = event.id },
                             onToggle = { enabled -> vm.setEventEnabled(event.id, enabled) },
                             onEdit = { editing = true },
                             onDelete = { vm.deleteEvent(event.id) }
@@ -250,6 +268,16 @@ fun ReminderScreen(modifier: Modifier = Modifier) {
             }
         )
     }
+
+    // 事件详情弹窗（卡片点击 / 命中通知点击）：配置 + 触发历史
+    detailEventId?.let { eid ->
+        EventDetailDialog(
+            eventId = eid,
+            event = events.firstOrNull { it.id == eid },
+            hits = vm.hitsFor(eid),
+            onDismiss = { detailEventId = null }
+        )
+    }
 }
 
 @Composable
@@ -289,10 +317,11 @@ private fun ReminderCard(reminder: ReminderEntity, onDelete: () -> Unit) {
     }
 }
 
-/** 事件监控卡片：名称/搜索词/规则 + 周期显示 + 启停开关 + 编辑 + 删除 */
+/** 事件监控卡片：名称/搜索词/规则 + 周期显示 + 启停开关 + 编辑 + 删除（点击卡片看详情/触发历史） */
 @Composable
 private fun EventCard(
     event: MonitoredEventEntity,
+    onClick: () -> Unit,
     onToggle: (Boolean) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
@@ -302,7 +331,7 @@ private fun EventCard(
             containerColor = if (event.enabled) MaterialTheme.colorScheme.surfaceVariant
             else MaterialTheme.colorScheme.surface
         ),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -334,6 +363,123 @@ private fun EventCard(
             }
         }
     }
+}
+
+/**
+ * 事件详情对话框：完整配置 + 「监控触发历史」（每次命中落库的记录）。
+ * 命中条目可点「打开」跳浏览器看原文。
+ * event 为 null 时（如事件已被删除）只显示提示。
+ */
+@Composable
+private fun EventDetailDialog(
+    eventId: Long,
+    event: MonitoredEventEntity?,
+    hits: kotlinx.coroutines.flow.Flow<List<EventHitEntity>>,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val hitList by hits.collectAsState(initial = emptyList())
+    val now = System.currentTimeMillis()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("📰 ${event?.displayName ?: "事件详情"}") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (event == null) {
+                    Text(
+                        "该监控事件已不存在（可能已被删除）。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    return@Column
+                }
+                Text("搜索：${event.searchQuery}", style = MaterialTheme.typography.bodyMedium)
+                if (event.conditionKeywords.isNotBlank()) {
+                    Text("命中关键词：${event.conditionKeywords}", style = MaterialTheme.typography.bodySmall)
+                }
+                if (event.customRule.isNotBlank()) {
+                    Text("规则：${event.customRule}", style = MaterialTheme.typography.bodySmall)
+                }
+                if (event.includeDomains.isNotBlank()) {
+                    Text("来源：${event.includeDomains}", style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    "每 ${event.pollHours} 小时检查 · " +
+                        (if (event.enabled) "已启用" else "已停用") +
+                        " · 上次检查 " +
+                        if (event.lastCheckedAtEpochMillis > 0) formatTime(event.lastCheckedAtEpochMillis) else "从未",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                Text("监控触发历史（最近 ${hitList.size} 条）", style = MaterialTheme.typography.titleSmall)
+                if (hitList.isEmpty()) {
+                    Text(
+                        "还没有触发记录。命中事件时我会在这里记下时间与内容，同时发通知。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    hitList.forEach { hit ->
+                        Row(verticalAlignment = Alignment.Top) {
+                            Text(
+                                formatHitTime(hit.hitAtEpochMillis, now),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                            Column(
+                                modifier = Modifier.weight(1f).padding(start = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(hit.title, style = MaterialTheme.typography.bodyMedium)
+                                if (hit.content.isNotBlank() && hit.content != hit.title) {
+                                    Text(
+                                        hit.content.take(160) + (if (hit.content.length > 160) "…" else ""),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (hit.url.isNotBlank()) {
+                                    TextButton(
+                                        onClick = {
+                                            try {
+                                                context.startActivity(
+                                                    Intent(Intent.ACTION_VIEW, Uri.parse(hit.url))
+                                                )
+                                            } catch (_: Exception) {
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(0.dp)
+                                    ) { Text("打开原文 ↗", style = MaterialTheme.typography.labelSmall) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+}
+
+/** 触发历史时间：今天 HH:mm，更早显示 M月d日 HH:mm */
+private fun formatHitTime(millis: Long, now: Long): String {
+    val cal = Calendar.getInstance().apply { timeInMillis = millis }
+    val nowCal = Calendar.getInstance().apply { timeInMillis = now }
+    val hm = "%02d:%02d".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
+    val sameDay = cal.get(Calendar.YEAR) == nowCal.get(Calendar.YEAR) &&
+        cal.get(Calendar.DAY_OF_YEAR) == nowCal.get(Calendar.DAY_OF_YEAR)
+    return if (sameDay) hm else "${cal.get(Calendar.MONTH) + 1}月${cal.get(Calendar.DAY_OF_MONTH)}日 $hm"
 }
 
 /** 事件编辑对话框：名称/搜索词/条件关键词/自定义规则/限定域名/检查周期 */

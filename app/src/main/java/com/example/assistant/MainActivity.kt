@@ -136,6 +136,15 @@ class MainActivity : ComponentActivity() {
                 val rid = intent.getLongExtra(Notifier.EXTRA_REMINDER_ID, -1)
                 if (rid > 0) AppSharedState.pendingReminderConfirmId.value = rid
             }
+            Notifier.ACTION_SHOW_EVENT_HIT -> {
+                // 事件监控命中通知点击：切到提醒页事件 tab，弹出该事件详情（含触发历史）
+                val eid = intent.getLongExtra(Notifier.EXTRA_EVENT_ID, -1)
+                if (eid > 0) {
+                    AppSharedState.currentTab.value = MainTab.Reminder
+                    AppSharedState.openEventTab.value = true
+                    AppSharedState.eventDetailId.value = eid
+                }
+            }
             ScreenSenseTileService.ACTION_SCREEN_SENSE -> {
                 // 快捷磁贴点击：直接发起识屏授权
                 launchScreenCapture()

@@ -49,15 +49,26 @@ class EventPollWorker(
                 }
             } else false
 
-            if (hit && now - event.lastNotifiedAtEpochMillis > NOTIFY_COOLDOWN_MS &&
-                !container.quietHours.isInQuietWindow()
-            ) {
-                val title = "📰 ${event.displayName}"
-                val body = results.firstOrNull()?.let {
-                    "${it.title}\n${it.url}"
-                } ?: "有新动态，点开看看"
-                Notifier.notifyReminder(applicationContext, title, body, event.id.toInt())
-                container.eventRepository.markNotified(event.id, now)
+            if (hit) {
+                val first = results.firstOrNull()
+                // 触发历史**每次命中都落库**（App 内详情可看，含免打扰/冷却期间被压下的命中）
+                container.eventRepository.addHit(
+                    eventId = event.id,
+                    title = first?.title ?: event.displayName,
+                    url = first?.url.orEmpty(),
+                    content = first?.content ?: event.displayName
+                )
+                // 通知只发一次（24h 冷却 + 免打扰不打扰）
+                if (now - event.lastNotifiedAtEpochMillis > NOTIFY_COOLDOWN_MS &&
+                    !container.quietHours.isInQuietWindow()
+                ) {
+                    val title = "📰 ${event.displayName}"
+                    val body = first?.let {
+                        "${it.title}\n${it.url}"
+                    } ?: "有新动态，点开看看"
+                    Notifier.notifyEventHit(applicationContext, event.id, title, body)
+                    container.eventRepository.markNotified(event.id, now)
+                }
             }
             container.eventRepository.markChecked(event.id, now)
         }

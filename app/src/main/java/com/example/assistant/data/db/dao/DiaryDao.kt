@@ -4,9 +4,12 @@ import androidx.room.Dao
 import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import com.example.assistant.data.db.entity.DiaryBookEntity
 import com.example.assistant.data.db.entity.DiaryEntryEntity
+import com.example.assistant.data.db.entity.DiaryEntryWithImages
+import com.example.assistant.data.db.entity.DiaryImageEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -32,18 +35,16 @@ interface DiaryDao {
     suspend fun deleteBook(book: DiaryBookEntity)
 
     // ---- 日记条目 ----
+    /** 条目列表（带图片，@Relation 查询）——日记页唯一数据源 */
+    @Transaction
     @Query("SELECT * FROM diary_entries WHERE bookId = :bookId ORDER BY createdAtEpochMillis DESC")
-    fun entriesFlow(bookId: Long): Flow<List<DiaryEntryEntity>>
+    fun entriesWithImagesFlow(bookId: Long): Flow<List<DiaryEntryWithImages>>
 
     @Insert
     suspend fun insertEntry(entry: DiaryEntryEntity): Long
 
     @Query("SELECT * FROM diary_entries WHERE id = :id")
     suspend fun entryById(id: Long): DiaryEntryEntity?
-
-    /** 给条目补图/换图（相册选图后更新路径） */
-    @Query("UPDATE diary_entries SET imagePath = :path WHERE id = :id")
-    suspend fun updateEntryImage(id: Long, path: String)
 
     @Query("DELETE FROM diary_entries WHERE id = :entryId")
     suspend fun deleteEntry(entryId: Long)
@@ -53,4 +54,21 @@ interface DiaryDao {
         "SELECT * FROM diary_entries WHERE createdAtEpochMillis >= :from AND createdAtEpochMillis < :to ORDER BY createdAtEpochMillis ASC"
     )
     suspend fun entriesBetween(from: Long, to: Long): List<DiaryEntryEntity>
+
+    // ---- 条目图片（DB v6，一条目多张） ----
+    @Query("SELECT * FROM diary_images WHERE entryId = :entryId ORDER BY position ASC, id ASC")
+    suspend fun imagesFor(entryId: Long): List<DiaryImageEntity>
+
+    @Query("SELECT * FROM diary_images WHERE id = :id")
+    suspend fun imageById(id: Long): DiaryImageEntity?
+
+    @Insert
+    suspend fun insertImages(images: List<DiaryImageEntity>)
+
+    @Query("DELETE FROM diary_images WHERE id = :id")
+    suspend fun deleteImage(id: Long)
+
+    /** 数据库里引用的全部图片路径（启动时清理孤儿文件用） */
+    @Query("SELECT path FROM diary_images")
+    suspend fun allImagePaths(): List<String>
 }

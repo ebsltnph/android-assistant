@@ -17,6 +17,7 @@ import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.SearchClient
 import com.example.assistant.core.network.TavilySearchClient
 import com.example.assistant.core.quiet.QuietHours
+import com.example.assistant.core.storage.ConversationLog
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
@@ -62,6 +63,9 @@ class AppContainer(context: Context) {
     val settingsStore: SettingsStore by lazy { SettingsStore(appContext) }
     val promptStore: PromptStore by lazy { PromptStore(appContext) }
     val summaryStore: SummaryStore by lazy { SummaryStore(appContext) }
+
+    // ---- 秘密功能：对话历史记录（数字分身素材） ----
+    val conversationLog: ConversationLog by lazy { ConversationLog(appContext, settingsStore) }
 
     // ---- 数据库 ----
     val database: AppDatabase by lazy { AppDatabase.create(appContext) }
@@ -134,7 +138,8 @@ class AppContainer(context: Context) {
             eventRepository = eventRepository,
             eventExtractor = eventExtractor,
             visionAnalyzer = visionAnalyzer,
-            screenSenseController = screenSenseController
+            screenSenseController = screenSenseController,
+            conversationLog = conversationLog
         )
     }
 }

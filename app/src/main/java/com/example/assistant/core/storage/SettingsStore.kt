@@ -1,8 +1,10 @@
 package com.example.assistant.core.storage
 
 import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -11,7 +13,15 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-private val Context.settingsDataStore by preferencesDataStore(name = "settings")
+/**
+ * settings DataStore。corruptionHandler：关机/断电可能损坏 preferences 文件——
+ * 损坏时**重置为空**而不是抛 CorruptionException 崩溃进程
+ * （"重启后快速打开 App 闪退"的根因之一）。
+ */
+private val Context.settingsDataStore by preferencesDataStore(
+    name = "settings",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() }
+)
 
 /**
  * 普通设置存储（DataStore，明文即可——不含任何密钥）。
@@ -71,6 +81,11 @@ class SettingsStore(context: Context) {
     val conversationMaxTurns: Flow<Int> = dataStore.data.map { it[KEY_MAX_TURNS] ?: 10 }
     suspend fun setConversationMaxTurns(v: Int) = dataStore.edit { it[KEY_MAX_TURNS] = v }
 
+    // ---- 秘密功能：对话历史记录（数字分身素材，只存用户消息） ----
+    /** 记录开关（默认开：只在本机保存用户发出的对话内容，供未来提取用户特征） */
+    val secretLogEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_SECRET_LOG] ?: true }
+    suspend fun setSecretLogEnabled(v: Boolean) = dataStore.edit { it[KEY_SECRET_LOG] = v }
+
     companion object {
         private const val TAG = "SettingsStore"
         private val KEY_TTS = booleanPreferencesKey("tts_enabled")
@@ -82,6 +97,7 @@ class SettingsStore(context: Context) {
         private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
         private val KEY_MAX_TURNS = intPreferencesKey("conversation_max_turns")
+        private val KEY_SECRET_LOG = booleanPreferencesKey("secret_log_enabled")
 
         private fun capabilityKey(c: Capability) = stringPreferencesKey("capability_${c.name}")
     }

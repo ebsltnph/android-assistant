@@ -1,15 +1,22 @@
 package com.example.assistant.core.storage
 
 import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-private val Context.summaryDataStore by preferencesDataStore(name = "summaries")
+/**
+ * summaries DataStore。corruptionHandler：文件损坏时重置为空（小结丢失可接受，不崩溃进程）。
+ */
+private val Context.summaryDataStore by preferencesDataStore(
+    name = "summaries",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() }
+)
 
 /**
  * 每日小结存储：保存最新一份小结全文（通知栏只能展开看一部分，

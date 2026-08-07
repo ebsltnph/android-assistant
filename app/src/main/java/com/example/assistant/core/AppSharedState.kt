@@ -24,4 +24,7 @@ object AppSharedState {
 
     /** 首页事件气泡点击 → 跳提醒页并打开「事件监控」tab（ReminderScreen 消费后置回 false） */
     val openEventTab = MutableStateFlow(false)
+
+    /** 要弹出详情的监控事件 id（事件命中通知点击 → 弹详情；ReminderScreen 消费后置回 null） */
+    val eventDetailId = MutableStateFlow<Long?>(null)
 }

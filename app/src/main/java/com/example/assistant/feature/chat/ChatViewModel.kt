@@ -14,6 +14,7 @@ import com.example.assistant.core.agent.ReminderTimeParser
 import com.example.assistant.core.agent.Session
 import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.network.dto.ChatMessage
+import com.example.assistant.core.storage.ConversationLog
 import com.example.assistant.core.storage.SettingsStore
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.core.vision.ScreenSenseController
@@ -73,7 +74,8 @@ class ChatViewModel(
     private val eventRepository: EventRepository,
     private val eventExtractor: EventExtractor,
     private val visionAnalyzer: VisionAnalyzer,
-    private val screenSenseController: ScreenSenseController
+    private val screenSenseController: ScreenSenseController,
+    private val conversationLog: ConversationLog
 ) {
 
     /** 协程域：进程级共享，用 SupervisorJob 防止单个任务失败影响其他任务 */
@@ -229,6 +231,7 @@ class ChatViewModel(
     fun createReminderNow(text: String) {
         val t = text.trim()
         if (t.isEmpty() || _isStreaming.value) return
+        conversationLog.log(t)
         scope.launch {
             _isStreaming.value = true
             val normalized = if (t.startsWith("提醒")) t else "提醒我$t"
@@ -247,6 +250,7 @@ class ChatViewModel(
     fun quickSendVision(text: String, imageBase64: String, thumbnail: Bitmap?) {
         val t = text.trim()
         if (t.isEmpty() || _isStreaming.value) return
+        conversationLog.log(t)
         scope.launch {
             _isStreaming.value = true
             _error.value = null
@@ -275,6 +279,7 @@ class ChatViewModel(
      * 输出区/聊天页都能看到完整一问一答）。
      */
     fun quickAnalyzeResult(imagePath: String, instruction: String, resultText: String) {
+        if (instruction.isNotBlank()) conversationLog.log(instruction)
         scope.launch {
             val bmp = withContext(Dispatchers.IO) {
                 try {
@@ -296,6 +301,7 @@ class ChatViewModel(
     fun writeDiaryNow(text: String) {
         val t = text.trim()
         if (t.isEmpty()) return
+        conversationLog.log(t)
         scope.launch {
             writeDiary(t)
             val hint = "📔 已记入日记本"
@@ -306,6 +312,8 @@ class ChatViewModel(
 
     /** 普通文字消息：搜索判断 + 路由 + 流式回复（原有逻辑） */
     private suspend fun sendText(text: String) {
+        // 秘密功能：记录用户发出的内容（数字分身素材）
+        conversationLog.log(text)
         session.addUser(text)
         _messages.update { it + ChatUiMessage(counter++, "user", text) }
 
@@ -538,9 +546,9 @@ class ChatViewModel(
     }
 
     /** 聊天同时记录：写入默认「日记」本（启动时已种子创建，这里防御） */
-    private suspend fun writeDiary(content: String, imagePath: String? = null) {
+    private suspend fun writeDiary(content: String, imagePaths: List<String> = emptyList()) {
         val book = diaryRepository.defaultBook() ?: return
-        diaryRepository.addEntry(book.id, content, source = "chat", imagePath = imagePath)
+        diaryRepository.addEntry(book.id, content, source = "chat", imagePaths = imagePaths)
     }
 
     /** 聊天记录：回复完成后后台 LLM 总结后写日记（独立协程；总结失败回退原文） */
@@ -563,7 +571,7 @@ class ChatViewModel(
             }
             // 图片保存失败（path=null）文字仍照常入日记
             val content = diarySummarizer.summarize(diaryContext())
-            writeDiary(content, imagePath = path)
+            writeDiary(content, imagePaths = listOfNotNull(path))
         }
     }
 

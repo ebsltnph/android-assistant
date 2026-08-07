@@ -1,14 +1,22 @@
 package com.example.assistant.core.storage
 
 import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-private val Context.promptDataStore by preferencesDataStore(name = "prompts")
+/**
+ * prompts DataStore。corruptionHandler：文件损坏时重置为空（回退代码默认值），不崩溃进程。
+ */
+private val Context.promptDataStore by preferencesDataStore(
+    name = "prompts",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() }
+)
 
 /**
  * 可编辑内置提示词存储（DataStore）。

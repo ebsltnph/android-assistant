@@ -209,8 +209,26 @@ class FloatingBallService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 3004
 
-        fun start(context: Context) {
-            ContextCompat.startForegroundService(context, Intent(context, FloatingBallService::class.java))
+        /**
+         * 启动悬浮球前台服务。
+         *
+         * **只在 App 前台时启动**（[allowBackground] = true 的豁免场景除外，如 BOOT_COMPLETED）：
+         * - App 在后台时启动 FGS：Android 12+ 抛 ForegroundServiceStartNotAllowedException；
+         *   处于豁免窗口时虽不抛异常，但 5 秒内 startForeground 未执行会被系统直接杀进程
+         *   （ForegroundServiceDidNotStartInTimeException——"重启后打开 App 闪退"的真机实锤）。
+         * - 后台冷启动（闹钟/WorkManager 唤醒进程）时根本没有悬浮球的必要，跳过即可，
+         *   用户下次打开 App（前台）由 Application 的延迟启动自动拉起。
+         */
+        fun start(context: Context, allowBackground: Boolean = false) {
+            if (!allowBackground) {
+                val app = context.applicationContext as AssistantApplication
+                if (!app.isAppInForeground) return
+            }
+            try {
+                ContextCompat.startForegroundService(context, Intent(context, FloatingBallService::class.java))
+            } catch (_: Exception) {
+                // 后台启动被拒等：静默忽略，等下次前台机会再拉起
+            }
         }
 
         fun stop(context: Context) {

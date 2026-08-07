@@ -25,6 +25,11 @@ data class DiaryEntryEntity(
     /** 来源："voice" 语音记录 | "text" 文字 | "chat" 聊天转存 */
     val source: String = "text",
     val createdAtEpochMillis: Long = System.currentTimeMillis(),
-    /** 条目附图（filesDir/diary_images 下的 JPEG 路径），null = 无图 */
+    /**
+     * @deprecated DB v6 起图片改存 diary_images 表（一条目多张），本列不再写入新值。
+     * 保留列与字段是为了迁移兼容（老数据已迁入 diary_images 表），新代码一律用图片表。
+     */
+    @Suppress("DEPRECATION")
+    @Deprecated("用 DiaryImageEntity（diary_images 表）代替")
     val imagePath: String? = null
 )

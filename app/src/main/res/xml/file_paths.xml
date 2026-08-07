@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 路径白名单：只暴露秘密功能对话历史文件（导出用） -->
+<paths>
+    <files-path
+        name="secret_log"
+        path="secret_log/" />
+</paths>

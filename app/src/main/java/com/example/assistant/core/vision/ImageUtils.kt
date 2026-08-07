@@ -1,9 +1,12 @@
 package com.example.assistant.core.vision
 
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
 import android.util.Base64
 import java.io.File
 import java.io.FileOutputStream
@@ -124,6 +127,35 @@ object ImageUtils {
             file.absolutePath
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * 把日记图片保存到系统相册（MediaStore，API 29+ 无需存储权限；
+     * API 28- 需要 WRITE_EXTERNAL_STORAGE 运行时权限，未授权会失败返回 false）。
+     * 返回是否成功。
+     */
+    fun saveToGallery(context: Context, sourcePath: String): Boolean {
+        return try {
+            val bitmap = decodeFit(sourcePath, MAX_WIDTH) ?: return false
+            val name = "diary_${System.currentTimeMillis()}.jpg"
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/随身助手")
+                }
+            }
+            val uri = context.contentResolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+            ) ?: return false
+            val out = context.contentResolver.openOutputStream(uri) ?: return false
+            out.use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+            }
+            true
+        } catch (e: Exception) {
+            false
         }
     }
 }

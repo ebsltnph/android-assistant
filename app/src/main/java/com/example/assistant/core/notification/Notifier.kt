@@ -102,6 +102,36 @@ object Notifier {
         send(context, CHANNEL_REMINDER_SILENT, id, title, body, reminderId = reminderId)
     }
 
+    /**
+     * 事件监控命中通知：点击 → 打开 App 的「事件监控」tab 并弹出该事件的详情
+     * （含触发历史，见 ReminderScreen.EventDetailDialog）。
+     */
+    fun notifyEventHit(context: Context, eventId: Long, title: String, body: String) {
+        val notificationId = eventId.toInt()
+        val contentIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(EXTRA_ACTION, ACTION_SHOW_EVENT_HIT)
+                .putExtra(EXTRA_EVENT_ID, eventId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_REMINDER)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(body.take(200))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .build()
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
+        } catch (e: SecurityException) {
+            // 未授予 POST_NOTIFICATIONS 权限：通知静默丢弃
+        }
+    }
+
     /** 清晨简报通知：点击打开 App 并弹窗显示简报全文 */
     fun notifyBriefing(context: Context, briefing: String) {
         val contentIntent = PendingIntent.getActivity(
@@ -174,6 +204,9 @@ object Notifier {
     /** 提醒通知点击 → 打开 App 弹确认窗 */
     const val ACTION_CONFIRM_REMINDER = "confirm_reminder"
     const val EXTRA_REMINDER_ID = "reminder_id"
+    /** 事件监控命中通知点击 → 打开事件监控 tab 并弹事件详情 */
+    const val ACTION_SHOW_EVENT_HIT = "show_event_hit"
+    const val EXTRA_EVENT_ID = "event_id"
 
     /** 识屏相关的引导提示（悬浮窗权限缺失等） */
     fun notifyScreenSenseHint(context: Context, text: String) {

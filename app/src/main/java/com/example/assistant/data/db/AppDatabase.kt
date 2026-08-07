@@ -14,6 +14,8 @@ import com.example.assistant.data.db.dao.SummaryDao
 import com.example.assistant.data.db.entity.DailySummaryEntity
 import com.example.assistant.data.db.entity.DiaryBookEntity
 import com.example.assistant.data.db.entity.DiaryEntryEntity
+import com.example.assistant.data.db.entity.DiaryImageEntity
+import com.example.assistant.data.db.entity.EventHitEntity
 import com.example.assistant.data.db.entity.MemoryEntity
 import com.example.assistant.data.db.entity.MonitoredEventEntity
 import com.example.assistant.data.db.entity.ReminderEntity
@@ -27,12 +29,14 @@ import com.example.assistant.data.db.entity.ReminderEntity
     entities = [
         DiaryBookEntity::class,
         DiaryEntryEntity::class,
+        DiaryImageEntity::class,
         MemoryEntity::class,
         ReminderEntity::class,
         MonitoredEventEntity::class,
+        EventHitEntity::class,
         DailySummaryEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -46,7 +50,9 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "assistant.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6
+                )
                 .build()
 
         /** v1 → v2：新增每日小结表（历史小结） */
@@ -110,6 +116,48 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 // ④ 删除两个旧本（条目已挪走，无残留）
                 db.execSQL("DELETE FROM `diary_books` WHERE `name` IN ('工作','生活')")
+            }
+        }
+
+        /**
+         * v5 → v6：① 日记图片改为独立表（一条目多张）——旧单图列数据迁入；
+         * ② 新增事件监控触发历史表（event_hits）。
+         * 旧 imagePath 列保留不删（SQLite DROP COLUMN 在旧设备不可用，且无副作用）。
+         */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // ① 日记图片表（外键级联：删条目自动删图片记录）
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `diary_images` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`entryId` INTEGER NOT NULL, " +
+                        "`path` TEXT NOT NULL, " +
+                        "`position` INTEGER NOT NULL DEFAULT 0, " +
+                        "FOREIGN KEY(`entryId`) REFERENCES `diary_entries`(`id`) ON DELETE CASCADE)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_diary_images_entryId` ON `diary_images` (`entryId`)"
+                )
+                // 老单图数据迁入新表（position 0 = 顺序第一张）
+                db.execSQL(
+                    "INSERT INTO `diary_images` (`entryId`, `path`, `position`) " +
+                        "SELECT `id`, `imagePath`, 0 FROM `diary_entries` " +
+                        "WHERE `imagePath` IS NOT NULL AND `imagePath` != ''"
+                )
+                // ② 事件监控触发历史表（外键级联：删事件自动删历史）
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `event_hits` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`eventId` INTEGER NOT NULL, " +
+                        "`title` TEXT NOT NULL DEFAULT '', " +
+                        "`url` TEXT NOT NULL DEFAULT '', " +
+                        "`content` TEXT NOT NULL DEFAULT '', " +
+                        "`hitAtEpochMillis` INTEGER NOT NULL, " +
+                        "FOREIGN KEY(`eventId`) REFERENCES `monitored_events`(`id`) ON DELETE CASCADE)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_event_hits_eventId` ON `event_hits` (`eventId`)"
+                )
             }
         }
     }
