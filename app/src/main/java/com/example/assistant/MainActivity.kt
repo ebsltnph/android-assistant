@@ -81,6 +81,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 识屏授权流程在 MediaProjectionPermissionActivity（独立 task）中进行，
         // 横屏锁定等荣耀对策见该 Activity / ScreenSenseStarter
+        // 系统自动旋转关闭时锁定当前方向（荣耀 ROM 的 sensor 不尊重旋转锁，见 OrientationUtils）
+        com.example.assistant.core.OrientationUtils.applyIfRotationLocked(this)
         enableEdgeToEdge()
         requestNotificationPermissionIfNeeded()
         handleIntent(intent)

@@ -63,12 +63,17 @@ class MediaProjectionPermissionActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 系统自动旋转关闭时锁定当前方向（荣耀 ROM 的 sensor 不尊重旋转锁）；
         // 横屏环境（视频/游戏等横屏 App）锁横屏，授权框不随旋转丢失
-        val rotation = getSystemService(DisplayManager::class.java)
-            .getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: Surface.ROTATION_0
-        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            landscapeLocked = true
+        if (!com.example.assistant.core.OrientationUtils.isAutoRotateEnabled(this)) {
+            com.example.assistant.core.OrientationUtils.lockToCurrentOrientation(this)
+        } else {
+            val rotation = getSystemService(DisplayManager::class.java)
+                .getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: Surface.ROTATION_0
+            if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                landscapeLocked = true
+            }
         }
         // 透明无 UI：直接弹系统授权框
         val mpm = getSystemService(MediaProjectionManager::class.java)

@@ -128,6 +128,8 @@ class FloatingPanelActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 系统自动旋转关闭时锁定当前方向（荣耀 ROM 的 sensor 不尊重旋转锁，见 OrientationUtils）
+        com.example.assistant.core.OrientationUtils.applyIfRotationLocked(this)
         // 面板打开：悬浮球服务据此隐藏悬浮球（防截进截图 + 不遮挡面板）
         isPanelOpen = true
         container.panelState.value = AppContainer.PanelState.PANEL_OPEN

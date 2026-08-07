@@ -67,11 +67,11 @@ class ConversationLog(
     /** 记录文件（不存在时返回空文件对象） */
     fun file(): File = File(context.filesDir, "secret_log/chat_history.txt")
 
-    /** 统计：条目数（按行首 [ 时间戳 计）+ 文件大小（字节）；IO 线程调用 */
+    /** 统计：条目数（按非空行计，兼容带/不带方括号的旧数据）+ 文件大小（字节）；IO 线程调用 */
     fun stats(): Pair<Int, Long> {
         val f = file()
         if (!f.exists()) return 0 to 0L
-        val count = f.readLines().count { it.startsWith("[") }
+        val count = f.readLines().count { it.isNotBlank() }
         return count to f.length()
     }
 
@@ -91,6 +91,6 @@ class ConversationLog(
     }
 }
 
-/** 记录时间戳（本地时区）：[yyyy-MM-dd HH:mm]。每次新建实例（SimpleDateFormat 非线程安全） */
+/** 记录时间戳（本地时区）：[yyyy-MM-dd HH:mm]（方括号供导出/统计识别）。每次新建实例（SimpleDateFormat 非线程安全） */
 private fun formatTimestamp(): String =
-    SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(Date())
+    "[" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(Date()) + "]"
