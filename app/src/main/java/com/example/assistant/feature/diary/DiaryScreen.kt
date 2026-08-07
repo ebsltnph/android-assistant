@@ -444,19 +444,19 @@ private fun DiaryImageThumb(
                     .clickable(onClick = onView)
             )
         } ?: Box(Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surface))
-        // 删除按钮：右上角小圆点（尺寸缩小避免遮挡缩略图，误触影响小）
+        // 删除按钮：右上角小黑圆点（圆圈小、叉号清晰，不遮缩略图）
         IconButton(
             onClick = onDelete,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .size(17.dp)
+                .size(14.dp)
                 .background(Color(0x99000000), CircleShape)
         ) {
             Icon(
                 Icons.Filled.Close,
                 contentDescription = "删除这张图片",
                 tint = Color.White,
-                modifier = Modifier.size(10.dp)
+                modifier = Modifier.size(11.dp)
             )
         }
     }
