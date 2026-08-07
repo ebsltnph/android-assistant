@@ -35,6 +35,9 @@ $ADB install -r app/build/outputs/apk/debug/app-debug.apk   # 装机
 $ADB logcat --pid=$($ADB shell pidof com.example.assistant) # 看 App 日志
 $ADB shell run-as com.example.assistant cat files/datastore/settings.preferences_pb | od -c  # 查设置值（末字节 10 进制=小时）
 $ADB shell dumpsys jobscheduler | grep -A20 "JOB androidx.work.systemjobscheduler:u0a291" | grep -E "Minimum latency|Enqueue"  # 验证周期任务排程
+# GitHub 直连不通时走本地 Clash Verge 代理（127.0.0.1:7897，混合端口）：
+# 注意必须用 socks5 —— http 代理 + Windows schannel 会 TLS 握手失败
+git -c http.proxy=socks5://127.0.0.1:7897 -c https.proxy=socks5://127.0.0.1:7897 push origin master
 ```
 
 ## 技术栈与版本
