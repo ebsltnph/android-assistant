@@ -117,7 +117,8 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **提醒重复修复（B1/B2/B3）**：App 启动/开机恢复时，未确认的重复提醒**同时重排下一次主闹钟**（原来只排 5 分钟确认闹钟——错过触发后每日/每周提醒永久失效，用户反馈的根因）；`ReminderScheduler.nextOccurrence`（daily+1天/weekly+7天，过期自动推进）统一 3 处：触发后重排/启动恢复/添加对话框；添加对话框选当天已过时间自动推进；每周提醒本来就有，修复后可靠
   - **设置页「聊天上下文长度」**：5-50 轮（默认 10），`Session.maxTurns` 可变 + ChatViewModel 订阅实时生效
   - **思考展开收起**：聊天页/浮动界面气泡的模型思考内容默认收起（60 字摘要），点击展开/收起
-- [x] **v1.2 日记多图 + 一批 bug 修复 + 秘密功能**（2026-08-07，待真机全面验证后推送）
+- [x] **v1.2 日记多图 + 一批 bug 修复 + 秘密功能**（2026-08-07 完成，真机验证通过已推送 v1.2.0）
+  - v1.2.1 修复（用户反馈）：① 秘密功能统计显示 0 条——时间戳格式漏了 `[ ]` 括号（stats 按行首 `[` 计数），补括号 + 计数改按非空行（兼容旧数据）；② **荣耀 ROM 的 `sensor` 不尊重系统「自动旋转」开关**（manifest 改 sensor 后仍自动转）——新增 `OrientationUtils` 主动读 `Settings.System.ACCELEROMETER_ROTATION`，关闭时 `lockToCurrentOrientation`（锁当前方向而非固定竖屏：横屏游戏里启动无旋转动画，识屏授权不被打断），三个 Activity 的 onCreate 调用；③ 日记缩略图删除按钮多轮调整——最终**去黑圆点只留 12dp 白色叉号**（点击区 24dp）
   - **日记多图**：DB v6——`diary_images` 表（entryId 外键级联 + position 排序），旧 `imagePath` 单列数据迁移进表（列保留 deprecated 不再写）；`DiaryEntryWithImages` @Relation 一次查回；日记页「+」改 **PickMultipleVisualMedia 多选（一次最多 9 张追加）**；缩略图横滚 + 右上角 ✕ 删单张（删记录+删文件）；点缩略图看大图 + 「下载到相册」（MediaStore，API 29+ 免权限，28- 需 WRITE_EXTERNAL_STORAGE manifest maxSdk 28）；删条目先删全部图片文件
   - **启动闪退修复（真机实锤）**：`ForegroundServiceDidNotStartInTimeException`——启动期主线程被 `runBlocking { ensureSeedBooks() }` 阻塞（DB 首次打开/迁移/WAL 恢复可超 5 秒），期间 FGS 的 startForeground 超时 → 系统直接杀进程（"重启后快速打开 App 闪退"）。修复：① 种子改**异步**（appScope.launch，日记页 initSelectedBook 自查空则补种）；② **FGS 启动加前台判断**——AssistantApplication 用 ActivityLifecycleCallbacks 维护前台计数，`FloatingBallService.start(context, allowBackground=false)` 非前台直接跳过（后台冷启动本就无需悬浮球，等用户打开 App 时 2 秒延迟启动拉起）；③ BootReceiver 用 allowBackground=true（BOOT_COMPLETED 豁免）；④ DataStore 三件套（settings/prompts/summaries）加 `corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() }`——关机断电损坏的 preferences 文件读时抛 CorruptionException 崩进程，现在重置为空回退默认值；⑤ 启动恢复逻辑补 `pending(now)` 重排主闹钟（force-stop 清闹钟后自愈，与 BootReceiver 一致）
   - **旋转修复**：manifest 三个 Activity `fullSensor` → `sensor`（fullSensor 无视系统「自动旋转」开关，关掉后 App/浮动界面仍转的根因）；ScreenSenseStarter.finishAuth 恢复方向同步改 SENSOR；横屏识屏锁定（SENSOR_LANDSCAPE）与授权流程不受影响
@@ -130,7 +131,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细开发计划见本机 `.claude/plans/` 目录（未入库）。
 
-**下次会话待办**：① P7 真·语音唤醒词（可选，真机验证语音方案）；② 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）；③ 桌面小部件（用户决定暂不做，留待后续）；④ UI 细节调整（用户会继续提，见记忆 [[ui-polish-needed]]）；⑤ ~~开源准备~~（✅ 2026-08-02 完成：MIT 许可证 + README 徽章 + CLAUDE.md 本地路径脱敏 + 敏感检查通过（无密钥、历史干净、.idea 未跟踪））；⑥ **不同安卓设备兼容性改造**（记录，未开始）：目前只在荣耀 X50 GT 验证过，需考虑分辨率/刘海屏/其他厂商后台限制/无 GMS 场景；⑦ **语音输出**（记录，未开始）：TTS 朗读回复，需适配荣耀/华为语音引擎。
+**下次会话待办**：① P7 真·语音唤醒词（可选，真机验证语音方案）；② 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）；③ 桌面小部件（用户决定暂不做，留待后续）；④ UI 细节调整（用户会继续提，见记忆 [[ui-polish-needed]]）；⑤ ~~开源准备~~（✅ 2026-08-02 完成：MIT 许可证 + README 徽章 + CLAUDE.md 本地路径脱敏 + 敏感检查通过（无密钥、历史干净、.idea 未跟踪））；⑥ **不同安卓设备兼容性改造**（记录，未开始）：目前只在荣耀 X50 GT 验证过，需考虑分辨率/刘海屏/其他厂商后台限制/无 GMS 场景；⑦ **语音输出**（记录，未开始）：TTS 朗读回复，需适配荣耀/华为语音引擎；⑧ **数字分身**（v1.2 秘密功能铺垫，未开始）：对话历史已落盘可导出，后续提取用户特征。
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 
