@@ -8,7 +8,7 @@ import androidx.room.PrimaryKey
 /**
  * 事件监控的触发历史（DB v6）：每次命中通知时记录一条，App 内可查看。
  * 删除监控事件时级联删除（onDelete CASCADE）。
- * 每事件最多保留 [EventDao.MAX_HITS_PER_EVENT] 条（新增时清理最旧的）。
+ * 每事件最多保留 [EventDao.MAX_HITS_PER_EVENT] 条（5 条，新增时清理最旧的）。
  */
 @Entity(
     tableName = "event_hits",

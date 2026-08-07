@@ -13,7 +13,7 @@ import java.util.Locale
 /**
  * 秘密功能：对话历史记录（数字分身素材）。
  * 只保存**用户发出的内容**（不含模型回复），纯文本追加写入 filesDir/secret_log/chat_history.txt。
- * - 开关存 SettingsStore.secretLogEnabled（默认开；写入前检查，关闭即停）
+ * - 开关存 SettingsStore.secretLogEnabled（**默认关**；写入前检查，关闭即停，关闭不清空已有记录）
  * - 每条记录一行："[yyyy-MM-dd HH:mm] 内容"（内容可能含换行，用缩进表示续行）
  * - 容量上限 [MAX_BYTES]（10MB）：超限时丢弃最旧的一半（防无限增长）
  * - 导出由设置页分享文件（FileProvider）

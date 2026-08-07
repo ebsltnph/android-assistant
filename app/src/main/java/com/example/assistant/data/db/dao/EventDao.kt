@@ -65,7 +65,7 @@ interface EventDao {
     suspend fun trimHits(eventId: Long, limit: Int = MAX_HITS_PER_EVENT)
 
     companion object {
-        /** 每个事件保留的触发历史条数上限（防无限增长） */
-        const val MAX_HITS_PER_EVENT = 50
+        /** 每个事件保留的触发历史条数上限（防无限增长；用户要求精简只看最近几条） */
+        const val MAX_HITS_PER_EVENT = 5
     }
 }

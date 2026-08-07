@@ -7,6 +7,7 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -46,6 +48,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.input.KeyboardType
@@ -346,32 +349,42 @@ private fun SettingsMainList(
             )
         }
 
-        // ---- 9. 秘密功能（低调入口，放最底部） ----
+        // ---- 9. 版本号（隐藏入口：连点 3 次进秘密功能——不显眼，防止误入） ----
         item {
+            val context = LocalContext.current
+            val versionName = remember {
+                try {
+                    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+                } catch (_: Exception) {
+                    ""
+                }
+            }
+            // 三连击计数：两次点击间隔超过 1.5 秒视为重新开始
+            var tapCount by remember { mutableStateOf(0) }
+            var lastTapAt by remember { mutableStateOf(0L) }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
             ) {
                 HorizontalDivider(modifier = Modifier.weight(1f))
                 Text(
-                    "🔮",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(horizontal = 12.dp)
+                    "v$versionName",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                            val now = System.currentTimeMillis()
+                            tapCount = if (now - lastTapAt > 1_500) 1 else tapCount + 1
+                            lastTapAt = now
+                            if (tapCount >= 3) {
+                                tapCount = 0
+                                onOpenSubPage(SettingsSubPage.SECRET)
+                            }
+                        }
                 )
                 HorizontalDivider(modifier = Modifier.weight(1f))
-            }
-        }
-        item {
-            TextButton(
-                onClick = { onOpenSubPage(SettingsSubPage.SECRET) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    "秘密功能",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
             }
         }
     }
@@ -864,6 +877,8 @@ private fun SecretFeaturePage(
     // 统计信息（条数/大小）：进入页面时读取一次，导出/清空后刷新
     var stats by remember { mutableStateOf(0 to 0L) }
     var hint by remember { mutableStateOf<String?>(null) }
+    // 清空确认（防误触：点「清空」先弹确认框）
+    var confirmClear by remember { mutableStateOf(false) }
     fun refreshStats() {
         scope.launch {
             stats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -880,20 +895,13 @@ private fun SecretFeaturePage(
     ) {
         item { SubPageHeader("秘密功能", onBack) }
         item {
-            Text(
-                "（低调功能，请自行使用）",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        item {
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("记录对话历史", style = MaterialTheme.typography.titleSmall)
                             Text(
-                                if (enabled) "开启中 · 每次对话后追加保存" else "已关闭 · 历史文件保留不删除",
+                                if (enabled) "开启中 · 每次对话后追加保存" else "已关闭 · 默认关闭，开启后开始记录",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -901,7 +909,7 @@ private fun SecretFeaturePage(
                         Switch(checked = enabled, onCheckedChange = onToggle)
                     }
                     Text(
-                        "开启后，你发出的每一条消息（不含模型回复）都会追加保存到本机文件，用于后续提取你的特征、制作数字分身。文件只存在这台手机里，不会上传。",
+                        "开启后，你发出的每一条消息（不含模型回复）都会追加保存到本机文件，用于后续提取你的特征、制作数字分身。文件只存在这台手机里，不会上传；关闭记录不会删除已有记录。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -941,11 +949,7 @@ private fun SecretFeaturePage(
                             }
                         ) { Text("导出") }
                         OutlinedButton(
-                            onClick = {
-                                app.container.conversationLog.clear()
-                                refreshStats()
-                                hint = "已清空记录"
-                            }
+                            onClick = { confirmClear = true }
                         ) { Text("清空") }
                     }
                     hint?.let {
@@ -965,6 +969,31 @@ private fun SecretFeaturePage(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+
+    // 清空确认（防误触）
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("清空对话记录？") },
+            text = {
+                Text(
+                    "将删除全部已记录的对话历史（当前 ${stats.first} 条），此操作不可恢复。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    app.container.conversationLog.clear()
+                    refreshStats()
+                    hint = "已清空记录"
+                    confirmClear = false
+                }) { Text("确认清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) { Text("取消") }
+            }
+        )
     }
 }
 

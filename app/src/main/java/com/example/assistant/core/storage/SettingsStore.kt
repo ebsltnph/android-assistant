@@ -82,8 +82,8 @@ class SettingsStore(context: Context) {
     suspend fun setConversationMaxTurns(v: Int) = dataStore.edit { it[KEY_MAX_TURNS] = v }
 
     // ---- 秘密功能：对话历史记录（数字分身素材，只存用户消息） ----
-    /** 记录开关（默认开：只在本机保存用户发出的对话内容，供未来提取用户特征） */
-    val secretLogEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_SECRET_LOG] ?: true }
+    /** 记录开关（**默认关**：用户手动开启后才记录；关闭不清空已有记录） */
+    val secretLogEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_SECRET_LOG] ?: false }
     suspend fun setSecretLogEnabled(v: Boolean) = dataStore.edit { it[KEY_SECRET_LOG] = v }
 
     companion object {
