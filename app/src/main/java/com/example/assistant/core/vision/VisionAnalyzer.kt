@@ -58,7 +58,8 @@ class VisionAnalyzer(
                     thinking = thinking,
                     reasoningEffort = effort
                 )
-                val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
+                val header = providerRegistry.authHeader(profile.apiKey)
+                val response = providerRegistry.chatCompat(profile, request, header, api)
                 response.choices.firstOrNull()?.message?.textContent
                     ?.takeIf { it.isNotBlank() }
                     ?: "（模型没有返回内容）"
@@ -90,10 +91,8 @@ class VisionAnalyzer(
             thinking = thinking,
             reasoningEffort = effort
         )
-        val response = api.chatStream(providerRegistry.authHeader(profile.apiKey), request)
-        if (!response.isSuccessful) {
-            throw IllegalStateException("HTTP ${response.code()}：${response.errorBody()?.string()}")
-        }
+        val header = providerRegistry.authHeader(profile.apiKey)
+        val response = providerRegistry.chatStreamCompat(profile, request, header, api)
         emitAll(ChatStream.parse(response.body()!!))
     }
 

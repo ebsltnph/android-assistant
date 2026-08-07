@@ -137,11 +137,9 @@ class Agent(
             thinking = thinking,
             reasoningEffort = effort
         )
+        val header = providerRegistry.authHeader(profile.apiKey)
         return flow {
-            val response = api.chatStream(providerRegistry.authHeader(profile.apiKey), request)
-            if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code()}：${response.errorBody()?.string()}")
-            }
+            val response = providerRegistry.chatStreamCompat(profile, request, header, api)
             emitAll(ChatStream.parse(response.body()!!))
         }
     }
@@ -159,7 +157,8 @@ class Agent(
                 thinking = thinking,
                 reasoningEffort = effort
             )
-            val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
+            val header = providerRegistry.authHeader(profile.apiKey)
+            val response = providerRegistry.chatCompat(profile, request, header, api)
             val reply = response.choices.firstOrNull()?.message?.textContent
                 ?: return Result.failure(IllegalStateException("响应中没有内容"))
             Result.success(reply)

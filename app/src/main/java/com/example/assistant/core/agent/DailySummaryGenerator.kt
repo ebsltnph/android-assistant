@@ -69,7 +69,8 @@ class DailySummaryGenerator(
                     thinking = thinking,
                     reasoningEffort = effort
                 )
-                val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
+                val header = providerRegistry.authHeader(profile.apiKey)
+                val response = providerRegistry.chatCompat(profile, request, header, api)
                 response.choices.firstOrNull()?.message?.textContent?.trim()?.takeIf { it.isNotEmpty() }
                     ?: fallback + "\n（模型返回了空内容，请重试）"
             } catch (e: Exception) {

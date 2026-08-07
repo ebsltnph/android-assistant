@@ -79,7 +79,8 @@ class DailyBriefingGenerator(
                 thinking = thinking,
                 reasoningEffort = effort
             )
-            val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
+            val header = providerRegistry.authHeader(profile.apiKey)
+            val response = providerRegistry.chatCompat(profile, request, header, api)
             response.choices.firstOrNull()?.message?.textContent?.trim()?.takeIf { it.isNotEmpty() }
                 ?: template
         } catch (e: Exception) {

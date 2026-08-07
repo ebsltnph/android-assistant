@@ -72,7 +72,8 @@ class IntentRouter(
                 thinking = thinking,
                 reasoningEffort = effort
             )
-            val response = api.chat(providerRegistry.authHeader(profile.apiKey), request)
+            val header = providerRegistry.authHeader(profile.apiKey)
+            val response = providerRegistry.chatCompat(profile, request, header, api)
             val content = response.choices.firstOrNull()?.message?.textContent ?: return@withContext null
             val obj = JsonExtract.objectOf(content) ?: return@withContext null
             when (JsonExtract.str(obj, "intent")) {
