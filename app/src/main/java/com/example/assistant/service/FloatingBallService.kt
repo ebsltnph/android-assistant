@@ -6,6 +6,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.graphics.Point
+import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
 import android.view.WindowManager
@@ -116,9 +118,7 @@ class FloatingBallService : Service() {
 
     private fun showBall() {
         if (window.isShowing) return
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val screenW = wm.currentWindowMetrics.bounds.width()
-        val screenH = wm.currentWindowMetrics.bounds.height()
+        val (screenW, screenH) = screenSize()
         ballX = screenW - ballSizePx() - hiddenWidthPx() // 默认贴右边缘
         ballY = screenH / 2 - ballSizePx() / 2
         window.show(
@@ -162,8 +162,7 @@ class FloatingBallService : Service() {
     /** 拖动结束：就近吸附到屏幕左/右边缘，半隐藏（只露出一点可点击的边） */
     private fun snapToEdge() {
         val params = window.currentParams() ?: return
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val screenW = wm.currentWindowMetrics.bounds.width()
+        val (screenW, screenH) = screenSize()
         val size = ballSizePx()
         // 球心在屏幕左半 → 贴左（往左移出大部分）；右半 → 贴右
         val targetX = if (params.x + size / 2 < screenW / 2) {
@@ -172,11 +171,29 @@ class FloatingBallService : Service() {
             screenW - hiddenWidthPx()
         }
         // y 限制在屏幕内（别拖丢）
-        val screenH = wm.currentWindowMetrics.bounds.height()
         val targetY = params.y.coerceIn(0, screenH - size)
         ballX = targetX
         ballY = targetY
         window.setPosition(targetX, targetY)
+    }
+
+    /**
+     * 屏幕尺寸（像素）：API 30+ 用 currentWindowMetrics；
+     * API 26-29 用 defaultDisplay.getRealSize 兜底（currentWindowMetrics 是 API 30
+     * 才有的方法，直接调用在 Android 8-11 上 NoSuchMethodError 崩溃——跨设备兼容）。
+     * 两者都返回包含系统栏的完整屏幕尺寸，与 overlay 坐标一致。
+     */
+    private fun screenSize(): Pair<Int, Int> {
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = wm.currentWindowMetrics.bounds
+            bounds.width() to bounds.height()
+        } else {
+            @Suppress("DEPRECATION")
+            val size = Point()
+            wm.defaultDisplay.getRealSize(size)
+            size.x to size.y
+        }
     }
 
     private fun ballSizePx(): Int = 56.dp.run { (this.value * resources.displayMetrics.density).toInt() }
