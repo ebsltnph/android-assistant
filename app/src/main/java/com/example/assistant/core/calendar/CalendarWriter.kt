@@ -19,7 +19,12 @@ object CalendarWriter {
     private const val TAG = "CalendarWriter"
     private const val EVENT_TITLE = "每日小结"
 
-    /** 写入当天小结。返回是否成功（无权限/无日历返回 false） */
+    /**
+     * 把小结写为归属日期的「全天事件」。date 是归属日期（yyyy-MM-dd）——
+     * 由调用方（DailySummaryGenerator）决定：凌晨 4 点前生成的小结归属前一天。
+     * 删除范围跟随 date：只删归属日当天的旧小结，不影响其他日期的日历事件。
+     * 返回是否成功（无权限/无日历返回 false）。
+     */
     fun writeDailySummary(context: Context, date: String, summary: String): Boolean {
         return try {
             val cal = parseDate(date) ?: return false
@@ -33,13 +38,17 @@ object CalendarWriter {
             val dayStartUtc = calUtc.timeInMillis
             val dayEndUtc = dayStartUtc + 24 * 60 * 60 * 1000
 
-            // 删除范围为「前一天 + 今天」：老版本写错过几条脏事件，一并清理后重写
-            deleteExisting(context, calendarId, dayStartUtc - 24 * 60 * 60 * 1000, dayEndUtc)
+            // 只删当天的旧「每日小结」再插入新的一条（保证一天只保留最后一条）。
+            // 注意不能把前一天划进删除范围：早期调试为了清脏事件写过「前一天 + 今天」，
+            // 导致每次写今日小结都把昨天的日历小结一起删掉——已修正只删当天。
+            deleteExisting(context, calendarId, dayStartUtc, dayEndUtc)
 
             val values = android.content.ContentValues().apply {
                 put(CalendarContract.Events.CALENDAR_ID, calendarId)
                 put(CalendarContract.Events.TITLE, EVENT_TITLE)
-                put(CalendarContract.Events.DESCRIPTION, summary)
+                // 写入前把超长行在句末标点处断行：部分日历 App 的事件详情不自动折行，
+                // 一长段文字会横向溢出难阅读（荣耀日历已实测）；只影响日历里的排版，App 内展示不受影响
+                put(CalendarContract.Events.DESCRIPTION, formatForCalendar(summary))
                 put(CalendarContract.Events.DTSTART, dayStartUtc)
                 put(CalendarContract.Events.DTEND, dayEndUtc)
                 put(CalendarContract.Events.EVENT_TIMEZONE, "UTC") // 全天事件约定用 UTC
@@ -102,6 +111,32 @@ object CalendarWriter {
                 }
             }
     }
+
+    /**
+     * 把小结文本整理成适合日历展示的多行文本：
+     * 保留原有换行，并把超长行在句末标点（。！？；）处断成两行，没有标点则按空格断、
+     * 再不行硬切。保证每行不长，即使日历 App 不自动折行也能完整可读。
+     */
+    fun formatForCalendar(text: String): String {
+        return text.split("\n").flatMap { wrapLine(it) }.joinToString("\n")
+    }
+
+    private fun wrapLine(line: String): List<String> {
+        if (line.isEmpty()) return listOf("")
+        if (line.length <= MAX_SUMMARY_LINE) return listOf(line)
+        val head = line.take(MAX_SUMMARY_LINE)
+        // 断点优先选句末标点，其次空格；都在行首则硬切（保证每次至少推进 1 字符，不会死循环）
+        val cut = when {
+            head.lastIndexOfAny(SENTENCE_ENDS) > 0 -> head.lastIndexOfAny(SENTENCE_ENDS) + 1
+            head.lastIndexOf(' ') > 0 -> head.lastIndexOf(' ') + 1
+            else -> MAX_SUMMARY_LINE
+        }
+        return listOf(line.substring(0, cut)) + wrapLine(line.substring(cut))
+    }
+
+    private const val MAX_SUMMARY_LINE = 36 // 每行最多约 36 个汉字（手机竖屏约可显示 18-24 字，留余量）
+
+    private val SENTENCE_ENDS = charArrayOf('。', '！', '？', '；')
 
     /** 解析 yyyy-MM-dd → Calendar（当天 0 点） */
     private fun parseDate(date: String): Calendar? {

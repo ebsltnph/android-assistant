@@ -40,6 +40,14 @@ interface DiaryDao {
     @Query("SELECT * FROM diary_entries WHERE bookId = :bookId ORDER BY createdAtEpochMillis DESC")
     fun entriesWithImagesFlow(bookId: Long): Flow<List<DiaryEntryWithImages>>
 
+    /** 关键词搜索条目（带图片，@Relation 查询）——日记页搜索数据源。
+     *  query 需已做 LIKE 通配符转义（ViewModel escapeLike），故 SQL 侧加 ESCAPE '\' 匹配字面值。 */
+    @Transaction
+    @Query(
+        "SELECT * FROM diary_entries WHERE bookId = :bookId AND content LIKE '%' || :query || '%' ESCAPE '\\' ORDER BY createdAtEpochMillis DESC"
+    )
+    fun searchEntriesWithImagesFlow(bookId: Long, query: String): Flow<List<DiaryEntryWithImages>>
+
     @Insert
     suspend fun insertEntry(entry: DiaryEntryEntity): Long
 

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -96,6 +97,7 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
     val entries by vm.entries.collectAsState()
     val memories by vm.memories.collectAsState()
     val input by vm.input.collectAsState()
+    val searchQuery by vm.searchQuery.collectAsState()
     val message by vm.message.collectAsState()
 
     // 通知点击「每日小结」→ 弹出完整小结对话框
@@ -153,14 +155,40 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
         }
 
         if (subTab == 0) {
+            // ---- 搜索框（关键词非空时列表切到搜索结果显示；带清空按钮）----
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { vm.setSearchQuery(it) },
+                placeholder = { Text("搜索日记内容…") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { vm.setSearchQuery("") }) {
+                            Icon(Icons.Filled.Close, contentDescription = "清空搜索")
+                        }
+                    }
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+
             // ---- 日记条目列表 ----
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                if (entries.isEmpty()) {
-                    item {
+                when {
+                    entries.isEmpty() && searchQuery.isNotBlank() -> item {
+                        Text(
+                            "没有找到包含「${searchQuery.trim()}」的日记",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp)
+                        )
+                    }
+                    entries.isEmpty() -> item {
                         Text(
                             "还没有日记，在下面写点什么吧\n（点键盘上的麦克风图标可直接语音输入）",
                             style = MaterialTheme.typography.bodyMedium,
@@ -169,8 +197,7 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                             modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp)
                         )
                     }
-                } else {
-                    items(entries, key = { it.entry.id }) { item ->
+                    else -> items(entries, key = { it.entry.id }) { item ->
                         DiaryEntryCard(
                             entryWithImages = item,
                             onDelete = { vm.deleteEntry(item.entry.id) },

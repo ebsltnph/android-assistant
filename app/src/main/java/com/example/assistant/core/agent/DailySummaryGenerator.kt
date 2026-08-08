@@ -78,27 +78,37 @@ class DailySummaryGenerator(
             }
         }
 
-        // 落库（最新一份，通知点击读取）
-        val date = todayString()
-        val datedResult = "${todayLabel()}\n\n$result"
+        // 落库（最新一份，通知点击读取）——date 是「归属日期」，凌晨 4 点前生成的算前一天
+        val date = summaryDateString()
+        val datedResult = "${summaryDateLabel()}\n\n$result"
         summaryStore.save(datedResult, date)
-        // 历史表（每天一条）
+        // 历史表（每天一条，date 唯一覆盖）
         summaryRepository.saveToday(datedResult, date)
-        // 镜像到系统日历（当天事件，同天只保留最后一条）
+        // 镜像到系统日历。CalendarWriter 的事件日期与删除范围都跟随传入的 date
+        // （只删归属日当天的旧小结），归属日期变了也不会误删其他日期的日历事件。
         CalendarWriter.writeDailySummary(appContext, date, datedResult)
         return datedResult
     }
 
-    private fun todayString(): String {
-        val cal = Calendar.getInstance()
+    /**
+     * 小结归属日期（yyyy-MM-dd）：凌晨 4 点前生成归前一天，4 点后归当天。
+     * 深夜里生成的小结内容其实是"昨天"的一天（睡前写的日记、当日收尾），
+     * 归到前一天在日历里更符合直觉。
+     */
+    private fun summaryDateString(): String {
+        val cal = summaryCalendar()
         return "%04d-%02d-%02d".format(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))
     }
 
-    /** 小结正文开头的日期标签，如「2026年7月31日」 */
-    private fun todayLabel(): String {
-        val cal = Calendar.getInstance()
+    /** 小结正文开头的归属日期标签，如「2026年8月9日」 */
+    private fun summaryDateLabel(): String {
+        val cal = summaryCalendar()
         return "%d年%d月%d日".format(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))
     }
+
+    /** 当前时刻往前拨 SUMMARY_DAY_START_HOUR 小时 = 归属日期（凌晨 4 点 = "新的一天"起点） */
+    private fun summaryCalendar(): Calendar =
+        Calendar.getInstance().apply { add(Calendar.HOUR_OF_DAY, -SUMMARY_DAY_START_HOUR) }
 
     private val entryTimeFormat = SimpleDateFormat("HH:mm", Locale.CHINA)
 
@@ -108,5 +118,7 @@ class DailySummaryGenerator(
         private const val TAG = "DailySummaryGenerator"
         /** 汇总窗口：24 小时（滑动窗口，见 generateToday 注释） */
         private const val SUMMARY_WINDOW_MS = 24 * 60 * 60 * 1000L
+        /** "新的一天"起点（小时）：凌晨 4 点前生成的小结归属前一天，4 点后归属当天 */
+        private const val SUMMARY_DAY_START_HOUR = 4
     }
 }

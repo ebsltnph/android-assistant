@@ -19,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -45,11 +46,18 @@ class DiaryViewModel(
     /** 当前选中的日记本 id */
     val selectedBookId = MutableStateFlow(0L)
 
-    /** 当前日记本条目（含图片列表，按时间倒序展示由 DAO 保证） */
-    val entries: StateFlow<List<DiaryEntryWithImages>> = selectedBookId
-        .flatMapLatest { id ->
+    /** 搜索关键词（空 = 不搜索，显示全部条目） */
+    val searchQuery = MutableStateFlow("")
+
+    /**
+     * 当前日记本条目（含图片列表，按时间倒序展示由 DAO 保证）。
+     * 搜索关键词非空时走 LIKE 内容搜索（按当前本过滤），清空关键词即恢复全部列表。
+     */
+    val entries: StateFlow<List<DiaryEntryWithImages>> = combine(selectedBookId, searchQuery) { id, q -> id to q }
+        .flatMapLatest { (id, q) ->
             if (id == 0L) flowOf(emptyList())
-            else diaryRepository.entriesWithImagesFor(id)
+            else if (q.isBlank()) diaryRepository.entriesWithImagesFor(id)
+            else diaryRepository.searchEntriesWithImagesFor(id, escapeLike(q.trim()))
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -90,6 +98,14 @@ class DiaryViewModel(
     fun setInput(text: String) {
         input.value = text
     }
+
+    fun setSearchQuery(text: String) {
+        searchQuery.value = text
+    }
+
+    /** LIKE 通配符转义：用户搜「100%」应匹配字面 %，而不是匹配所有条目 */
+    private fun escapeLike(query: String): String =
+        query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     /** 新增条目（文字记录），随后后台抽取长期记忆 */
     fun addEntry() {

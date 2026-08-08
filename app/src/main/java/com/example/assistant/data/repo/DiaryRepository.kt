@@ -29,6 +29,10 @@ class DiaryRepository(private val dao: DiaryDao) {
     fun entriesWithImagesFor(bookId: Long): Flow<List<DiaryEntryWithImages>> =
         dao.entriesWithImagesFlow(bookId)
 
+    /** 关键词搜索条目（带图片列表）——日记页搜索数据源。query 需已做 LIKE 转义。 */
+    fun searchEntriesWithImagesFor(bookId: Long, query: String): Flow<List<DiaryEntryWithImages>> =
+        dao.searchEntriesWithImagesFlow(bookId, query)
+
     /**
      * 新增条目（可带多张图片路径）。
      * 图片路径列表由调用方提前存好（filesDir/diary_images 下）。
