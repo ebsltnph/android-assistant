@@ -88,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.assistant.AssistantApplication
 import com.example.assistant.R
+import com.example.assistant.core.ui.RichMessageText
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.core.vision.ScreenSenseStarter
 import com.example.assistant.di.AppContainer
@@ -701,11 +702,15 @@ private fun MessageBubble(
                     }
                     Spacer(Modifier.height(2.dp))
                 }
-                Text(
-                    msg.text + if (msg.streaming) "▍" else "",
-                    fontSize = 14.sp,
-                    lineHeight = 19.sp,
-                    color = Color.White.copy(alpha = 0.92f)
+                // 富文本渲染：数学公式 + 基础 Markdown（与聊天页一致，同用 core.ui.RichMessageText）
+                RichMessageText(
+                    text = msg.text,
+                    streaming = msg.streaming,
+                    style = TextStyle(
+                        fontSize = 14.sp,
+                        lineHeight = 19.sp,
+                        color = Color.White.copy(alpha = 0.92f)
+                    )
                 )
             }
         }

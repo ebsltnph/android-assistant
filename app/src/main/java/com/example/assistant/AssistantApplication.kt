@@ -10,6 +10,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.notification.Notifier
+import com.example.assistant.core.ui.MathRenderer
 import com.example.assistant.di.AppContainer
 import com.example.assistant.service.FloatingBallService
 import com.example.assistant.worker.DailySummaryWorker
@@ -58,6 +59,8 @@ class AssistantApplication : Application() {
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
         })
         container = AppContainer(this)
+        // 数学公式渲染初始化：加载 jlatexmath 的 assets 字体（幂等，进程启动一次）
+        MathRenderer.init(this)
         // 首次启动：确保种子数据（「日记」本）。
         // **异步执行，绝不阻塞主线程**：DB 首次打开/迁移/关机后 WAL 恢复可能耗时数秒，
         // 期间主线程若被 runBlocking 卡住，FGS 的 startForeground 超时 5 秒会被系统杀进程

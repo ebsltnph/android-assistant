@@ -52,6 +52,9 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }
 
+# 数学公式渲染（jlatexmath Android 移植 fork，JitPack 仓库；transitive 依赖同组三个 aar）
+jlatexmath = { group = "com.github.rikkahub", name = "jlatexmath-android", version = "1.5" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

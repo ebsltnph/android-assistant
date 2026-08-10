@@ -78,6 +78,13 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.serialization.json)
 
+    // 数学公式渲染（聊天消息 LaTeX → 位图）
+    // jlatexmath 1.5 的 POM 声明 kotlin-stdlib:2.3.0，会覆盖项目 Kotlin 2.1.0 的 stdlib
+    // （编译器读 2.3.0 元数据不兼容崩溃）；排除后由项目自带 2.1.0 stdlib 提供
+    implementation(libs.jlatexmath) {
+        exclude(group = "org.jetbrains.kotlin")
+    }
+
     // 测试
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

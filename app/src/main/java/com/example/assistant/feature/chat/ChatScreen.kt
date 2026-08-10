@@ -53,6 +53,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.assistant.AssistantApplication
+import com.example.assistant.core.ui.RichMessageText
 
 /**
  * 聊天页（询问模式）。
@@ -285,9 +286,10 @@ private fun MessageBubble(
                         }
                     }
                     if (msg.text.isNotEmpty()) {
-                        Text(
-                            // 流式输出时追加光标，提示"正在打字"
-                            text = msg.text + if (msg.streaming) "▍" else "",
+                        // 富文本渲染：数学公式 + 基础 Markdown（加粗/斜体/代码/标题/列表）
+                        RichMessageText(
+                            text = msg.text,
+                            streaming = msg.streaming,
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }

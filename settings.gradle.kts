@@ -16,6 +16,8 @@ dependencyResolutionManagement {
         maven { url = uri("https://maven.aliyun.com/repository/central") }
         google()
         mavenCentral()
+        // jlatexmath-android 只在 JitPack 发布（Aliyun 无 jitpack 镜像，需认证不可用）
+        maven { url = uri("https://jitpack.io") }
     }
 }
 
