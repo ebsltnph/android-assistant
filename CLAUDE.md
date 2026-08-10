@@ -140,12 +140,22 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **渲染坑（真机设备端逐像素验证）**：① **块级公式空白根因**——LLM 输出的块级公式是**多行**的（\[ 换行 + 内容 + 换行 \]），提取的 latex 含真实换行 `\n`，jlatexmath 解析含 `\n` 的公式**抛异常**渲染失败；修复：sanitize 把 `\n`/`\r` 转空格（LaTeX 真实换行等价空格，`\\` 才是显式换行，无损）；② `paintIcon` 的 y 坐标传 **`iconDepth`**（基线放到位图底部），传 0 时块级公式主体画到负坐标被裁成空白，行内短公式恰好画得下所以"看着正常"——现象完全吻合；③ `\tag{}/\label{}` 编号命令 jlatexmath 不认，需剥离再渲染（矩阵因此曾回退原代码）；④ 渲染结果加**空白自检**（抽样全透明 → 视为失败回退原文）；⑤ **块级公式不能塞 inlineContent**——位图高达百 dp 塞进文本行内 placeholder 会撑爆行高 → 显示空白（日志证明渲染成功、行内小图正常、唯独大块级空白）；**重构：块级公式独立一行居中显示**（Column + Image + wrapContentWidth），文本/行内公式走 inlineContent，天然正确排版；⑥ 块级公式**前后空行剥离**——源文本 \[...\] 前后空行分隔会渲染成文本空行，造成上下大片空白；flushText 剥尾部换行 + 块级公式后文本段开头换行 trim
   - **已知限制**：公式里中文显示方块/回退（fork 只有 cyrillic/greek 字体）；`**加粗内嵌公式**` 跨段样式不合并；`a*b*c` 会把 b 斜体化；`\tag` 编号被忽略
   - **⚠️ 设备调试事故**：为定位渲染 bug 跑过 `./gradlew :app:connectedDebugAndroidTest`，该任务**测试结束自动卸载 App**——把用户手机上的设置/日记/记忆/聊天记录/secret_log **全部清空**（无可恢复）。教训：**真机调试禁用 connectedDebugAndroidTest**，用手动 `install -r`（保留数据）+ `am instrument`；诊断代码用完即删（已删，androidTest 基建已还原）
+- [x] **v1.3.0 数据备份与导入 + 定期自动备份**（2026-08-10，构建+单测通过，已 commit 待真机验证）
+  - **起因**：connectedDebugAndroidTest 误卸载清空用户数据（见 v1.2.3 事故）→ 用户要求备份功能
+  - **手动导出/恢复**：ZIP = `backup.json`（全量数据，kotlinx-serialization）+ `images/`（日记图片文件）+ `secret_log/`；走 SAF（CreateDocument/OpenDocument，免存储权限）；恢复=覆盖式 + `db.withTransaction` 原子 + **完成后自动重启 App**（数据层单例不刷新必须重启）
+  - **备份范围**：设置/提示词/模型配置/日记+图片/记忆/提醒/事件+命中历史/每日小结历史+最近缓存/对话历史；**不含 API Key**——`BackupProviderProfile` 结构上无 apiKey 字段（编译期保证），恢复后用户重填；searchApiKey 也不导出
+  - **图片路径重映射**：恢复时 `remapImagePath` 取文件名 + 本机 filesDir 拼接（同设备不变、换机自动修路径）
+  - **定期自动备份**：WorkManager 周期任务（每天/每 3 天/每周，默认关，凌晨 2 点执行，REPLACE 原子替换调度）；写**公共「下载」目录**（MediaStore API 29+ 免权限，**卸载不丢**），保留最近 3 份；Worker 开头复核开关兜底取消竞态
+  - **核心文件**：`core/backup/BackupManager.kt`（导出/预览/恢复/自动备份/清理/重启）、`core/backup/BackupModels.kt`（BackupFile/BackupSettings/BackupProviderProfile/LatestSummary）、`worker/AutoBackupWorker.kt`、`feature/settings/BackupPage.kt` + `BackupViewModel.kt`
+  - **数据层改动**：8 个 Room 实体加 `@Serializable`；DiaryDao/ReminderDao/EventDao/SummaryDao 补「全量读/clearAll/insertAll」；MemoryDao 补 `allMemoriesFull`（原 allMemories 有 LIMIT 50 会丢备份）；PromptStore 补 `isCustomized`；SettingsStore 补 auto_backup_enabled/interval_days 两 key；AppContainer 注册 backupManager
+  - **版本号升级**：1.2.2 → **1.3.0 / code 7**
+  - **已知限制**：自动备份在下载目录但卸载 App 会连备份一起删——**只能防数据损坏/误操作，不防卸载**；要防卸载/换机需手动导出到外部
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细开发计划见本机 `.claude/plans/` 目录（未入库）。
 
-**下次会话待办**：① P7 真·语音唤醒词（可选，真机验证语音方案）；② 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）；③ 桌面小部件（用户决定暂不做，留待后续）；④ UI 细节调整（用户会继续提，见记忆 [[ui-polish-needed]]）；⑤ ~~开源准备~~（✅ 2026-08-02 完成：MIT 许可证 + README 徽章 + CLAUDE.md 本地路径脱敏 + 敏感检查通过（无密钥、历史干净、.idea 未跟踪））；⑥ ~~不同安卓设备兼容性改造~~（✅ 2026-08-07 完成：全项目扫描 14 处荣耀特化点，仅悬浮球屏幕尺寸用了 API 30+ 的 currentWindowMetrics 需修（Android 8-11 崩溃），其余 13 处均为无害冗余或标准行为（判断明细见下「跨设备兼容」平台注意事项）；无其他真机可测，待后续设备验证）；⑦ **语音输出**（记录，未开始）：TTS 朗读回复，需适配荣耀/华为语音引擎；⑧ **数字分身**（v1.2 秘密功能铺垫，未开始）：对话历史已落盘可导出，后续提取用户特征；⑨ **数据备份与导入**（2026-08-10 用户要求，起因 connectedDebugAndroidTest 误删真机数据）：一键导出设置/日记/记忆/提醒/事件到备份文件（含 API Key 敏感项需加密或提示），可恢复——防误删/换机/刷机，优先度高。
+**下次会话待办**：① P7 真·语音唤醒词（可选，真机验证语音方案）；② 通知栏收起改进（升级 SDK 36 后用 registerActivity 官方 API，见平台注意事项）；③ 桌面小部件（用户决定暂不做，留待后续）；④ UI 细节调整（用户会继续提，见记忆 [[ui-polish-needed]]）；⑤ ~~开源准备~~（✅ 2026-08-02 完成：MIT 许可证 + README 徽章 + CLAUDE.md 本地路径脱敏 + 敏感检查通过（无密钥、历史干净、.idea 未跟踪））；⑥ ~~不同安卓设备兼容性改造~~（✅ 2026-08-07 完成：全项目扫描 14 处荣耀特化点，仅悬浮球屏幕尺寸用了 API 30+ 的 currentWindowMetrics 需修（Android 8-11 崩溃），其余 13 处均为无害冗余或标准行为（判断明细见下「跨设备兼容」平台注意事项）；无其他真机可测，待后续设备验证）；⑦ **语音输出**（记录，未开始）：TTS 朗读回复，需适配荣耀/华为语音引擎；⑧ **数字分身**（v1.2 秘密功能铺垫，未开始）：对话历史已落盘可导出，后续提取用户特征；⑨ ~~数据备份与导入~~（✅ 2026-08-10 完成：v1.3.0 手动导出/恢复 + 定期自动备份到下载目录，不含 API Key，待真机验证后推送）。
 
 ## 平台注意事项（荣耀 X50 GT / MagicOS）
 
