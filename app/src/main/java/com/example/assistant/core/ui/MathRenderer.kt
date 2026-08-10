@@ -3,6 +3,7 @@ package com.example.assistant.core.ui
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.util.Log
 import android.util.LruCache
 import org.scilab.forge.jlatexmath.TeXConstants
 import org.scilab.forge.jlatexmath.TeXFormula
@@ -20,8 +21,10 @@ import ru.noties.jlatexmath.awt.Insets
  * 带 LRU 缓存：key 覆盖全部影响因子（latex 原文 / 前景色 / 字号像素 / DPI / 宽度约束 / 块行内），
  * 保证流式每 token 重渲染时同一公式只真正跑一次 jlatexmath，其余命中缓存。
  *
- * 注意：jlatexmath 对非法 LaTeX 抛异常是常态（这里统一 try/catch 返回 null，
- * 由调用方回退显示原文），绝不崩 UI。
+ * 容错（绝不崩 UI）：
+ * - 非法 LaTeX（\xbad、\tag 等 jlatexmath 不认的命令）→ try/catch 返回 null，调用方回退原文
+ * - 渲染结果空白（绘制异常/空 box）→ 抽样检测全透明返回 null，同样回退原文
+ * - 超宽/超大 → 用 createScaledBitmap 等比图像缩放（不是裁剪，保证公式完整）
  */
 object MathRenderer {
 
@@ -35,7 +38,9 @@ object MathRenderer {
         val block: Boolean,      // 块级/行内（块级用 DISPLAY 样式，行内用 TEXT）
     )
 
+    private const val TAG = "MathRenderer"
     private const val MAX_BYTES = 12 * 1024 * 1024
+    private const val MAX_PIXELS = 3_000_000
 
     /** LRU 按 Bitmap 字节数计容量（防历史消息公式撑爆内存）；缓存内不手动 recycle，驱逐交给 GC */
     private val cache = object : LruCache<Key, Bitmap>(MAX_BYTES) {
@@ -68,12 +73,16 @@ object MathRenderer {
         maxWidthPx: Int,
         block: Boolean,
     ): Bitmap? {
-        val key = Key(latex, colorArgb, textSizePx, densityDpi, maxWidthPx, block)
+        // 先剥掉 jlatexmath 不支持的 \tag{}/\label{}（教材公式常带），避免整个公式解析失败回退原文
+        val clean = sanitize(latex)
+        if (clean.isEmpty()) return null
+        val key = Key(clean, colorArgb, textSizePx, densityDpi, maxWidthPx, block)
         cache.get(key)?.let { return it }
         val bmp = try {
-            createBitmap(latex, colorArgb, textSizePx, densityDpi, maxWidthPx, block)
+            createBitmap(clean, colorArgb, textSizePx, densityDpi, maxWidthPx, block)
         } catch (e: Exception) {
-            // jlatexmath 对非法 LaTeX（\xbad、未闭合 \frac 等）抛 ParseException 等异常
+            // jlatexmath 对非法 LaTeX 抛 ParseException 等异常
+            Log.e(TAG, "公式渲染异常 latex=[$latex]：${e.javaClass.simpleName} ${e.message}")
             null
         } ?: return null
         cache.put(key, bmp)
@@ -98,33 +107,77 @@ object MathRenderer {
         val color = Color(colorArgb)
         icon.setForeground(color)
 
-        // 总高度 = 高度 + 基线深度（getIconHeight 不含 depth，depth 会裁掉）
-        var w = icon.iconWidth
-        var h = icon.iconHeight + icon.iconDepth
-        if (w <= 0 || h <= 0) return null
-
-        // 尺寸守卫：超宽/总像素超限按比例缩小，杜绝巨型位图 OOM
-        val totalPixels = w.toLong() * h
-        if (w > maxWidthPx || totalPixels > MAX_PIXELS) {
-            val scale = minOf(maxWidthPx.toFloat() / w, MAX_PIXELS.toFloat() / totalPixels)
-            w = (w * scale).toInt().coerceAtLeast(1)
-            h = (h * scale).toInt().coerceAtLeast(1)
+        // 总高度 = 高度 + 基线深度（getIconHeight 不含 depth）
+        val iconW = icon.iconWidth
+        val iconDepth = icon.iconDepth
+        val iconH = icon.iconHeight + iconDepth
+        if (iconW <= 0 || iconH <= 0) {
+            Log.e(TAG, "公式图标尺寸无效：$latex w=$iconW h=$iconH")
+            return null
         }
 
-        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        // 先按原始尺寸渲染（保证公式内容完整绘制，避免缩小后裁剪丢失）
+        val bitmap = Bitmap.createBitmap(iconW, iconH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         val g2 = AndroidGraphics2D()
         g2.setCanvas(canvas)
+        // 关键：paintIcon 的 y 必须传基线深度 iconDepth——基线放在 bitmap 底部 depth 处，
+        // 上方 height 部分 + 下方 depth 部分才都落在 bitmap 内。
+        // 之前传 0,0 基线在顶部，块级公式（矩阵/分式）主体全画到负坐标被裁掉 → 空白
         icon.paintIcon(
             object : Component {
                 override fun getForeground(): Color = color
             },
             g2,
-            0, 0,
+            0, iconDepth,
         )
+
+        // 空白自检：渲染结果几乎全透明 → 视为失败（有占位符但内容画不出来，回退原文）
+        if (isBlank(bitmap)) {
+            Log.e(TAG, "公式渲染结果空白：$latex")
+            bitmap.recycle()
+            return null
+        }
+
+        // 尺寸守卫：超宽/总像素超限 → createScaledBitmap 等比缩小（图像缩放，不是裁剪）
+        val totalPixels = iconW.toLong() * iconH
+        if (iconW > maxWidthPx || totalPixels > MAX_PIXELS) {
+            val scale = minOf(maxWidthPx.toFloat() / iconW, MAX_PIXELS.toFloat() / totalPixels)
+            val w = (iconW * scale).toInt().coerceAtLeast(1)
+            val h = (iconH * scale).toInt().coerceAtLeast(1)
+            return Bitmap.createScaledBitmap(bitmap, w, h, true)
+        }
         return bitmap
     }
 
-    /** 防止病态输入生成超大位图（约 300 万像素上限） */
-    private const val MAX_PIXELS = 3_000_000
+    /**
+     * 净化公式，返回 jlatexmath 能解析的形式：
+     * 1. 剥掉不支持的编号/标签命令 \tag{}/\label{}
+     * 2. **换行符转空格**——LLM 输出的块级公式是多行的（\[ 换行 + 内容 + 换行 \]），
+     *    jlatexmath 解析含真实换行 \n 的公式会抛异常（真机实测矩阵/哈密顿量因此渲染失败）。
+     *    LaTeX 里真实换行等价于空格（\\ 才是显式换行），转空格无损。
+     */
+    private fun sanitize(latex: String): String = latex
+        .replace(Regex("\\\\tag\\{[^}]*\\}"), "")
+        .replace(Regex("\\\\label\\{[^}]*\\}"), "")
+        .replace('\n', ' ')
+        .replace('\r', ' ')
+        .trim()
+
+    /** 抽样检测位图是否几乎全透明（内容没画出来） */
+    private fun isBlank(bmp: Bitmap): Boolean {
+        val stepX = maxOf(1, bmp.width / 20)
+        val stepY = maxOf(1, bmp.height / 20)
+        var x = 0
+        while (x < bmp.width) {
+            var y = 0
+            while (y < bmp.height) {
+                val alpha = (bmp.getPixel(x, y) ushr 24) and 0xFF
+                if (alpha > 40) return false
+                y += stepY
+            }
+            x += stepX
+        }
+        return true
+    }
 }

@@ -130,14 +130,16 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **秘密功能（数字分身素材）**：设置页最底部**版本号字样**（如 v1.2.0）——**连点 3 次**（间隔 >1.5s 重置计数）进入隐藏子页；`ConversationLog` 记录**所有用户发出的内容**（不含模型回复）追加到 `filesDir/secret_log/chat_history.txt`（`[yyyy-MM-dd HH:mm] 内容`，容量 10MB 超限丢最旧一半）；开关存 SettingsStore（**默认关**，手动开启后开始记录；**关闭不清空已有记录**）；挂 5 个用户输入入口（sendText/quickSendVision/quickAnalyzeResult/createReminderNow/writeDiaryNow）；**导出** = FileProvider（新增 provider + res/xml/file_paths.xml 只暴露 secret_log/）+ 系统分享菜单；子页显示条数/大小 + **清空需二次确认**（防误触）
   - **缓存自动清理（启动时后台执行）**：孤儿日记图片（filesDir/diary_images 未被 DB 引用的文件，删条目/删单图残留）删除；cacheDir/screensense 超 7 天截图删除
 - [x] **跨设备兼容检查**（2026-08-07，无真机仅代码审查）：全项目扫描荣耀特化点，仅修 1 处（悬浮球 `currentWindowMetrics` API 30+，Android 8-11 崩溃，见平台注意事项「跨设备兼容」）
-- [x] **v1.2.3 数学公式 + 基础 Markdown 渲染**（2026-08-10，单测+构建通过，**待真机验证**）
+- [x] **v1.2.3 数学公式 + 基础 Markdown 渲染**（2026-08-10，单测+构建+设备端验证通过；真机 UI 待用户重测确认）
   - **方案**：jlatexmath 本地渲染（JitPack `com.github.rikkahub:jlatexmath-android:1.5`，基于 scilab 1.0.7 的 fork）→ 公式渲染成 Bitmap 内嵌进 Compose 文本流；加粗/斜体/行内代码/标题/列表用 SpanStyle 零成本
   - **范围**（用户拍板）：公式 $…$ / $$…$$ / \\(…\\) / \\[…\\]（含矩阵 `\begin{matrix}`）；基础 Markdown（加粗/斜体/行内代码/标题/无序/有序列表）；**不做**代码块围栏/表格/链接
   - **核心文件**（都在 core/ui/）：`RichTextParser.kt`（两步解析：先切公式区、后对非公式区做 Markdown——保证公式内容不被误判；纯 Kotlin 可单测，样式用 RunStyle 纯数据）、`MathRenderer.kt`（TeXFormula→TeXIcon→Canvas 位图 + LruCache 按字节计容量 12MB，key=latex/颜色/字号px/DPI/宽度/块行内；非法 LaTeX try/catch 回退原文）、`RichMessageText.kt`（共享组件，appendInlineContent 占位 + SpanStyle，remember 用原始值 key）
   - **集成**：ChatScreen.kt 与 FloatingPanelActivity.kt 的 MessageBubble 正文都换 RichMessageText；AssistantApplication.onCreate 调 MathRenderer.init（加载 assets 字体）；thinking 思考块保持纯文本不渲染公式
   - **流式策略**：未闭合分隔符按普通文本显示、闭合才渲染；同一公式缓存命中只渲染一次；remember key 用值类型（text/颜色/字号/密度/宽度），style 对象每帧新建绝不入 key
   - **构建踩坑**：① jlatexmath 1.5 的 POM 声明 `kotlin-stdlib:2.3.0` 会覆盖项目 Kotlin 2.1.0 的 stdlib（编译器读 2.3.0 元数据崩溃），`implementation(libs.jlatexmath) { exclude(group = "org.jetbrains.kotlin") }` 排除（见平台注意事项）；② Compose 1.7 API 位置：`InlineTextContent`/`appendInlineContent` 在 `androidx.compose.foundation.text`（不是 ui.text）、顶层 `LocalTextStyle` 在 `androidx.compose.material3`、`Placeholder` 在 `androidx.compose.ui.text` 且宽高是 **TextUnit**（位图像素用 `with(density){px.toSp()}` 转换）、参数名 `placeholderVerticalAlign`；③ rikkahub fork **没有 `LatexFormula` 类**（老 amrdeveloper 版才有），API 是 `TeXFormula(tex).createTeXIcon(STYLE_DISPLAY/TEXT, sizePx)` + `TeXIcon.setInsets(0)` + `AndroidGraphics2D().setCanvas(canvas)` + `paintIcon(Component{getForeground()}, g2, 0, 0)`，高度= `getIconHeight()+getIconDepth()`
-  - **已知限制**：公式里中文显示方块/回退（fork 只有 cyrillic/greek 字体）；`**加粗内嵌公式**` 跨段样式不合并；`a*b*c` 会把 b 斜体化
+  - **渲染坑（真机设备端逐像素验证）**：① **块级公式空白根因**——LLM 输出的块级公式是**多行**的（\[ 换行 + 内容 + 换行 \]），提取的 latex 含真实换行 `\n`，jlatexmath 解析含 `\n` 的公式**抛异常**渲染失败；修复：sanitize 把 `\n`/`\r` 转空格（LaTeX 真实换行等价空格，`\\` 才是显式换行，无损）；② `paintIcon` 的 y 坐标传 **`iconDepth`**（基线放到位图底部），传 0 时块级公式主体画到负坐标被裁成空白，行内短公式恰好画得下所以"看着正常"——现象完全吻合；③ `\tag{}/\label{}` 编号命令 jlatexmath 不认，需剥离再渲染（矩阵因此曾回退原代码）；④ 渲染结果加**空白自检**（抽样全透明 → 视为失败回退原文）
+  - **已知限制**：公式里中文显示方块/回退（fork 只有 cyrillic/greek 字体）；`**加粗内嵌公式**` 跨段样式不合并；`a*b*c` 会把 b 斜体化；`\tag` 编号被忽略
+  - **⚠️ 设备调试事故**：为定位渲染 bug 跑过 `./gradlew :app:connectedDebugAndroidTest`，该任务**测试结束自动卸载 App**——把用户手机上的设置/日记/记忆/聊天记录/secret_log **全部清空**（无可恢复）。教训：**真机调试禁用 connectedDebugAndroidTest**，用手动 `install -r`（保留数据）+ `am instrument`；诊断代码用完即删（已删，androidTest 基建已还原）
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
