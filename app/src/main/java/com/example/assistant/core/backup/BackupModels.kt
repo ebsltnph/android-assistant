@@ -1,6 +1,7 @@
 package com.example.assistant.core.backup
 
 import com.example.assistant.core.network.ProviderProfile
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
 
 /**
@@ -16,9 +17,10 @@ const val BACKUP_VERSION = 1
  */
 @Serializable
 data class BackupFile(
-    /** 固定标识，防止用户选错文件（如选了别的 zip） */
-    val format: String = "assistant_backup",
-    val version: Int = BACKUP_VERSION,
+    /** 固定标识，防止用户选错文件（如选了别的 zip）。@EncodeDefault：默认值也强制序列化（格式标识必须写进文件） */
+    @EncodeDefault val format: String = "assistant_backup",
+    /** 备份格式版本。@EncodeDefault：始终写进文件，恢复时才能校验 */
+    @EncodeDefault val version: Int = BACKUP_VERSION,
     /** 备份时间（仅展示） */
     val createdAtEpochMillis: Long = System.currentTimeMillis(),
     /** 备份时的 App 版本名（仅展示） */

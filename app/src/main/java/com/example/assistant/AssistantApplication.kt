@@ -180,10 +180,14 @@ class AssistantApplication : Application() {
      * 间隔是 24h 整数倍 → 首次 02:00 后每次都固定在 02:00 跑。
      */
     private fun scheduleAutoBackup(intervalDays: Int) {
+        // 临时验证：首次触发用「下一分钟」（AUTO_BACKUP_TEST_NEXT_MINUTE>=0 时），
+        // 完事改回 AUTO_BACKUP_MINUTE_OF_DAY（凌晨 2 点）
+        val testMinute = AUTO_BACKUP_TEST_NEXT_MINUTE
+        val runMinute = if (testMinute >= 0) testMinute else AUTO_BACKUP_MINUTE_OF_DAY
         val request = PeriodicWorkRequestBuilder<AutoBackupWorker>(
             intervalDays * 24L, TimeUnit.HOURS
         )
-            .setInitialDelay(initialDelayToMinute(AUTO_BACKUP_MINUTE_OF_DAY).toLong(), TimeUnit.MILLISECONDS)
+            .setInitialDelay(initialDelayToMinute(runMinute).toLong(), TimeUnit.MILLISECONDS)
             .build()
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             WORK_AUTO_BACKUP_NAME,
@@ -290,5 +294,8 @@ class AssistantApplication : Application() {
 
         /** 自动备份执行时刻：凌晨 2 点（手机空闲/通常充电，不打扰） */
         private const val AUTO_BACKUP_MINUTE_OF_DAY = 2 * 60
+
+        /** 临时验证：首次触发用指定分钟（-1 = 用 AUTO_BACKUP_MINUTE_OF_DAY）。验证完改回 -1 */
+        private const val AUTO_BACKUP_TEST_NEXT_MINUTE = -1
     }
 }
