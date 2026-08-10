@@ -2,6 +2,7 @@ package com.example.assistant.data.db.entity
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /**
  * 新闻类事件监控：周期搜索指定话题，命中条件时通知。
@@ -10,6 +11,7 @@ import androidx.room.PrimaryKey
  * includeDomains：逗号分隔的限定域名（只搜这些来源，如 api-docs.deepseek.com）
  */
 @Entity(tableName = "monitored_events")
+@Serializable
 data class MonitoredEventEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val displayName: String,

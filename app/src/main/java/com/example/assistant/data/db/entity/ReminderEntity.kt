@@ -3,6 +3,7 @@ package com.example.assistant.data.db.entity
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /**
  * 定时提醒。
@@ -16,6 +17,7 @@ import androidx.room.PrimaryKey
     tableName = "reminders",
     indices = [Index("triggerAtEpochMillis")]
 )
+@Serializable
 data class ReminderEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,

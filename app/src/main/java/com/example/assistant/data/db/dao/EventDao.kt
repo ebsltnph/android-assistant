@@ -64,6 +64,26 @@ interface EventDao {
     )
     suspend fun trimHits(eventId: Long, limit: Int = MAX_HITS_PER_EVENT)
 
+    // ---- 备份/恢复用 ----
+
+    @Query("SELECT * FROM monitored_events ORDER BY id ASC")
+    suspend fun allEvents(): List<MonitoredEventEntity>
+
+    @Query("SELECT * FROM event_hits ORDER BY id ASC")
+    suspend fun allHits(): List<EventHitEntity>
+
+    @Insert
+    suspend fun insertAll(events: List<MonitoredEventEntity>)
+
+    @Insert
+    suspend fun insertAllHits(hits: List<EventHitEntity>)
+
+    @Query("DELETE FROM event_hits")
+    suspend fun clearAllHits()
+
+    @Query("DELETE FROM monitored_events")
+    suspend fun clearAll()
+
     companion object {
         /** 每个事件保留的触发历史条数上限（防无限增长；用户要求精简只看最近几条） */
         const val MAX_HITS_PER_EVENT = 5

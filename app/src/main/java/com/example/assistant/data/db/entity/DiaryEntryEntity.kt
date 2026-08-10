@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /** 日记条目：带准确时间戳，归属于某个日记本 */
 @Entity(
@@ -18,6 +19,7 @@ import androidx.room.PrimaryKey
     ],
     indices = [Index("bookId"), Index("createdAtEpochMillis")]
 )
+@Serializable
 data class DiaryEntryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val bookId: Long,

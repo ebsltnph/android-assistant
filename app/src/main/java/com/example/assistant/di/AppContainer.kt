@@ -13,6 +13,7 @@ import com.example.assistant.core.agent.PromptBuilder
 import com.example.assistant.core.agent.ReminderTimeParser
 import com.example.assistant.core.agent.SearchJudger
 import com.example.assistant.core.alarm.ReminderScheduler
+import com.example.assistant.core.backup.BackupManager
 import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.SearchClient
 import com.example.assistant.core.network.TavilySearchClient
@@ -66,6 +67,19 @@ class AppContainer(context: Context) {
 
     // ---- 秘密功能：对话历史记录（数字分身素材） ----
     val conversationLog: ConversationLog by lazy { ConversationLog(appContext, settingsStore) }
+
+    // ---- v1.3：数据备份与导入（手动导出/恢复 + 定期自动备份） ----
+    val backupManager: BackupManager by lazy {
+        BackupManager(
+            context = appContext,
+            db = database,
+            settingsStore = settingsStore,
+            promptStore = promptStore,
+            summaryStore = summaryStore,
+            secretStore = secretStore,
+            conversationLog = conversationLog
+        )
+    }
 
     // ---- 数据库 ----
     val database: AppDatabase by lazy { AppDatabase.create(appContext) }

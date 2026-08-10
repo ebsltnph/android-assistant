@@ -84,6 +84,15 @@ class SettingsStore(context: Context) {
     val secretLogEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_SECRET_LOG] ?: false }
     suspend fun setSecretLogEnabled(v: Boolean) = dataStore.edit { it[KEY_SECRET_LOG] = v }
 
+    // ---- v1.3 定期自动备份 ----
+    /** 自动备份开关（默认关；开启后 WorkManager 周期执行，写公共「下载」目录） */
+    val autoBackupEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_AUTO_BACKUP] ?: false }
+    suspend fun setAutoBackupEnabled(v: Boolean) = dataStore.edit { it[KEY_AUTO_BACKUP] = v }
+
+    /** 自动备份间隔（天，默认 7；可选 1/3/7） */
+    val autoBackupIntervalDays: Flow<Int> = dataStore.data.map { it[KEY_AUTO_BACKUP_INTERVAL] ?: 7 }
+    suspend fun setAutoBackupIntervalDays(v: Int) = dataStore.edit { it[KEY_AUTO_BACKUP_INTERVAL] = v }
+
     companion object {
         private const val TAG = "SettingsStore"
         private val KEY_TTS = booleanPreferencesKey("tts_enabled")
@@ -95,6 +104,8 @@ class SettingsStore(context: Context) {
         private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
         private val KEY_MAX_TURNS = intPreferencesKey("conversation_max_turns")
         private val KEY_SECRET_LOG = booleanPreferencesKey("secret_log_enabled")
+        private val KEY_AUTO_BACKUP = booleanPreferencesKey("auto_backup_enabled")
+        private val KEY_AUTO_BACKUP_INTERVAL = intPreferencesKey("auto_backup_interval_days")
 
         private fun capabilityKey(c: Capability) = stringPreferencesKey("capability_${c.name}")
     }

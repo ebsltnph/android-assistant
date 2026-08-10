@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /**
  * 事件监控的触发历史（DB v6）：每次命中通知时记录一条，App 内可查看。
@@ -22,6 +23,7 @@ import androidx.room.PrimaryKey
     ],
     indices = [Index("eventId")]
 )
+@Serializable
 data class EventHitEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val eventId: Long,

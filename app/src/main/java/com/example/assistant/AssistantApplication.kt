@@ -13,6 +13,7 @@ import com.example.assistant.core.notification.Notifier
 import com.example.assistant.core.ui.MathRenderer
 import com.example.assistant.di.AppContainer
 import com.example.assistant.service.FloatingBallService
+import com.example.assistant.worker.AutoBackupWorker
 import com.example.assistant.worker.DailySummaryWorker
 import com.example.assistant.worker.EventPollWorker
 import com.example.assistant.worker.MorningBriefingWorker
@@ -76,6 +77,7 @@ class AssistantApplication : Application() {
         scheduleDailySummaryWithSetting()
         scheduleEventPoll()
         scheduleBriefingWithSetting()
+        scheduleAutoBackupWithSetting()
         // 提醒清理与恢复：
         // - 已触发超 24h 的一次性提醒清理（列表不堆积）
         // - 已确认的过期僵尸提醒清理（未确认的还在 5 分钟确认流程中，跳过）
@@ -146,6 +148,48 @@ class AssistantApplication : Application() {
                 // 清理失败不影响启动
             }
         }
+    }
+
+    // ---- v1.3 定期自动备份调度 ----
+
+    /** 启动时按设置调度自动备份（关闭则取消）——onCreate 里调用 */
+    private fun scheduleAutoBackupWithSetting() {
+        appScope.launch {
+            if (container.settingsStore.autoBackupEnabled.first()) {
+                scheduleAutoBackup(container.settingsStore.autoBackupIntervalDays.first())
+            } else {
+                WorkManager.getInstance(this@AssistantApplication).cancelUniqueWork(WORK_AUTO_BACKUP_NAME)
+            }
+        }
+    }
+
+    /** 开关打开/间隔改变时调用：REPLACE 原子替换（勿 cancel+KEEP——取消是异步的，KEEP 会拒绝替换导致改时间不生效） */
+    fun rescheduleAutoBackup(intervalDays: Int) {
+        appScope.launch { scheduleAutoBackup(intervalDays) }
+    }
+
+    /** 开关关闭时调用：取消周期任务 */
+    fun stopAutoBackup() {
+        appScope.launch {
+            WorkManager.getInstance(this@AssistantApplication).cancelUniqueWork(WORK_AUTO_BACKUP_NAME)
+        }
+    }
+
+    /**
+     * 调度自动备份：周期 = intervalDays 天，首次对齐到凌晨 2 点执行。
+     * 间隔是 24h 整数倍 → 首次 02:00 后每次都固定在 02:00 跑。
+     */
+    private fun scheduleAutoBackup(intervalDays: Int) {
+        val request = PeriodicWorkRequestBuilder<AutoBackupWorker>(
+            intervalDays * 24L, TimeUnit.HOURS
+        )
+            .setInitialDelay(initialDelayToMinute(AUTO_BACKUP_MINUTE_OF_DAY).toLong(), TimeUnit.MILLISECONDS)
+            .build()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            WORK_AUTO_BACKUP_NAME,
+            ExistingPeriodicWorkPolicy.REPLACE,
+            request
+        )
     }
 
     /** 新闻事件轮询：周期 6 小时（各事件按 pollHours 在 Worker 内过滤） */
@@ -242,5 +286,9 @@ class AssistantApplication : Application() {
         private const val WORK_EVENT_POLL_NAME = "event_poll"
         private const val WORK_EVENT_POLL_NOW = "event_poll_now"
         private const val WORK_BRIEFING_NAME = "morning_briefing"
+        private const val WORK_AUTO_BACKUP_NAME = "auto_backup"
+
+        /** 自动备份执行时刻：凌晨 2 点（手机空闲/通常充电，不打扰） */
+        private const val AUTO_BACKUP_MINUTE_OF_DAY = 2 * 60
     }
 }

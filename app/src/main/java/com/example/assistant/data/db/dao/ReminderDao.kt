@@ -50,4 +50,15 @@ interface ReminderDao {
     /** 清理已过期但未触发的僵尸提醒（如日期已过的测试残留）——只清已确认过的 */
     @Query("DELETE FROM reminders WHERE status = 'pending' AND triggerAtEpochMillis < :nowMillis AND ackedAtEpochMillis IS NOT NULL")
     suspend fun deleteStalePending(nowMillis: Long)
+
+    // ---- 备份/恢复用 ----
+
+    @Query("SELECT * FROM reminders ORDER BY id ASC")
+    suspend fun all(): List<ReminderEntity>
+
+    @Insert
+    suspend fun insertAll(reminders: List<ReminderEntity>)
+
+    @Query("DELETE FROM reminders")
+    suspend fun clearAll()
 }

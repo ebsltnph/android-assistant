@@ -79,4 +79,27 @@ interface DiaryDao {
     /** 数据库里引用的全部图片路径（启动时清理孤儿文件用） */
     @Query("SELECT path FROM diary_images")
     suspend fun allImagePaths(): List<String>
+
+    // ---- 备份/恢复用（全量快照 + 清空 + 批量插入） ----
+
+    @Query("SELECT * FROM diary_entries ORDER BY id ASC")
+    suspend fun allEntries(): List<DiaryEntryEntity>
+
+    @Query("SELECT * FROM diary_images ORDER BY id ASC")
+    suspend fun allImages(): List<DiaryImageEntity>
+
+    @Insert
+    suspend fun insertAllBooks(books: List<DiaryBookEntity>)
+
+    @Insert
+    suspend fun insertAllEntries(entries: List<DiaryEntryEntity>)
+
+    @Query("DELETE FROM diary_images")
+    suspend fun clearAllImages()
+
+    @Query("DELETE FROM diary_entries")
+    suspend fun clearAllEntries()
+
+    @Query("DELETE FROM diary_books")
+    suspend fun clearAllBooks()
 }

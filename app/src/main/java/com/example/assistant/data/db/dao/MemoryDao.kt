@@ -16,6 +16,10 @@ interface MemoryDao {
     @Query("SELECT * FROM memories ORDER BY id ASC LIMIT 50")
     suspend fun allMemories(): List<MemoryEntity>
 
+    /** 备份用：全量记忆（不含 LIMIT——备份不能丢 50 条之后的内容） */
+    @Query("SELECT * FROM memories ORDER BY id ASC")
+    suspend fun allMemoriesFull(): List<MemoryEntity>
+
     @Insert
     suspend fun insert(memory: MemoryEntity): Long
 

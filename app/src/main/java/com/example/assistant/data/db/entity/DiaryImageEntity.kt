@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /**
  * 日记条目的图片（一条目可多张，DB v6 起取代旧单图 imagePath 列）。
@@ -23,6 +24,7 @@ import androidx.room.PrimaryKey
     ],
     indices = [Index("entryId")]
 )
+@Serializable
 data class DiaryImageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val entryId: Long,

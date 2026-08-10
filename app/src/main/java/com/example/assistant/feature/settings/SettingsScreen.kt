@@ -187,6 +187,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 onToggle = { vm.setSecretLogEnabled(it) },
                 onBack = { subPage = null }
             )
+            SettingsSubPage.BACKUP -> BackupPage(
+                onBack = { subPage = null }
+            )
         }
     }
 
@@ -212,7 +215,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
 /** 设置页子页面（内部导航，不引入 NavHost） */
 private enum class SettingsSubPage {
-    MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED, SECRET
+    MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED, SECRET, BACKUP
 }
 
 // ======================= 顶层列表 =======================
@@ -310,7 +313,16 @@ private fun SettingsMainList(
             )
         }
 
-        // ---- 6. 聊天上下文长度 ----
+        // ---- 6. 数据备份与导入（v1.3：手动导出/恢复 + 定期自动备份） ----
+        item {
+            EntryCard(
+                title = "数据备份与导入",
+                subtitle = "导出全部数据到文件 / 从备份恢复（含定期自动备份）",
+                onClick = { onOpenSubPage(SettingsSubPage.BACKUP) }
+            )
+        }
+
+        // ---- 7. 聊天上下文长度 ----
         item {
             ConversationLengthCard(
                 current = conversationMaxTurns,
@@ -318,12 +330,12 @@ private fun SettingsMainList(
             )
         }
 
-        // ---- 7. 搜索（keyless 默认） ----
+        // ---- 8. 搜索（keyless 默认） ----
         item {
             SearchSettingsCard(apiKey = searchApiKey, onSaveKey = { vm.saveSearchApiKey(it) })
         }
 
-        // ---- 8. 提示词：只保留两个常用项，其余进「高级设置」 ----
+        // ---- 9. 提示词：只保留两个常用项，其余进「高级设置」 ----
         item {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
@@ -349,7 +361,7 @@ private fun SettingsMainList(
             )
         }
 
-        // ---- 9. 版本号（隐藏入口：连点 3 次进秘密功能——不显眼，防止误入） ----
+        // ---- 10. 版本号（隐藏入口：连点 3 次进秘密功能——不显眼，防止误入） ----
         item {
             val context = LocalContext.current
             val versionName = remember {

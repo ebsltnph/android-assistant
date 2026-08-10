@@ -23,4 +23,15 @@ interface SummaryDao {
 
     @Query("SELECT * FROM daily_summaries ORDER BY date DESC LIMIT 1")
     suspend fun latest(): DailySummaryEntity?
+
+    // ---- 备份/恢复用 ----
+
+    @Query("SELECT * FROM daily_summaries ORDER BY id ASC")
+    suspend fun all(): List<DailySummaryEntity>
+
+    @Insert
+    suspend fun insertAll(summaries: List<DailySummaryEntity>)
+
+    @Query("DELETE FROM daily_summaries")
+    suspend fun clearAll()
 }

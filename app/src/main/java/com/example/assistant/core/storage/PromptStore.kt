@@ -33,6 +33,10 @@ class PromptStore(context: Context) {
 
     suspend fun prompt(key: PromptKey): String = promptFlow(key).first()
 
+    /** 该提示词是否被用户自定义过（已存值；false = 用代码默认）——备份导出判断用 */
+    suspend fun isCustomized(key: PromptKey): Boolean =
+        dataStore.data.first()[key.preferenceKey] != null
+
     suspend fun setPrompt(key: PromptKey, value: String) {
         dataStore.edit { it[key.preferenceKey] = value }
     }

@@ -3,6 +3,7 @@ package com.example.assistant.data.db.entity
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /**
  * 长期记忆：模型认为重要的关于用户的事实。
@@ -12,6 +13,7 @@ import androidx.room.PrimaryKey
     tableName = "memories",
     indices = [Index("category")]
 )
+@Serializable
 data class MemoryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val fact: String,
