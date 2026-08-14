@@ -2,6 +2,7 @@ package com.example.assistant.data.repo
 
 import com.example.assistant.data.db.dao.SummaryDao
 import com.example.assistant.data.db.entity.DailySummaryEntity
+import com.example.assistant.data.db.entity.PeriodSummaryEntity
 import kotlinx.coroutines.flow.Flow
 
 class SummaryRepository(private val dao: SummaryDao) {
@@ -17,4 +18,15 @@ class SummaryRepository(private val dao: SummaryDao) {
     suspend fun byDate(date: String): DailySummaryEntity? = dao.byDate(date)
 
     suspend fun latest(): DailySummaryEntity? = dao.latest()
+
+    // ---- 期间总结历史（日记页「期间总结」，保留最近 5 条） ----
+
+    val periodSummaries: Flow<List<PeriodSummaryEntity>> = dao.periodSummariesFlow()
+
+    suspend fun savePeriodSummary(fromMillis: Long, toMillis: Long, summary: String) {
+        dao.insertPeriodSummary(
+            PeriodSummaryEntity(fromMillis = fromMillis, toMillis = toMillis, summary = summary)
+        )
+        dao.prunePeriodSummaries(PeriodSummaryEntity.MAX_KEEP)
+    }
 }

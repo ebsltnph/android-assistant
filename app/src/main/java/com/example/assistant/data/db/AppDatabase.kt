@@ -18,6 +18,7 @@ import com.example.assistant.data.db.entity.DiaryImageEntity
 import com.example.assistant.data.db.entity.EventHitEntity
 import com.example.assistant.data.db.entity.MemoryEntity
 import com.example.assistant.data.db.entity.MonitoredEventEntity
+import com.example.assistant.data.db.entity.PeriodSummaryEntity
 import com.example.assistant.data.db.entity.ReminderEntity
 
 /**
@@ -34,9 +35,10 @@ import com.example.assistant.data.db.entity.ReminderEntity
         ReminderEntity::class,
         MonitoredEventEntity::class,
         EventHitEntity::class,
-        DailySummaryEntity::class
+        DailySummaryEntity::class,
+        PeriodSummaryEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -51,7 +53,8 @@ abstract class AppDatabase : RoomDatabase() {
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "assistant.db")
                 .addMigrations(
-                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
+                    MIGRATION_6_7
                 )
                 .build()
 
@@ -157,6 +160,20 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_event_hits_eventId` ON `event_hits` (`eventId`)"
+                )
+            }
+        }
+
+        /** v6 → v7：新增期间日记总结历史表（日记页「期间总结」，保留最近 5 条） */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `period_summaries` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`fromMillis` INTEGER NOT NULL, " +
+                        "`toMillis` INTEGER NOT NULL, " +
+                        "`summary` TEXT NOT NULL, " +
+                        "`createdAtEpochMillis` INTEGER NOT NULL)"
                 )
             }
         }

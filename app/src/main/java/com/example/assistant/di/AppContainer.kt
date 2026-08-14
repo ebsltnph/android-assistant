@@ -9,6 +9,7 @@ import com.example.assistant.core.agent.EventExtractor
 import com.example.assistant.core.agent.EventHitJudge
 import com.example.assistant.core.agent.IntentRouter
 import com.example.assistant.core.agent.MemoryExtractor
+import com.example.assistant.core.agent.PeriodSummaryGenerator
 import com.example.assistant.core.agent.PromptBuilder
 import com.example.assistant.core.agent.ReminderTimeParser
 import com.example.assistant.core.agent.SearchJudger
@@ -112,6 +113,14 @@ class AppContainer(context: Context) {
             summaryStore = summaryStore,
             summaryRepository = summaryRepository,
             appContext = appContext
+        )
+    }
+    val periodSummaryGenerator: PeriodSummaryGenerator by lazy {
+        PeriodSummaryGenerator(
+            diaryRepository = diaryRepository,
+            providerRegistry = providerRegistry,
+            promptStore = promptStore,
+            summaryRepository = summaryRepository
         )
     }
 

@@ -150,6 +150,14 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **数据层改动**：8 个 Room 实体加 `@Serializable`；DiaryDao/ReminderDao/EventDao/SummaryDao 补「全量读/clearAll/insertAll」；MemoryDao 补 `allMemoriesFull`（原 allMemories 有 LIMIT 50 会丢备份）；PromptStore 补 `isCustomized`；SettingsStore 补 auto_backup_enabled/interval_days 两 key；AppContainer 注册 backupManager
   - **版本号升级**：1.2.2 → **1.3.0 / code 7**
   - **已知限制**：自动备份在下载目录但卸载 App 会连备份一起删——**只能防数据损坏/误操作，不防卸载**；要防卸载/换机需手动导出到外部
+- [x] **v1.3.1 指定期间日记总结**（2026-08-11，真机验证通过已推送）
+  - **功能**：日记页「期间总结」按钮 → 自选起止日期（Material3 DatePicker，起止颠倒自动互换）→ LLM 把该区间日记整理成总结弹窗展示
+  - **历史保留最近 5 条**：DB v7 新增 `period_summaries` 表（`PeriodSummaryEntity`，`MAX_KEEP=5`）；生成成功后落库并自动清理最旧；「期间总结」对话框内可直接重新查看历史
+  - **复制 + 导出**：结果弹窗「复制」（剪贴板）+「导出」（系统分享 ACTION_SEND 纯文本，可存文件/发到其他 App）
+  - **生成中提示**：生成期间持续显示「正在生成期间总结…」点号循环（**协程驱动，不依赖系统动画**——用户关掉「动画时长缩放」后 CircularProgressIndicator 会停住）
+  - **maxTokens 调优**：期间总结跨多天输出更长，推理模型思考占配额，4096→8192→16384 才不 `finish_reason=length`（空内容附结束原因便于定位）
+  - **核心文件**：`core/agent/PeriodSummaryGenerator.kt`、`data/db/entity/PeriodSummaryEntity.kt`、`feature/diary/DiaryScreen.kt` + `DiaryViewModel.kt`（PromptStore 新增 PERIOD_SUMMARY 提示词）
+  - **版本号升级**：1.3.0 → **1.3.1 / code 8**
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

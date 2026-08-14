@@ -1,9 +1,11 @@
 package com.example.assistant.feature.diary
 
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -35,21 +38,27 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,7 +66,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -68,11 +79,14 @@ import com.example.assistant.core.AppSharedState
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.data.db.entity.DiaryEntryWithImages
 import com.example.assistant.data.db.entity.DiaryImageEntity
+import com.example.assistant.data.db.entity.PeriodSummaryEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 /**
  * 日记页：
@@ -90,7 +104,9 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
             diaryRepository = app.container.diaryRepository,
             memoryRepository = app.container.memoryRepository,
             memoryExtractor = app.container.memoryExtractor,
-            summaryGenerator = app.container.dailySummaryGenerator
+            summaryGenerator = app.container.dailySummaryGenerator,
+            periodSummaryGenerator = app.container.periodSummaryGenerator,
+            summaryRepository = app.container.summaryRepository
         )
     }
 
@@ -99,6 +115,10 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
     val input by vm.input.collectAsState()
     val searchQuery by vm.searchQuery.collectAsState()
     val message by vm.message.collectAsState()
+    val periodSummary by vm.periodSummary.collectAsState()
+    val periodSummaryLoading by vm.periodSummaryLoading.collectAsState()
+    val periodSummaries by vm.periodSummaries.collectAsState()
+    val clipboard = LocalClipboardManager.current
 
     // 通知点击「每日小结」→ 弹出完整小结对话框
     val showSummary by AppSharedState.showSummaryRequested.collectAsState()
@@ -113,6 +133,10 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
     LaunchedEffect(Unit) { vm.initSelectedBook() }
 
     var subTab by rememberSaveable { mutableStateOf(0) } // 0=日记 1=记忆
+    // 期间总结：是否显示「历史 + 生成」入口对话框
+    var showPeriodHistoryDialog by rememberSaveable { mutableStateOf(false) }
+    // 期间总结：是否显示起止日期选择对话框
+    var showPeriodRangeDialog by rememberSaveable { mutableStateOf(false) }
     // 正在查看大图的条目图片路径（点击缩略图打开）
     var viewingImage by rememberSaveable { mutableStateOf<String?>(null) }
     // 下载图片到相册：API 29+ 无需权限；API 28- 需要 WRITE_EXTERNAL_STORAGE（授权后再存）
@@ -144,8 +168,38 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f)
             )
+            TextButton(
+                onClick = { showPeriodHistoryDialog = true },
+                enabled = !periodSummaryLoading
+            ) {
+                Text("期间总结")
+            }
             TextButton(onClick = { vm.generateTodaySummary() }) {
                 Text("今日小结")
+            }
+        }
+
+        // 期间总结生成中：持续显示提示（点号循环变化，用协程驱动、不依赖动画系统——
+        // 用户可能关闭了「动画时长缩放」，CircularProgressIndicator 等无限动画会停住）
+        if (periodSummaryLoading) {
+            var dots by remember { mutableStateOf(1) }
+            LaunchedEffect(periodSummaryLoading) {
+                while (periodSummaryLoading) {
+                    kotlinx.coroutines.delay(400)
+                    dots = if (dots >= 3) 1 else dots + 1
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "⏳ 正在生成期间总结${".".repeat(dots)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 
@@ -327,6 +381,66 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                 onDismiss = { viewingImage = null }
             )
         }
+
+        // 期间总结：历史 + 生成入口对话框
+        if (showPeriodHistoryDialog) {
+            PeriodHistoryDialog(
+                histories = periodSummaries,
+                onNew = {
+                    showPeriodHistoryDialog = false
+                    showPeriodRangeDialog = true
+                },
+                onSelect = { entity ->
+                    showPeriodHistoryDialog = false
+                    vm.openPeriodSummary(entity.summary)
+                },
+                onDismiss = { showPeriodHistoryDialog = false }
+            )
+        }
+
+        // 期间总结：起止日期选择对话框
+        if (showPeriodRangeDialog) {
+            PeriodRangeDialog(
+                onDismiss = { showPeriodRangeDialog = false },
+                onConfirm = { from, to ->
+                    showPeriodRangeDialog = false
+                    vm.generatePeriodSummary(from, to)
+                }
+            )
+        }
+
+        // 期间总结结果弹窗（生成完成 / 历史查看后展示；可复制、导出）
+        periodSummary?.let { text ->
+            AlertDialog(
+                onDismissRequest = { vm.dismissPeriodSummary() },
+                title = { Text("📋 期间总结") },
+                text = {
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.verticalScroll(rememberScrollState())
+                    )
+                },
+                confirmButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = {
+                            clipboard.setText(AnnotatedString(text))
+                            Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                        }) { Text("复制") }
+                        TextButton(onClick = {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, text)
+                            }
+                            context.startActivity(Intent.createChooser(send, "导出期间总结"))
+                        }) { Text("导出") }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { vm.dismissPeriodSummary() }) { Text("关闭") }
+                }
+            )
+        }
     }
 }
 
@@ -490,3 +604,192 @@ private fun DiaryImageThumb(
 private val timeFormat = SimpleDateFormat("M月d日 HH:mm", Locale.CHINA)
 
 private fun formatTime(millis: Long): String = timeFormat.format(Date(millis))
+
+private const val DAY_MS = 24 * 60 * 60 * 1000L
+
+/** 期间总结的起止日期选择对话框：选开始/结束日期后回调本地毫秒区间 [from, to) */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PeriodRangeDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (fromMillis: Long, toMillis: Long) -> Unit
+) {
+    val today = Calendar.getInstance()
+    val defaultStart = today.clone() as Calendar
+    defaultStart.add(Calendar.DAY_OF_MONTH, -6) // 默认最近 7 天
+
+    val startState = rememberDatePickerState(initialSelectedDateMillis = utcMidnightMillis(defaultStart))
+    val endState = rememberDatePickerState(initialSelectedDateMillis = utcMidnightMillis(today))
+
+    var showStartPicker by remember { mutableStateOf(false) }
+    var showEndPicker by remember { mutableStateOf(false) }
+
+    val startText = remember(startState.selectedDateMillis) {
+        startState.selectedDateMillis?.let { formatDateUtc(it) } ?: ""
+    }
+    val endText = remember(endState.selectedDateMillis) {
+        endState.selectedDateMillis?.let { formatDateUtc(it) } ?: ""
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("期间总结") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "选择要总结的日记时间段",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("开始日期", modifier = Modifier.weight(1f))
+                    OutlinedButton(onClick = { showStartPicker = true }) { Text(startText) }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("结束日期", modifier = Modifier.weight(1f))
+                    OutlinedButton(onClick = { showEndPicker = true }) { Text(endText) }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = startState.selectedDateMillis != null && endState.selectedDateMillis != null,
+                onClick = {
+                    val startUtc = startState.selectedDateMillis ?: return@TextButton
+                    val endUtc = endState.selectedDateMillis ?: return@TextButton
+                    // selectedDateMillis 是 UTC 午夜毫秒：从 UTC 日历取「那天」的年月日，
+                    // 再装进本地日历算出本地 0 点时间戳（entriesBetween 用本地时间戳）
+                    var from = localDayStartMillis(startUtc)
+                    var to = localDayStartMillis(endUtc) + DAY_MS
+                    if (from >= to) {
+                        // 起止颠倒（开始晚于结束）时互换，保证区间有效
+                        val earlierStart = to - DAY_MS
+                        val laterEnd = from + DAY_MS
+                        from = earlierStart
+                        to = laterEnd
+                    }
+                    onConfirm(from, to)
+                }
+            ) { Text("生成总结") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+
+    if (showStartPicker) {
+        DatePickerDialog(
+            onDismissRequest = { showStartPicker = false },
+            confirmButton = { TextButton(onClick = { showStartPicker = false }) { Text("确定") } },
+            dismissButton = { TextButton(onClick = { showStartPicker = false }) { Text("取消") } }
+        ) {
+            DatePicker(state = startState)
+        }
+    }
+    if (showEndPicker) {
+        DatePickerDialog(
+            onDismissRequest = { showEndPicker = false },
+            confirmButton = { TextButton(onClick = { showEndPicker = false }) { Text("确定") } },
+            dismissButton = { TextButton(onClick = { showEndPicker = false }) { Text("取消") } }
+        ) {
+            DatePicker(state = endState)
+        }
+    }
+}
+
+/** DatePicker 返回 UTC 午夜毫秒 → 本地当天 0 点毫秒（entriesBetween 用本地时间戳） */
+private fun localDayStartMillis(utcMidnightMillis: Long): Long {
+    val utc = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply { timeInMillis = utcMidnightMillis }
+    return Calendar.getInstance().apply {
+        set(utc.get(Calendar.YEAR), utc.get(Calendar.MONTH), utc.get(Calendar.DAY_OF_MONTH), 0, 0, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+}
+
+/** 本地某天 0 点（UTC 毫秒表示），供 DatePicker 的 initialSelectedDateMillis 使用 */
+private fun utcMidnightMillis(cal: Calendar): Long {
+    val utc = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+        set(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH), 0, 0, 0)
+        set(Calendar.MILLISECOND, 0)
+    }
+    return utc.timeInMillis
+}
+
+private fun formatDateUtc(utcMillis: Long): String {
+    val utc = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply { timeInMillis = utcMillis }
+    return "%d年%d月%d日".format(utc.get(Calendar.YEAR), utc.get(Calendar.MONTH) + 1, utc.get(Calendar.DAY_OF_MONTH))
+}
+
+/** 期间总结历史对话框：列出最近 5 条（点击重新查看）+ 「生成新总结」入口 */
+@Composable
+private fun PeriodHistoryDialog(
+    histories: List<PeriodSummaryEntity>,
+    onNew: () -> Unit,
+    onSelect: (PeriodSummaryEntity) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(20.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("📋 期间总结", style = MaterialTheme.typography.titleMedium)
+            if (histories.isEmpty()) {
+                Text(
+                    "还没有期间总结。\n点下方「生成新总结」，把一段时间的日记整理成总结。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    "历史记录（最近 ${PeriodSummaryEntity.MAX_KEEP} 条）",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 340.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    histories.forEach { h ->
+                        Card(
+                            onClick = { onSelect(h) },
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                Text(
+                                    formatRange(h.fromMillis, h.toMillis),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    "生成于 ${formatTime(h.createdAtEpochMillis)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.End,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                TextButton(onClick = onNew) { Text("生成新总结") }
+                TextButton(onClick = onDismiss) { Text("关闭") }
+            }
+        }
+    }
+}
+
+/** 区间标签（本地时间戳）：如「8月1日 ～ 8月7日」 */
+private fun formatRange(fromMillis: Long, toMillis: Long): String {
+    val fmt = SimpleDateFormat("M月d日", Locale.CHINA)
+    return "${fmt.format(Date(fromMillis))} ～ ${fmt.format(Date(toMillis - 1))}"
+}

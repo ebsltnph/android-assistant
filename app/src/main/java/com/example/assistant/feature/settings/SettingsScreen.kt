@@ -809,7 +809,7 @@ private fun QuietHoursPage(
 
 // ======================= 提示词高级设置子页面 =======================
 
-/** 提示词高级设置：除「助手系统提示词」「识屏提示词」外的其余 8 组 */
+/** 提示词高级设置：除「助手系统提示词」「识屏提示词」外的其余各组 */
 @Composable
 private fun PromptsAdvancedPage(
     onBack: () -> Unit,

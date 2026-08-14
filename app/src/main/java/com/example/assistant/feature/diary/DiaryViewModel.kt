@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.assistant.core.agent.DailySummaryGenerator
 import com.example.assistant.core.agent.MemoryExtractor
+import com.example.assistant.core.agent.PeriodSummaryGenerator
 import com.example.assistant.core.notification.Notifier
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.data.db.entity.DiaryBookEntity
@@ -13,8 +14,10 @@ import com.example.assistant.data.db.entity.DiaryEntryEntity
 import com.example.assistant.data.db.entity.DiaryEntryWithImages
 import com.example.assistant.data.db.entity.DiaryImageEntity
 import com.example.assistant.data.db.entity.MemoryEntity
+import com.example.assistant.data.db.entity.PeriodSummaryEntity
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.MemoryRepository
+import com.example.assistant.data.repo.SummaryRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -36,7 +39,9 @@ class DiaryViewModel(
     private val diaryRepository: DiaryRepository,
     private val memoryRepository: MemoryRepository,
     private val memoryExtractor: MemoryExtractor,
-    private val summaryGenerator: DailySummaryGenerator
+    private val summaryGenerator: DailySummaryGenerator,
+    private val periodSummaryGenerator: PeriodSummaryGenerator,
+    private val summaryRepository: SummaryRepository
 ) : ViewModel() {
 
     /** 日记本列表（生活/工作等） */
@@ -69,6 +74,16 @@ class DiaryViewModel(
 
     /** 操作提示（保存/删除结果），显示后自动消失 */
     val message = MutableStateFlow<String?>(null)
+
+    /** 期间总结结果（生成后弹窗展示；null = 无弹窗） */
+    val periodSummary = MutableStateFlow<String?>(null)
+
+    /** 期间总结是否正在生成（用于禁用按钮防重复触发） */
+    val periodSummaryLoading = MutableStateFlow(false)
+
+    /** 期间总结历史（最近 5 条，倒序）——供「期间总结」历史列表重新查看 */
+    val periodSummaries: StateFlow<List<PeriodSummaryEntity>> = summaryRepository.periodSummaries
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /**
      * 确保默认选中日记本（首次进入选中默认本）。
@@ -228,5 +243,30 @@ class DiaryViewModel(
 
     fun clearMessage() {
         message.value = null
+    }
+
+    /** 生成指定期间（[fromMillis, toMillis)）的日记总结，结果弹窗展示。
+     *  生成期间 periodSummaryLoading 置 true，由 UI 持续显示「正在生成」提示（不靠 message）。 */
+    fun generatePeriodSummary(fromMillis: Long, toMillis: Long) {
+        if (periodSummaryLoading.value) return
+        viewModelScope.launch {
+            periodSummaryLoading.value = true
+            val summary = periodSummaryGenerator.generate(fromMillis, toMillis)
+            periodSummaryLoading.value = false
+            if (summary == null) {
+                message.value = "这段期间没有日记，换一个时间段试试"
+            } else {
+                periodSummary.value = summary
+            }
+        }
+    }
+
+    fun dismissPeriodSummary() {
+        periodSummary.value = null
+    }
+
+    /** 打开一条历史期间总结（重新查看） */
+    fun openPeriodSummary(summary: String) {
+        periodSummary.value = summary
     }
 }
