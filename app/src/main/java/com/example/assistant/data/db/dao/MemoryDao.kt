@@ -26,6 +26,10 @@ interface MemoryDao {
     @Insert
     suspend fun insertAll(memories: List<MemoryEntity>)
 
+    /** 单条编辑：更新事实内容（分类/时间不变） */
+    @Query("UPDATE memories SET fact = :fact WHERE id = :id")
+    suspend fun updateFact(id: Long, fact: String)
+
     @Query("DELETE FROM memories WHERE id = :id")
     suspend fun delete(id: Long)
 

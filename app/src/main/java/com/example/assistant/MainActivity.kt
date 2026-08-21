@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
@@ -261,10 +262,12 @@ private fun ReminderConfirmDialog(app: AppContainer) {
         onDismissRequest = { AppSharedState.pendingReminderConfirmId.value = null },
         title = { Text("⏰ 提醒确认") },
         text = {
-            Text(
-                "「${item.title}」\n时间：${formatReminderTime(item.triggerAtEpochMillis)}\n" +
-                    "确认后停止提醒；不确认则每 5 分钟再提醒一次。"
-            )
+            SelectionContainer {
+                Text(
+                    "「${item.title}」\n时间：${formatReminderTime(item.triggerAtEpochMillis)}\n" +
+                        "确认后停止提醒；不确认则每 5 分钟再提醒一次。"
+                )
+            }
         },
         confirmButton = {
             TextButton(onClick = {

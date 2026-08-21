@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -88,6 +89,7 @@ fun ReminderScreen(modifier: Modifier = Modifier) {
     val message by vm.message.collectAsState()
 
     var showAdd by remember { mutableStateOf(false) }
+    var editingReminder by remember { mutableStateOf<ReminderEntity?>(null) }
     var subTab by rememberSaveable { mutableStateOf(0) } // 0=提醒 1=事件监控
 
     // 首页「事件监控」气泡点击 → 打开事件 tab（消费后置回）
@@ -189,7 +191,11 @@ fun ReminderScreen(modifier: Modifier = Modifier) {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(reminders, key = { it.id }) { reminder ->
-                        ReminderCard(reminder) { vm.delete(reminder.id) }
+                        ReminderCard(
+                            reminder = reminder,
+                            onEdit = { editingReminder = reminder },
+                            onDelete = { vm.delete(reminder.id) }
+                        )
                     }
                 }
             }
@@ -269,6 +275,17 @@ fun ReminderScreen(modifier: Modifier = Modifier) {
         )
     }
 
+    editingReminder?.let { reminder ->
+        AddReminderDialog(
+            initial = reminder,
+            onDismiss = { editingReminder = null },
+            onConfirm = { title, triggerAt, repeat ->
+                vm.update(reminder.id, title, triggerAt, repeat)
+                editingReminder = null
+            }
+        )
+    }
+
     // 事件详情弹窗（卡片点击 / 命中通知点击）：配置 + 触发历史
     detailEventId?.let { eid ->
         EventDetailDialog(
@@ -281,7 +298,11 @@ fun ReminderScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ReminderCard(reminder: ReminderEntity, onDelete: () -> Unit) {
+private fun ReminderCard(
+    reminder: ReminderEntity,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
     Card(
         colors = CardDefaults.cardColors(
             containerColor = when (reminder.status) {
@@ -297,18 +318,23 @@ private fun ReminderCard(reminder: ReminderEntity, onDelete: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    reminder.title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (reminder.status == "pending") MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                )
+                SelectionContainer {
+                    Text(
+                        reminder.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (reminder.status == "pending") MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                }
                 Text(
                     formatTime(reminder.triggerAtEpochMillis) + repeatLabel(reminder.repeatRule) +
                         statusLabel(reminder.status),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Filled.Edit, contentDescription = "编辑")
             }
             IconButton(onClick = onDelete) {
                 Icon(Icons.Filled.Delete, contentDescription = "删除")
@@ -338,21 +364,25 @@ private fun EventCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    event.displayName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (event.enabled) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                )
-                Text(
-                    "搜索：${event.searchQuery}" +
-                        (if (event.conditionKeywords.isNotBlank()) " · 命中：${event.conditionKeywords}" else "") +
-                        (if (event.customRule.isNotBlank()) "\n规则：${event.customRule}" else "") +
-                        (if (event.includeDomains.isNotBlank()) "\n来源：${event.includeDomains}" else "") +
-                        "\n每 ${event.pollHours} 小时检查",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                SelectionContainer {
+                    Text(
+                        event.displayName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (event.enabled) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                }
+                SelectionContainer {
+                    Text(
+                        "搜索：${event.searchQuery}" +
+                            (if (event.conditionKeywords.isNotBlank()) " · 命中：${event.conditionKeywords}" else "") +
+                            (if (event.customRule.isNotBlank()) "\n规则：${event.customRule}" else "") +
+                            (if (event.includeDomains.isNotBlank()) "\n来源：${event.includeDomains}" else "") +
+                            "\n每 ${event.pollHours} 小时检查",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             Switch(checked = event.enabled, onCheckedChange = onToggle)
             IconButton(onClick = onEdit) {
@@ -385,6 +415,7 @@ private fun EventDetailDialog(
         onDismissRequest = onDismiss,
         title = { Text("📰 ${event?.displayName ?: "事件详情"}") },
         text = {
+            SelectionContainer {
             Column(
                 modifier = Modifier
                     .verticalScroll(rememberScrollState())
@@ -465,6 +496,7 @@ private fun EventDetailDialog(
                     }
                 }
             }
+            }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("关闭") }
@@ -542,27 +574,42 @@ private fun EditEventDialog(
     )
 }
 
-/** 添加提醒对话框：标题 + 日期 + 时间 + 重复 */
+/** 添加/编辑提醒对话框：标题 + 日期 + 时间 + 重复（initial 不为空时进入编辑模式并预填） */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AddReminderDialog(
+    initial: ReminderEntity? = null,
     onDismiss: () -> Unit,
     onConfirm: (title: String, triggerAtEpochMillis: Long, repeat: String?) -> Unit
 ) {
-    var title by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf(initial?.title ?: "") }
 
-    // 默认：今天 + 下一个整点
+    // 默认：今天 + 下一个整点；编辑时用原提醒的时间（DatePicker 需要 UTC 午夜）
     val now = Calendar.getInstance()
-    val defaultDateUtc = now.clone() as Calendar
+    val initialCal = Calendar.getInstance().apply {
+        timeInMillis = initial?.triggerAtEpochMillis ?: now.timeInMillis
+    }
+    val defaultDateUtc = if (initial != null) {
+        Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            set(
+                initialCal.get(Calendar.YEAR), initialCal.get(Calendar.MONTH),
+                initialCal.get(Calendar.DAY_OF_MONTH), 0, 0, 0
+            )
+            set(Calendar.MILLISECOND, 0)
+        }
+    } else {
+        now.clone() as Calendar
+    }
     val dateState = rememberDatePickerState(
         initialSelectedDateMillis = utcMidnightMillis(defaultDateUtc)
     )
     val timeState = rememberTimePickerState(
-        initialHour = (now.get(Calendar.HOUR_OF_DAY) + 1) % 24,
-        initialMinute = 0
+        initialHour = if (initial != null) initialCal.get(Calendar.HOUR_OF_DAY)
+        else (now.get(Calendar.HOUR_OF_DAY) + 1) % 24,
+        initialMinute = if (initial != null) initialCal.get(Calendar.MINUTE) else 0
     )
 
-    var repeatRule by remember { mutableStateOf<String?>(null) }
+    var repeatRule by remember { mutableStateOf(initial?.repeatRule) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
 
@@ -573,7 +620,7 @@ private fun AddReminderDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加提醒") },
+        title = { Text(if (initial == null) "添加提醒" else "编辑提醒") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
@@ -631,7 +678,7 @@ private fun AddReminderDialog(
                     } else local.timeInMillis
                     onConfirm(title.trim(), trigger, repeatRule)
                 }
-            ) { Text("添加") }
+            ) { Text(if (initial == null) "添加" else "保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )

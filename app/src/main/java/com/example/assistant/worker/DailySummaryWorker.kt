@@ -6,6 +6,7 @@ import androidx.work.WorkerParameters
 import com.example.assistant.AssistantApplication
 import com.example.assistant.core.agent.DailySummaryGenerator
 import com.example.assistant.core.notification.Notifier
+import kotlinx.coroutines.flow.first
 
 /**
  * 每日总结 Worker（默认 21:00 后执行）：
@@ -19,6 +20,8 @@ class DailySummaryWorker(
 
     override suspend fun doWork(): Result {
         val container = (applicationContext as AssistantApplication).container
+        // 设置页已关闭自动每日小结：只取消调度还不够，Worker 本身也复核（防旧任务/竞态执行）
+        if (!container.settingsStore.dailySummaryEnabled.first()) return Result.success()
         val generator = DailySummaryGenerator(
             diaryRepository = container.diaryRepository,
             providerRegistry = container.providerRegistry,

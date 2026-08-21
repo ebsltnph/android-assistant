@@ -23,6 +23,7 @@ import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.EventRepository
 import com.example.assistant.data.repo.MemoryRepository
 import com.example.assistant.data.repo.ReminderRepository
+import com.example.assistant.data.db.entity.parseDiaryTags
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -546,16 +548,21 @@ class ChatViewModel(
     }
 
     /** 聊天同时记录：写入默认「日记」本（启动时已种子创建，这里防御） */
-    private suspend fun writeDiary(content: String, imagePaths: List<String> = emptyList()) {
+    private suspend fun writeDiary(
+        content: String,
+        imagePaths: List<String> = emptyList(),
+        tags: List<String> = emptyList()
+    ) {
         val book = diaryRepository.defaultBook() ?: return
-        diaryRepository.addEntry(book.id, content, source = "chat", imagePaths = imagePaths)
+        diaryRepository.addEntry(book.id, content, source = "chat", imagePaths = imagePaths, tags = tags)
     }
 
-    /** 聊天记录：回复完成后后台 LLM 总结后写日记（独立协程；总结失败回退原文） */
+    /** 聊天记录：回复完成后后台 LLM 总结 + AI 标签后写日记（独立协程；总结失败回退原文） */
     private fun writeDiaryInBackground() {
         scope.launch {
-            val content = diarySummarizer.summarize(diaryContext())
-            writeDiary(content)
+            val availableTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
+            val result = diarySummarizer.summarize(diaryContext(), availableTags)
+            writeDiary(result.summary, tags = result.tags)
         }
     }
 
@@ -570,8 +577,9 @@ class ChatViewModel(
                 }
             }
             // 图片保存失败（path=null）文字仍照常入日记
-            val content = diarySummarizer.summarize(diaryContext())
-            writeDiary(content, imagePaths = listOfNotNull(path))
+            val availableTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
+            val result = diarySummarizer.summarize(diaryContext(), availableTags)
+            writeDiary(result.summary, imagePaths = listOfNotNull(path), tags = result.tags)
         }
     }
 

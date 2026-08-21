@@ -15,6 +15,7 @@ import com.example.assistant.data.db.entity.DiaryEntryWithImages
 import com.example.assistant.data.db.entity.DiaryImageEntity
 import com.example.assistant.data.db.entity.MemoryEntity
 import com.example.assistant.data.db.entity.PeriodSummaryEntity
+import com.example.assistant.data.db.entity.tagList
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.MemoryRepository
 import com.example.assistant.data.repo.SummaryRepository
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -54,17 +56,43 @@ class DiaryViewModel(
     /** 搜索关键词（空 = 不搜索，显示全部条目） */
     val searchQuery = MutableStateFlow("")
 
+    /** 标签筛选：选中的标签（空集合 = 不过滤标签；多个标签按“且”同时匹配） */
+    val selectedFilterTags = MutableStateFlow<Set<String>>(emptySet())
+
+    /** 「未分类」筛选：只看没有标签的日记（它不是标签，而是一种隐式筛选） */
+    val untaggedOnly = MutableStateFlow(false)
+
     /**
      * 当前日记本条目（含图片列表，按时间倒序展示由 DAO 保证）。
      * 搜索关键词非空时走 LIKE 内容搜索（按当前本过滤），清空关键词即恢复全部列表。
+     * 标签筛选在 Kotlin 侧做：个人日记量级足够，且支持任意多个标签“且”匹配、
+     * 以及「未分类」这个非标签筛选，Room 硬拼动态 SQL 反而不划算。
      */
-    val entries: StateFlow<List<DiaryEntryWithImages>> = combine(selectedBookId, searchQuery) { id, q -> id to q }
-        .flatMapLatest { (id, q) ->
-            if (id == 0L) flowOf(emptyList())
-            else if (q.isBlank()) diaryRepository.entriesWithImagesFor(id)
-            else diaryRepository.searchEntriesWithImagesFor(id, escapeLike(q.trim()))
+    val entries: StateFlow<List<DiaryEntryWithImages>> =
+        combine(selectedBookId, searchQuery, selectedFilterTags, untaggedOnly) { id, q, tags, untagged ->
+            FilterQuery(id, q, tags, untagged)
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+            .flatMapLatest { fq ->
+                if (fq.bookId == 0L) flowOf(emptyList())
+                else {
+                    val base = if (fq.query.isBlank()) {
+                        diaryRepository.entriesWithImagesFor(fq.bookId)
+                    } else {
+                        diaryRepository.searchEntriesWithImagesFor(fq.bookId, escapeLike(fq.query.trim()))
+                    }
+                    if (fq.tags.isEmpty() && !fq.untagged) base
+                    else base.map { list ->
+                        list.filter { item ->
+                            val tags = item.entry.tagList()
+                            when {
+                                fq.untagged -> tags.isEmpty()
+                                else -> fq.tags.all { it in tags }
+                            }
+                        }
+                    }
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** 长期记忆列表 */
     val memories: StateFlow<List<MemoryEntity>> = memoryRepository.memories
@@ -122,14 +150,13 @@ class DiaryViewModel(
     private fun escapeLike(query: String): String =
         query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-    /** 新增条目（文字记录），随后后台抽取长期记忆 */
-    fun addEntry() {
-        val text = input.value.trim()
+    /** 新增条目（写日记对话框调用），随后后台抽取长期记忆。tags 为本次手选标签 */
+    fun addEntry(content: String, tags: List<String> = emptyList()) {
+        val text = content.trim()
         val bookId = selectedBookId.value
         if (text.isEmpty() || bookId == 0L) return
-        input.value = ""
         viewModelScope.launch {
-            diaryRepository.addEntry(bookId, text, source = "text")
+            diaryRepository.addEntry(bookId, text, source = "text", tags = tags)
             message.value = "📔 已记录"
             // 记忆抽取后台静默执行
             viewModelScope.launch {
@@ -137,6 +164,30 @@ class DiaryViewModel(
                 if (facts.isNotEmpty()) memoryRepository.addFacts(facts)
             }
         }
+    }
+
+    /** 单条编辑：更新日记文字内容 + 标签 */
+    fun updateEntry(id: Long, content: String, tags: List<String> = emptyList()) {
+        val text = content.trim()
+        if (text.isEmpty()) return
+        viewModelScope.launch {
+            diaryRepository.updateEntryContent(id, text)
+            diaryRepository.updateEntryTags(id, tags)
+            message.value = "✏️ 日记已更新"
+        }
+    }
+
+    /** 标签筛选：切换某个标签（多个标签同时选中 = “且”匹配） */
+    fun toggleFilterTag(tag: String) {
+        if (tag.isBlank()) return
+        selectedFilterTags.update { if (tag in it) it - tag else it + tag }
+        if (selectedFilterTags.value.isNotEmpty()) untaggedOnly.value = false
+    }
+
+    /** 「未分类」筛选：只看没有标签的日记；选中时清空标签筛选 */
+    fun toggleUntaggedOnly() {
+        untaggedOnly.update { !it }
+        if (untaggedOnly.value) selectedFilterTags.value = emptySet()
     }
 
     /**
@@ -216,6 +267,26 @@ class DiaryViewModel(
         }
     }
 
+    /** 手动添加一条长期记忆 */
+    fun addMemory(fact: String) {
+        val text = fact.trim()
+        if (text.isEmpty()) return
+        viewModelScope.launch {
+            memoryRepository.addFact(text)
+            message.value = "🧠 已添加长期记忆"
+        }
+    }
+
+    /** 单条编辑长期记忆（保留分类与创建时间） */
+    fun updateMemory(id: Long, fact: String) {
+        val text = fact.trim()
+        if (text.isEmpty()) return
+        viewModelScope.launch {
+            memoryRepository.update(id, text)
+            message.value = "✏️ 记忆已更新"
+        }
+    }
+
     fun deleteMemory(id: Long) {
         viewModelScope.launch { memoryRepository.delete(id) }
     }
@@ -270,3 +341,11 @@ class DiaryViewModel(
         periodSummary.value = summary
     }
 }
+
+/** 日记列表筛选参数：书本 + 搜索词 + 标签集（且匹配）+ 是否只看未分类 */
+private data class FilterQuery(
+    val bookId: Long,
+    val query: String,
+    val tags: Set<String>,
+    val untagged: Boolean
+)

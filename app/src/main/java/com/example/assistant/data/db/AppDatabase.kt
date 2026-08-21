@@ -38,7 +38,7 @@ import com.example.assistant.data.db.entity.ReminderEntity
         DailySummaryEntity::class,
         PeriodSummaryEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -54,7 +54,7 @@ abstract class AppDatabase : RoomDatabase() {
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "assistant.db")
                 .addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
-                    MIGRATION_6_7
+                    MIGRATION_6_7, MIGRATION_7_8
                 )
                 .build()
 
@@ -174,6 +174,15 @@ abstract class AppDatabase : RoomDatabase() {
                         "`toMillis` INTEGER NOT NULL, " +
                         "`summary` TEXT NOT NULL, " +
                         "`createdAtEpochMillis` INTEGER NOT NULL)"
+                )
+            }
+        }
+
+        /** v7 → v8：日记条目增加标签字段（逗号分隔；旧数据默认空 = 未分类） */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `diary_entries` ADD COLUMN `tags` TEXT NOT NULL DEFAULT ''"
                 )
             }
         }

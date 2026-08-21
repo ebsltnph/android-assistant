@@ -20,6 +20,9 @@ class MemoryRepository(private val dao: MemoryDao) {
 
     suspend fun addFacts(facts: List<MemoryEntity>) = dao.insertAll(facts)
 
+    /** 单条编辑：更新事实内容 */
+    suspend fun update(id: Long, fact: String) = dao.updateFact(id, fact)
+
     suspend fun delete(id: Long) = dao.delete(id)
 
     suspend fun clearAll() = dao.clearAll()

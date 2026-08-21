@@ -38,8 +38,16 @@ class SettingsViewModel(
     val summaryMinute: StateFlow<Int> = settingsStore.dailySummaryMinute
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 21 * 60)
 
+    /** 每日小结自动任务开关（默认开） */
+    val dailySummaryEnabled: StateFlow<Boolean> = settingsStore.dailySummaryEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     fun setSummaryMinute(minute: Int) {
         viewModelScope.launch { settingsStore.setDailySummaryMinute(minute) }
+    }
+
+    fun setDailySummaryEnabled(v: Boolean) {
+        viewModelScope.launch { settingsStore.setDailySummaryEnabled(v) }
     }
 
     // ---- 搜索（Tavily）配置：空 key = keyless 免费模式 ----
@@ -54,8 +62,16 @@ class SettingsViewModel(
     val briefingMinute: StateFlow<Int> = settingsStore.briefingMinuteOfDay
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 7 * 60 + 30)
 
+    /** 清晨简报自动任务开关（默认开） */
+    val briefingEnabled: StateFlow<Boolean> = settingsStore.briefingEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     fun setBriefingMinute(minutes: Int) {
         viewModelScope.launch { settingsStore.setBriefingMinuteOfDay(minutes) }
+    }
+
+    fun setBriefingEnabled(v: Boolean) {
+        viewModelScope.launch { settingsStore.setBriefingEnabled(v) }
     }
 
     // ---- 免打扰时段（分钟数；起止相同 = 未启用） ----

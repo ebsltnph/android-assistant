@@ -23,23 +23,29 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -47,8 +53,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
@@ -59,6 +63,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -80,7 +85,10 @@ import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.data.db.entity.DiaryEntryWithImages
 import com.example.assistant.data.db.entity.DiaryImageEntity
 import com.example.assistant.data.db.entity.PeriodSummaryEntity
+import com.example.assistant.data.db.entity.parseDiaryTags
+import com.example.assistant.data.db.entity.tagList
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -89,10 +97,8 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * 日记页：
- * - 「日记」子页：条目列表 + 文字/输入法语音记录 + 补图（相册多选，一条目多张，可删可下载）
- * - 「记忆」子页：长期记忆列表（由 LLM 自动抽取），可删除/清空
- * - 输入法语音：点键盘麦克风即可语音输入（免麦克风权限）
+ * 日记页：条目列表 + 标签筛选 + 写日记 + 补图（相册多选，一条目多张，可删可下载）。
+ * 长期记忆已移到首页独立入口（Home → 长期记忆），不再挂在日记页下。
  */
 @Composable
 fun DiaryScreen(modifier: Modifier = Modifier) {
@@ -111,14 +117,23 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
     }
 
     val entries by vm.entries.collectAsState()
-    val memories by vm.memories.collectAsState()
-    val input by vm.input.collectAsState()
     val searchQuery by vm.searchQuery.collectAsState()
     val message by vm.message.collectAsState()
     val periodSummary by vm.periodSummary.collectAsState()
     val periodSummaryLoading by vm.periodSummaryLoading.collectAsState()
     val periodSummaries by vm.periodSummaries.collectAsState()
+    val selectedFilterTags by vm.selectedFilterTags.collectAsState()
+    val untaggedOnly by vm.untaggedOnly.collectAsState()
+    val diaryTagsCsv by app.container.settingsStore.diaryTagsCsv.collectAsState(initial = "")
+    val diaryTags = remember(diaryTagsCsv) { parseDiaryTags(diaryTagsCsv) }
     val clipboard = LocalClipboardManager.current
+
+    // 写日记对话框（右上角 + 打开；替代原来底部常驻输入区）
+    var showWriteDialog by remember { mutableStateOf(false) }
+    // 搜索是否展开（默认只显示放大镜，点击后与标签同行展开）
+    var searchExpanded by remember { mutableStateOf(false) }
+    // 标签管理对话框
+    var showTagManage by remember { mutableStateOf(false) }
 
     // 通知点击「每日小结」→ 弹出完整小结对话框
     val showSummary by AppSharedState.showSummaryRequested.collectAsState()
@@ -132,13 +147,16 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
 
     LaunchedEffect(Unit) { vm.initSelectedBook() }
 
-    var subTab by rememberSaveable { mutableStateOf(0) } // 0=日记 1=记忆
     // 期间总结：是否显示「历史 + 生成」入口对话框
     var showPeriodHistoryDialog by rememberSaveable { mutableStateOf(false) }
     // 期间总结：是否显示起止日期选择对话框
     var showPeriodRangeDialog by rememberSaveable { mutableStateOf(false) }
     // 正在查看大图的条目图片路径（点击缩略图打开）
     var viewingImage by rememberSaveable { mutableStateOf<String?>(null) }
+    // 单条编辑：日记文字 + 标签
+    var editingEntryId by remember { mutableStateOf<Long?>(null) }
+    var editingEntryText by remember { mutableStateOf("") }
+    var editingEntryTags by remember { mutableStateOf<Set<String>>(emptySet()) }
     // 下载图片到相册：API 29+ 无需权限；API 28- 需要 WRITE_EXTERNAL_STORAGE（授权后再存）
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -168,6 +186,10 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f)
             )
+            // 搜索默认收成放大镜，点击后展开（与标签同一行）
+            IconButton(onClick = { searchExpanded = !searchExpanded }) {
+                Icon(Icons.Filled.Search, contentDescription = if (searchExpanded) "收起搜索" else "搜索")
+            }
             TextButton(
                 onClick = { showPeriodHistoryDialog = true },
                 enabled = !periodSummaryLoading
@@ -176,6 +198,9 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
             }
             TextButton(onClick = { vm.generateTodaySummary() }) {
                 Text("今日小结")
+            }
+            IconButton(onClick = { showWriteDialog = true }) {
+                Icon(Icons.Filled.Add, contentDescription = "写日记")
             }
         }
 
@@ -203,34 +228,60 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
             }
         }
 
-        TabRow(selectedTabIndex = subTab) {
-            Tab(selected = subTab == 0, onClick = { subTab = 0 }, text = { Text("日记") })
-            Tab(selected = subTab == 1, onClick = { subTab = 1 }, text = { Text("记忆") })
-        }
-
-        if (subTab == 0) {
-            // ---- 搜索框（关键词非空时列表切到搜索结果显示；带清空按钮）----
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { vm.setSearchQuery(it) },
-                placeholder = { Text("搜索日记内容…") },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { vm.setSearchQuery("") }) {
-                            Icon(Icons.Filled.Close, contentDescription = "清空搜索")
-                        }
+            // ---- 搜索（默认收起，点放大镜展开） + 标签筛选，压缩成同一行 ----
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (searchExpanded) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { vm.setSearchQuery(it) },
+                        placeholder = { Text("搜日记…") },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { vm.setSearchQuery("") }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "清空搜索")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier.width(160.dp)
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState())
+                        .padding(start = if (searchExpanded) 8.dp else 0.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = untaggedOnly,
+                        onClick = { vm.toggleUntaggedOnly() },
+                        label = { Text("未分类", style = MaterialTheme.typography.labelSmall) },
+                        modifier = Modifier.heightIn(min = 30.dp)
+                    )
+                    diaryTags.forEach { tag ->
+                        FilterChip(
+                            selected = tag in selectedFilterTags,
+                            onClick = { vm.toggleFilterTag(tag) },
+                            label = { Text(tag, style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.heightIn(min = 30.dp)
+                        )
                     }
-                },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
-            )
+                    TextButton(onClick = { showTagManage = true }) { Text("管理", style = MaterialTheme.typography.labelSmall) }
+                }
+            }
 
             // ---- 日记条目列表 ----
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 when {
                     entries.isEmpty() && searchQuery.isNotBlank() -> item {
@@ -254,6 +305,11 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                     else -> items(entries, key = { it.entry.id }) { item ->
                         DiaryEntryCard(
                             entryWithImages = item,
+                            onEdit = {
+                                editingEntryId = item.entry.id
+                                editingEntryText = item.entry.content
+                                editingEntryTags = item.entry.tagList().toSet()
+                            },
                             onDelete = { vm.deleteEntry(item.entry.id) },
                             onPickImages = { uris -> vm.addImagesToEntry(item.entry.id, uris) },
                             onDeleteImage = { image -> vm.deleteImage(image) },
@@ -262,79 +318,6 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                     }
                 }
             }
-
-            // ---- 输入区 ----
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { vm.setInput(it) },
-                    placeholder = { Text("记录此刻…（点键盘麦克风可语音）") },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 4
-                )
-                IconButton(onClick = { vm.addEntry() }) {
-                    Icon(Icons.Filled.Send, contentDescription = "保存")
-                }
-            }
-            Text(
-                "💡 点键盘上的麦克风图标可直接语音输入",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 16.dp, bottom = 4.dp)
-            )
-        } else {
-            // ---- 记忆子页 ----
-            Column(modifier = Modifier.fillMaxSize()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "长期记忆（${memories.size} 条）",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (memories.isNotEmpty()) {
-                        IconButton(onClick = { vm.clearMemories() }) {
-                            Icon(Icons.Filled.Delete, contentDescription = "清空记忆")
-                        }
-                    }
-                }
-                if (memories.isEmpty()) {
-                    Text(
-                        "还没有长期记忆。\n写日记或聊天时，我会自动抽取值得记住的事实存到这里，并在以后对话时记起。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp, horizontal = 32.dp)
-                    )
-                } else {
-                    LazyColumn(
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(memories, key = { it.id }) { memory ->
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    memory.fact,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                IconButton(onClick = { vm.deleteMemory(memory.id) }) {
-                                    Icon(Icons.Filled.Delete, contentDescription = "删除")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
 
         if (message != null) {
             Surface(
@@ -361,11 +344,13 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                 onDismissRequest = { summaryDialogText = null },
                 title = { Text("📋 今日小结") },
                 text = {
-                    Text(
-                        text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.verticalScroll(rememberScrollState())
-                    )
+                    SelectionContainer {
+                        Text(
+                            text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.verticalScroll(rememberScrollState())
+                        )
+                    }
                 },
                 confirmButton = {
                     TextButton(onClick = { summaryDialogText = null }) { Text("关闭") }
@@ -379,6 +364,61 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                 path = path,
                 onDownload = { downloadImage(path) },
                 onDismiss = { viewingImage = null }
+            )
+        }
+
+        // 日记单条编辑对话框（内容 + 标签）
+        editingEntryId?.let { id ->
+            DiaryEditDialog(
+                initialText = editingEntryText,
+                initialTags = editingEntryTags,
+                availableTags = diaryTags,
+                onDismiss = {
+                    editingEntryId = null
+                    editingEntryText = ""
+                    editingEntryTags = emptySet()
+                },
+                onSave = { newText, newTags ->
+                    vm.updateEntry(id, newText, newTags.toList())
+                    editingEntryId = null
+                    editingEntryText = ""
+                    editingEntryTags = emptySet()
+                }
+            )
+        }
+
+        // 写日记对话框（右上角 + 打开）：内容 + 标签
+        if (showWriteDialog) {
+            DiaryEditDialog(
+                title = "写日记",
+                hint = "推荐在聊天中直接说「记录…」，助手会自动整理内容并打标签。",
+                initialText = "",
+                initialTags = emptySet(),
+                availableTags = diaryTags,
+                onDismiss = { showWriteDialog = false },
+                onSave = { newText, newTags ->
+                    vm.addEntry(newText, newTags.toList())
+                    showWriteDialog = false
+                }
+            )
+        }
+
+        // 标签管理对话框：查看/添加/删除用户自定义标签词汇
+        if (showTagManage) {
+            TagManageDialog(
+                tags = diaryTags,
+                onDismiss = { showTagManage = false },
+                onAdd = { newTag ->
+                    val clean = newTag.trim()
+                    if (clean.isNotEmpty() && diaryTags.none { it == clean }) {
+                        val newCsv = (diaryTags + clean).joinToString(",")
+                        app.container.appScope.launch { app.container.settingsStore.setDiaryTagsCsv(newCsv) }
+                    }
+                },
+                onRemove = { tag ->
+                    val newCsv = diaryTags.filter { it != tag }.joinToString(",")
+                    app.container.appScope.launch { app.container.settingsStore.setDiaryTagsCsv(newCsv) }
+                }
             )
         }
 
@@ -415,11 +455,13 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                 onDismissRequest = { vm.dismissPeriodSummary() },
                 title = { Text("📋 期间总结") },
                 text = {
-                    Text(
-                        text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.verticalScroll(rememberScrollState())
-                    )
+                    SelectionContainer {
+                        Text(
+                            text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.verticalScroll(rememberScrollState())
+                        )
+                    }
                 },
                 confirmButton = {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -488,9 +530,156 @@ private fun DiaryImageViewDialog(
     }
 }
 
+/** 日记单条编辑/写日记对话框：内容 + 标签（title 区分编辑与新建；hint 为新建时的推荐提示） */
+@Composable
+private fun DiaryEditDialog(
+    title: String = "编辑日记",
+    hint: String? = null,
+    initialText: String,
+    initialTags: Set<String>,
+    availableTags: List<String>,
+    onDismiss: () -> Unit,
+    onSave: (String, Set<String>) -> Unit
+) {
+    var text by remember { mutableStateOf(initialText) }
+    var tags by remember { mutableStateOf(initialTags) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!hint.isNullOrBlank()) {
+                    Text(
+                        hint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("日记内容") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 4
+                )
+                if (availableTags.isNotEmpty()) {
+                    Text(
+                        "标签（可多选，不选 = 未分类）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        availableTags.forEach { tag ->
+                            FilterChip(
+                                selected = tag in tags,
+                                onClick = {
+                                    tags = if (tag in tags) tags - tag else tags + tag
+                                },
+                                label = { Text(tag) }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = text.isNotBlank(),
+                onClick = { onSave(text, tags) }
+            ) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+/** 标签管理对话框：用户自定义标签词汇表的增删 */
+@Composable
+private fun TagManageDialog(
+    tags: List<String>,
+    onDismiss: () -> Unit,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit
+) {
+    var newTag by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("管理日记标签") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "标签词汇表用于：手动选择、筛选（且匹配）、聊天记录时 AI 选 0-3 个标签。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (tags.isEmpty()) {
+                    Text(
+                        "还没有标签，先添加一个。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    tags.forEach { tag ->
+                        AssistChip(
+                            onClick = { onRemove(tag) },
+                            label = { Text(tag) },
+                            trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "删除", modifier = Modifier.size(14.dp)) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = newTag,
+                    onValueChange = { newTag = it },
+                    label = { Text("新标签") },
+                    placeholder = { Text("如：健身") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = newTag.isNotBlank(),
+                onClick = {
+                    onAdd(newTag)
+                    newTag = ""
+                }
+            ) { Text("添加") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        }
+    )
+}
+
+/** 日记卡片上的超小标签药丸：显示用，不占高度 */
+@Composable
+private fun DiaryTagChip(tag: String) {
+    Text(
+        text = tag,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+            .padding(horizontal = 6.dp, vertical = 1.dp)
+    )
+}
+
 @Composable
 private fun DiaryEntryCard(
     entryWithImages: DiaryEntryWithImages,
+    onEdit: () -> Unit,
     onDelete: () -> Unit,
     onPickImages: (List<Uri>) -> Unit,
     onDeleteImage: (DiaryImageEntity) -> Unit,
@@ -504,27 +693,46 @@ private fun DiaryEntryCard(
     ) { uris ->
         if (uris.isNotEmpty()) onPickImages(uris)
     }
+    // 单按钮 + 下拉菜单：编辑内容 / 添加图片 / 删除，避免三个按钮挤压文字空间
+    var actionMenuExpanded by remember { mutableStateOf(false) }
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
             verticalAlignment = Alignment.Top
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    entry.content,
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                SelectionContainer {
+                    Text(
+                        entry.content,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                // 条目标签：极小药丸，横向左右滑动，不换行，压到最小
+                val entryTags = entry.tagList()
+                if (entryTags.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(top = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        entryTags.forEach { tag ->
+                            DiaryTagChip(tag)
+                        }
+                    }
+                }
                 // 图片列表（一条目多张）：横向滚动缩略图，每张可点看大图、点右上角 ✕ 删除
                 if (entryWithImages.images.isNotEmpty()) {
                     Row(
                         modifier = Modifier
-                            .padding(top = 8.dp)
+                            .padding(top = 4.dp)
                             .fillMaxWidth()
                             .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         entryWithImages.images.forEach { image ->
                             DiaryImageThumb(
@@ -539,23 +747,44 @@ private fun DiaryEntryCard(
                     formatTime(entry.createdAtEpochMillis),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp)
+                    modifier = Modifier.padding(top = 2.dp)
                 )
             }
-            // 操作按钮：加图 + 删除 横向并排（用户要求加号图标）
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // 单一操作按钮：点击弹出「编辑内容 / 添加图片 / 删除」，不再占三格空间
+            Box {
                 IconButton(
-                    onClick = {
-                        pickImageLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                        )
-                    },
-                    modifier = Modifier.size(36.dp)
+                    onClick = { actionMenuExpanded = true },
+                    modifier = Modifier.size(32.dp)
                 ) {
-                    Icon(Icons.Filled.Add, contentDescription = "添加图片", modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.Edit, contentDescription = "更多操作", modifier = Modifier.size(16.dp))
                 }
-                IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Filled.Delete, contentDescription = "删除", modifier = Modifier.size(18.dp))
+                DropdownMenu(
+                    expanded = actionMenuExpanded,
+                    onDismissRequest = { actionMenuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("✏️ 编辑内容与标签") },
+                        onClick = {
+                            actionMenuExpanded = false
+                            onEdit()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("🖼️ 添加图片") },
+                        onClick = {
+                            actionMenuExpanded = false
+                            pickImageLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("🗑️ 删除") },
+                        onClick = {
+                            actionMenuExpanded = false
+                            onDelete()
+                        }
+                    )
                 }
             }
         }

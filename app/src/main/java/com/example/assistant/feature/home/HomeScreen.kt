@@ -1,5 +1,6 @@
 package com.example.assistant.feature.home
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +36,7 @@ import com.example.assistant.core.ui.GlassCard
 import com.example.assistant.data.db.entity.DailySummaryEntity
 import com.example.assistant.data.db.entity.MonitoredEventEntity
 import com.example.assistant.data.db.entity.ReminderEntity
+import com.example.assistant.feature.memory.MemoryScreen
 import com.example.assistant.service.FloatingBallService
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -64,6 +67,18 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     val reminders by vm.upcomingReminders.collectAsState()
     val events by vm.events.collectAsState()
     val ballEnabled by vm.floatingBallEnabled.collectAsState()
+    val memories by app.container.memoryRepository.memories.collectAsState(initial = emptyList())
+
+    // 首页子页：长期记忆管理（从首页进入，不占底部导航）
+    var showMemoryPage by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = showMemoryPage) { showMemoryPage = false }
+    if (showMemoryPage) {
+        MemoryScreen(
+            modifier = modifier,
+            onBack = { showMemoryPage = false }
+        )
+        return
+    }
 
     // 悬浮球开关：直接启停服务（与设置页同一状态；从设置页切回来也会同步）
     LaunchedEffect(ballEnabled) {
@@ -115,6 +130,31 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                     Switch(
                         checked = ballEnabled,
                         onCheckedChange = { vm.setFloatingBallEnabled(it) }
+                    )
+                }
+            }
+        }
+
+        // ---- 长期记忆入口（独立子页，不再挂在日记页） ----
+        item {
+            GlassCard(
+                onClick = { showMemoryPage = true },
+                containerAlpha = 0.06f
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("🧠", style = MaterialTheme.typography.titleLarge)
+                    Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                        Text("长期记忆", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "${memories.size} 条 · 点击管理",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        "管理 →",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -251,11 +291,13 @@ fun HomeScreen(modifier: Modifier = Modifier) {
             onDismissRequest = { briefingDialog = null },
             title = { Text("🌅 清晨简报") },
             text = {
-                Text(
-                    text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.verticalScroll(rememberScrollState())
-                )
+                SelectionContainer {
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.verticalScroll(rememberScrollState())
+                    )
+                }
             },
             confirmButton = {
                 TextButton(onClick = { briefingDialog = null }) { Text("关闭") }
@@ -268,11 +310,13 @@ fun HomeScreen(modifier: Modifier = Modifier) {
             onDismissRequest = { summaryDialog = null },
             title = { Text("📒 小结（${s.date}）") },
             text = {
-                Text(
-                    s.summary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.verticalScroll(rememberScrollState())
-                )
+                SelectionContainer {
+                    Text(
+                        s.summary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.verticalScroll(rememberScrollState())
+                    )
+                }
             },
             confirmButton = {
                 TextButton(onClick = { summaryDialog = null }) { Text("关闭") }
@@ -293,11 +337,12 @@ private fun ReminderRow(r: ReminderEntity) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.primary
         )
-        Text(
-            r.title,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f).padding(start = 10.dp)
-        )
+        SelectionContainer(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+            Text(
+                r.title,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
         val repeat = when (r.repeatRule) {
             "daily" -> "每天"
             "weekly" -> "每周"
@@ -320,11 +365,12 @@ private fun EventRow(e: MonitoredEventEntity) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 4.dp)
     ) {
-        Text(
-            e.displayName,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f)
-        )
+        SelectionContainer(modifier = Modifier.weight(1f)) {
+            Text(
+                e.displayName,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
         Text(
             "每${e.pollHours}小时检查",
             style = MaterialTheme.typography.bodySmall,

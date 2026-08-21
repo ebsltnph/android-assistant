@@ -52,8 +52,12 @@ data class BackupSettings(
     /** Capability.name -> profileId（空串 = 未指派） */
     val capabilityProfileIds: Map<String, String> = emptyMap(),
     val ttsEnabled: Boolean = false,
+    /** 每日小结开关（默认开） */
+    val dailySummaryEnabled: Boolean = true,
     /** 每日小结时间（分钟数，默认 21:00） */
     val dailySummaryMinute: Int = 21 * 60,
+    /** 清晨简报开关（默认开） */
+    val briefingEnabled: Boolean = true,
     /** 清晨简报时间（分钟数，默认 7:30） */
     val briefingMinuteOfDay: Int = 7 * 60 + 30,
     /** 免打扰（默认 23:00-07:00） */
@@ -62,6 +66,8 @@ data class BackupSettings(
     val reasoningEffort: String = "default",
     val floatingBallEnabled: Boolean = false,
     val conversationMaxTurns: Int = 10,
+    /** 日记标签词汇表（逗号分隔） */
+    val diaryTagsCsv: String = "AI与开发,物理学习与科研,生活,待办,经验",
     val secretLogEnabled: Boolean = false,
     /** 定期自动备份开关与间隔（天） */
     val autoBackupEnabled: Boolean = false,

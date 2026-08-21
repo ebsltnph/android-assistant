@@ -158,6 +158,17 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **maxTokens 调优**：期间总结跨多天输出更长，推理模型思考占配额，4096→8192→16384 才不 `finish_reason=length`（空内容附结束原因便于定位）
   - **核心文件**：`core/agent/PeriodSummaryGenerator.kt`、`data/db/entity/PeriodSummaryEntity.kt`、`feature/diary/DiaryScreen.kt` + `DiaryViewModel.kt`（PromptStore 新增 PERIOD_SUMMARY 提示词）
   - **版本号升级**：1.3.0 → **1.3.1 / code 8**
+- [x] **v1.4.0 日记标签 + 长期记忆独立入口 + 编辑能力 + 划词 + 开关 + 使用说明 + 提示词保存修复**（2026-08-??，已构建/真机验证/待推送）
+  - **提示词保存 bug 修复**：`PromptEditDialog` 原用 `rememberCoroutineScope` 保存后立即关闭，scope 随对话框取消导致 DataStore 写入被取消；改为 `AppContainer.appScope` + 保存成功后再关闭 + 失败提示
+  - **文本划词**：聊天/浮动界面富文本、日记条目、长期记忆、提醒/事件、小结/简报、提醒确认弹窗等主要文字外包 `SelectionContainer`（公式位图不可选，复制按钮保留）
+  - **单条编辑**：日记内容（更新 content，不动图片）；长期记忆手动添加 + 编辑（保留 category/createdAt）；提醒编辑标题/时间/重复（先 cancel 旧闹钟 → UPDATE status pending + 清 ack → 重排）
+  - **每日小结/清晨简报开关**：SettingsStore 新增 `daily_summary_enabled` / `briefing_enabled`（默认 true）；设置子页 Switch；关闭 cancelUniqueWork，Worker 内复核；备份字段同步
+  - **使用说明**：设置页顶部入口 `UsageGuidePage.kt`，不含秘密功能
+  - **识图→识屏**：浮动面板气泡 `QuickAction.SCREEN_SENSE` 文案改“识屏”，设置页悬浮球说明同步；输入别名仍保留“识图”
+  - **日记标签**：DB v8 `diary_entries.tags`（逗号分隔）；用户自定义词汇表（默认“AI与开发/物理学习与科研/生活/待办/经验”）；日记页筛选（多标签“且”+ 未分类）、手动记录选标签、单条编辑标签、卡片标签横向滚动；聊天记录改 `DiarySummarizer` 返回 `summary+tags`（AI 从词汇表选 0-3，不加新调用）
+  - **长期记忆独立入口 + 日记页紧凑化**：记忆从日记页 Tab 移出，首页新增「长期记忆」卡片进入独立 `MemoryScreen`（feature/memory/）；日记页删除双 Tab，右上角“+写日记”（弹窗含聊天自动路由提示）、放大镜展开搜索与标签同行、卡片/标签/筛选行全面压缩；MemoryScreen 复用 Scaffold innerPadding 避免状态栏/底栏遮挡
+  - **默认提示词优化**：助手系统/记忆抽取/小结/期间总结/搜索判断/识屏/记录整理小幅增强，未动 PromptBuilder 缓存外壳与模板占位
+  - **版本号升级**：1.3.1 → **1.4.0 / code 9**
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

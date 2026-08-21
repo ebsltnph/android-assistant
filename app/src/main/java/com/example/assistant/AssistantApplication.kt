@@ -217,7 +217,18 @@ class AssistantApplication : Application() {
 
     private fun scheduleBriefingWithSetting() {
         appScope.launch {
-            scheduleBriefing(container.settingsStore.briefingMinuteOfDay.first())
+            if (container.settingsStore.briefingEnabled.first()) {
+                scheduleBriefing(container.settingsStore.briefingMinuteOfDay.first())
+            } else {
+                WorkManager.getInstance(this@AssistantApplication).cancelUniqueWork(WORK_BRIEFING_NAME)
+            }
+        }
+    }
+
+    /** 关闭清晨简报时取消周期任务（设置页开关关闭时调用） */
+    fun stopBriefing() {
+        appScope.launch {
+            WorkManager.getInstance(this@AssistantApplication).cancelUniqueWork(WORK_BRIEFING_NAME)
         }
     }
 
@@ -268,7 +279,18 @@ class AssistantApplication : Application() {
 
     private fun scheduleDailySummaryWithSetting() {
         appScope.launch {
-            scheduleDailySummary(container.settingsStore.dailySummaryMinute.first())
+            if (container.settingsStore.dailySummaryEnabled.first()) {
+                scheduleDailySummary(container.settingsStore.dailySummaryMinute.first())
+            } else {
+                WorkManager.getInstance(this@AssistantApplication).cancelUniqueWork(WORK_SUMMARY_NAME)
+            }
+        }
+    }
+
+    /** 关闭每日小结时取消周期任务（设置页开关关闭时调用） */
+    fun stopDailySummary() {
+        appScope.launch {
+            WorkManager.getInstance(this@AssistantApplication).cancelUniqueWork(WORK_SUMMARY_NAME)
         }
     }
 

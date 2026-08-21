@@ -91,7 +91,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val floatingBallEnabled by vm.floatingBallEnabled.collectAsState()
     val searchApiKey by vm.searchApiKey.collectAsState()
     val summaryMinute by vm.summaryMinute.collectAsState()
+    val dailySummaryEnabled by vm.dailySummaryEnabled.collectAsState()
     val briefingMinute by vm.briefingMinute.collectAsState()
+    val briefingEnabled by vm.briefingEnabled.collectAsState()
     val quietStart by vm.quietStartMinute.collectAsState()
     val quietEnd by vm.quietEndMinute.collectAsState()
     val conversationMaxTurns by vm.conversationMaxTurns.collectAsState()
@@ -133,7 +135,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 floatingBallEnabled = floatingBallEnabled,
                 searchApiKey = searchApiKey,
                 summaryMinute = summaryMinute,
+                dailySummaryEnabled = dailySummaryEnabled,
                 briefingMinute = briefingMinute,
+                briefingEnabled = briefingEnabled,
                 quietStart = quietStart,
                 quietEnd = quietEnd,
                 conversationMaxTurns = conversationMaxTurns,
@@ -147,6 +151,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     if (on) FloatingBallService.start(context) else FloatingBallService.stop(context)
                 }
             )
+            SettingsSubPage.USER_GUIDE -> UsageGuidePage(
+                onBack = { subPage = null }
+            )
             SettingsSubPage.MODEL_CONFIG -> ModelConfigPage(
                 vm = vm,
                 profiles = profiles,
@@ -157,18 +164,29 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             )
             SettingsSubPage.DAILY_SUMMARY -> DailySummaryPage(
                 summaryMinute = summaryMinute,
+                enabled = dailySummaryEnabled,
+                onEnabledChange = { on ->
+                    vm.setDailySummaryEnabled(on)
+                    if (on) app.rescheduleDailySummary(summaryMinute) else app.stopDailySummary()
+                },
                 onMinuteChange = { minute ->
                     vm.setSummaryMinute(minute)
-                    // 重排 WorkManager 周期任务（直接用刚选的分钟，避免读到旧值）
-                    app.rescheduleDailySummary(minute)
+                    // 只有开启时才重排；关闭状态下只保存时间，等开启时再排
+                    if (dailySummaryEnabled) app.rescheduleDailySummary(minute)
                 },
                 onBack = { subPage = null }
             )
             SettingsSubPage.BRIEFING -> BriefingPage(
                 briefingMinute = briefingMinute,
+                enabled = briefingEnabled,
+                onEnabledChange = { on ->
+                    vm.setBriefingEnabled(on)
+                    if (on) app.rescheduleBriefing(briefingMinute) else app.stopBriefing()
+                },
                 onMinuteChange = { minute ->
                     vm.setBriefingMinute(minute)
-                    app.rescheduleBriefing(minute)
+                    // 只有开启时才重排；关闭状态下只保存时间，等开启时再排
+                    if (briefingEnabled) app.rescheduleBriefing(minute)
                 },
                 onBack = { subPage = null }
             )
@@ -203,7 +221,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             text = {
                 Text(
                     "需「显示在其他应用上层」权限；开启后通知栏常驻一条「悬浮球运行中」；" +
-                        "识图每次都要点一次系统授权。为保证悬浮球不被系统杀掉，建议在系统设置里" +
+                        "识屏每次都要点一次系统授权。为保证悬浮球不被系统杀掉，建议在系统设置里" +
                         "给随身助手开启「电池无限制」和「自启动」。",
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -215,7 +233,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
 /** 设置页子页面（内部导航，不引入 NavHost） */
 private enum class SettingsSubPage {
-    MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED, SECRET, BACKUP
+    USER_GUIDE, MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED, SECRET, BACKUP
 }
 
 // ======================= 顶层列表 =======================
@@ -228,7 +246,9 @@ private fun SettingsMainList(
     floatingBallEnabled: Boolean,
     searchApiKey: String,
     summaryMinute: Int,
+    dailySummaryEnabled: Boolean,
     briefingMinute: Int,
+    briefingEnabled: Boolean,
     quietStart: Int,
     quietEnd: Int,
     conversationMaxTurns: Int,
@@ -245,6 +265,15 @@ private fun SettingsMainList(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { Text("设置", style = MaterialTheme.typography.headlineSmall) }
+
+        // ---- 0. 使用说明（放在设置页最上方，便于新用户了解全部功能） ----
+        item {
+            EntryCard(
+                title = "使用说明",
+                subtitle = "功能总览：聊天、记录、提醒、识屏、悬浮球、备份等",
+                onClick = { onOpenSubPage(SettingsSubPage.USER_GUIDE) }
+            )
+        }
 
         // ---- 1. 模型配置入口 ----
         item {
@@ -288,8 +317,9 @@ private fun SettingsMainList(
         // ---- 3. 每日小结 ----
         item {
             EntryCard(
-                title = "每日小结 · ${formatMinute(summaryMinute)}",
-                subtitle = "每天定时汇总日记生成小结（可同步系统日历）",
+                title = "每日小结 · ${formatMinute(summaryMinute)}（${if (dailySummaryEnabled) "已开启" else "已关闭"}）",
+                subtitle = if (dailySummaryEnabled) "每天定时汇总日记生成小结（可同步系统日历）"
+                else "自动生成已关闭，仍可在日记页手动生成",
                 onClick = { onOpenSubPage(SettingsSubPage.DAILY_SUMMARY) }
             )
         }
@@ -297,8 +327,9 @@ private fun SettingsMainList(
         // ---- 4. 清晨简报 ----
         item {
             EntryCard(
-                title = "清晨简报 · ${formatMinute(briefingMinute)}",
-                subtitle = "每天推送今日提醒 + 昨日小结",
+                title = "清晨简报 · ${formatMinute(briefingMinute)}（${if (briefingEnabled) "已开启" else "已关闭"}）",
+                subtitle = if (briefingEnabled) "每天推送今日提醒 + 昨日小结"
+                else "自动推送已关闭，历史简报仍可在首页查看",
                 onClick = { onOpenSubPage(SettingsSubPage.BRIEFING) }
             )
         }
@@ -655,6 +686,8 @@ private fun ThinkingSettingRow(
 @Composable
 private fun DailySummaryPage(
     summaryMinute: Int,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
     onMinuteChange: (Int) -> Unit,
     onBack: () -> Unit
 ) {
@@ -680,11 +713,22 @@ private fun DailySummaryPage(
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("自动生成每日小结", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (enabled) "开启中 · 每天定时汇总日记并推送" else "已关闭 · 可随时在日记页手动生成",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = enabled, onCheckedChange = onEnabledChange)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("自动总结时间", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         MinutePicker(current = summaryMinute, onChange = onMinuteChange)
                     }
                     Text(
-                        "每天此时自动汇总当天日记，生成小结并推送通知（当天无日记则不打扰）。",
+                        "每天此时自动汇总当天日记，生成小结并推送通知（当天无日记则不打扰；关闭后仅取消自动任务，不影响已有小结）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -718,6 +762,8 @@ private fun DailySummaryPage(
 @Composable
 private fun BriefingPage(
     briefingMinute: Int,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
     onMinuteChange: (Int) -> Unit,
     onBack: () -> Unit
 ) {
@@ -731,11 +777,22 @@ private fun BriefingPage(
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("自动推送清晨简报", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (enabled) "开启中 · 每天早上推送今日提醒 + 昨日小结" else "已关闭 · 历史简报仍可在首页查看",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = enabled, onCheckedChange = onEnabledChange)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("简报时间", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         MinutePicker(current = briefingMinute, onChange = onMinuteChange)
                     }
                     Text(
-                        "每天此时推送清晨简报：今日提醒 + 昨日小结。",
+                        "每天此时推送清晨简报：今日提醒 + 昨日小结。关闭后仅取消自动推送，不影响首页已生成的内容。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1250,15 +1307,19 @@ private fun PromptEditDialog(
     val context = LocalContext.current
     val app = context.applicationContext as AssistantApplication
     val store = app.container.promptStore
-    val scope = rememberCoroutineScope()
-    // 打开时读取当前已保存的提示词（用户没改过时才是默认值）
-    var text by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) {
+    // 用进程级 appScope 写入：不能用 rememberCoroutineScope——对话框关闭会 cancel，
+    // 这是“提示词保存有时不成功”的根因（DataStore 写入还没落盘就被取消）
+    val appScope = app.container.appScope
+    var text by remember(key) { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(key) {
         text = store.prompt(key)
+        errorText = null
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!saving) onDismiss() },
         title = { Text("编辑「${key.displayName}」") },
         text = {
             Column {
@@ -1266,31 +1327,62 @@ private fun PromptEditDialog(
                     value = text,
                     onValueChange = { text = it },
                     modifier = Modifier.fillMaxWidth(),
-                    minLines = 8
+                    minLines = 8,
+                    enabled = !saving
                 )
                 Text(
                     key.description + "。恢复默认会丢弃当前修改。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                errorText?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                scope.launch { store.setPrompt(key, text) }
-                onDismiss()
-            }) { Text("保存") }
+            TextButton(
+                enabled = !saving,
+                onClick = {
+                    saving = true
+                    errorText = null
+                    appScope.launch {
+                        try {
+                            store.setPrompt(key, text)
+                            onDismiss()
+                        } catch (e: Exception) {
+                            saving = false
+                            errorText = "保存失败：${e.message ?: "未知错误"}"
+                        }
+                    }
+                }
+            ) { Text(if (saving) "保存中…" else "保存") }
         },
         dismissButton = {
             Row {
-                // 恢复默认：删掉已存值 → 读回代码默认
-                TextButton(onClick = {
-                    scope.launch {
-                        store.resetPrompt(key)
-                        text = store.prompt(key)
+                // 恢复默认：删掉已存值 → 读回代码默认（同样走 appScope，避免被取消）
+                TextButton(
+                    enabled = !saving,
+                    onClick = {
+                        saving = true
+                        errorText = null
+                        appScope.launch {
+                            try {
+                                store.resetPrompt(key)
+                                text = store.prompt(key)
+                                saving = false
+                            } catch (e: Exception) {
+                                saving = false
+                                errorText = "恢复默认失败：${e.message ?: "未知错误"}"
+                            }
+                        }
                     }
-                }) { Text("恢复默认") }
-                TextButton(onClick = onDismiss) { Text("取消") }
+                ) { Text("恢复默认") }
+                TextButton(enabled = !saving, onClick = onDismiss) { Text("取消") }
             }
         }
     )

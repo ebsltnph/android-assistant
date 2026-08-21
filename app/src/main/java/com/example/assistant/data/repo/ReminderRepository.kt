@@ -19,6 +19,10 @@ class ReminderRepository(private val dao: ReminderDao) {
 
     suspend fun reschedule(id: Long, newTimeMillis: Long) = dao.reschedule(id, newTimeMillis)
 
+    /** 单条编辑：更新标题/时间/重复（状态重置 pending，清空确认标记） */
+    suspend fun update(id: Long, title: String, triggerAtEpochMillis: Long, repeatRule: String? = null) =
+        dao.update(id, title, triggerAtEpochMillis, repeatRule)
+
     suspend fun cancel(id: Long) = dao.updateStatus(id, "cancelled")
 
     suspend fun delete(id: Long) = dao.delete(id)

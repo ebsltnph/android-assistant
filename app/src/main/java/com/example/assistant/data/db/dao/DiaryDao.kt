@@ -54,6 +54,14 @@ interface DiaryDao {
     @Query("SELECT * FROM diary_entries WHERE id = :id")
     suspend fun entryById(id: Long): DiaryEntryEntity?
 
+    /** 单条编辑：更新文字内容（图片等其他字段不变） */
+    @Query("UPDATE diary_entries SET content = :content WHERE id = :id")
+    suspend fun updateContent(id: Long, content: String)
+
+    /** 单条编辑：更新标签（逗号分隔，空 = 未分类） */
+    @Query("UPDATE diary_entries SET tags = :tags WHERE id = :id")
+    suspend fun updateTags(id: Long, tags: String)
+
     @Query("DELETE FROM diary_entries WHERE id = :entryId")
     suspend fun deleteEntry(entryId: Long)
 

@@ -41,10 +41,16 @@ class DiaryRepository(private val dao: DiaryDao) {
         bookId: Long,
         content: String,
         source: String = "text",
-        imagePaths: List<String> = emptyList()
+        imagePaths: List<String> = emptyList(),
+        tags: List<String> = emptyList()
     ): Long {
         val entryId = dao.insertEntry(
-            DiaryEntryEntity(bookId = bookId, content = content, source = source)
+            DiaryEntryEntity(
+                bookId = bookId,
+                content = content,
+                source = source,
+                tags = tags.joinToString(",")
+            )
         )
         addImages(entryId, imagePaths)
         return entryId
@@ -68,6 +74,13 @@ class DiaryRepository(private val dao: DiaryDao) {
     suspend fun imageById(id: Long): DiaryImageEntity? = dao.imageById(id)
 
     suspend fun entryById(id: Long): DiaryEntryEntity? = dao.entryById(id)
+
+    /** 单条编辑：更新条目文字内容 */
+    suspend fun updateEntryContent(id: Long, content: String) = dao.updateContent(id, content)
+
+    /** 单条编辑：更新条目标签（逗号分隔，空 = 未分类） */
+    suspend fun updateEntryTags(id: Long, tags: List<String>) =
+        dao.updateTags(id, tags.joinToString(","))
 
     suspend fun deleteEntry(entryId: Long) = dao.deleteEntry(entryId)
 

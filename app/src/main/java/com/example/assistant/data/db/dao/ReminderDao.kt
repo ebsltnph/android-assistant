@@ -36,6 +36,18 @@ interface ReminderDao {
     @Query("UPDATE reminders SET triggerAtEpochMillis = :newTime, status = 'pending' WHERE id = :id")
     suspend fun reschedule(id: Long, newTime: Long)
 
+    /** 单条编辑：更新标题/时间/重复，重置为 pending 并清空确认标记（编辑后按新时间重新排程） */
+    @Query(
+        "UPDATE reminders SET title = :title, triggerAtEpochMillis = :triggerAt, repeatRule = :repeatRule, " +
+            "status = 'pending', ackedAtEpochMillis = NULL WHERE id = :id"
+    )
+    suspend fun update(
+        id: Long,
+        title: String,
+        triggerAt: Long,
+        repeatRule: String?
+    )
+
     /** 用户确认提醒（通知点击 → App 弹窗 → 确认） */
     @Query("UPDATE reminders SET ackedAtEpochMillis = :time WHERE id = :id")
     suspend fun ack(id: Long, time: Long)

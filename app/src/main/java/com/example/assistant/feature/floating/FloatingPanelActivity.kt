@@ -43,6 +43,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -237,7 +238,7 @@ class FloatingPanelActivity : ComponentActivity() {
 
 /** 浮动界面四个功能气泡（无选中 = 对话模式） */
 private enum class QuickAction(val label: String, val accent: Color) {
-    SCREEN_SENSE("识图", Color(0xFF64B5F6)),   // 蓝
+    SCREEN_SENSE("识屏", Color(0xFF64B5F6)),   // 蓝
     REMINDER("提醒", Color(0xFFE4B863)),       // 香槟金（风格强调色）
     RECORD("记录", Color(0xFF81C784)),         // 绿
     CHAT("对话", Color(0xFFB0BEC5)),           // 蓝灰
@@ -687,31 +688,37 @@ private fun MessageBubble(
                             color = Color.White.copy(alpha = 0.45f)
                         )
                         if (thinkingExpanded) {
-                            Text(
-                                msg.thinking,
-                                fontSize = 11.sp,
-                                color = Color.White.copy(alpha = 0.45f)
-                            )
+                            SelectionContainer {
+                                Text(
+                                    msg.thinking,
+                                    fontSize = 11.sp,
+                                    color = Color.White.copy(alpha = 0.45f)
+                                )
+                            }
                         } else {
-                            Text(
-                                msg.thinking.take(60) + (if (msg.thinking.length > 60) "…" else ""),
-                                fontSize = 11.sp,
-                                color = Color.White.copy(alpha = 0.45f)
-                            )
+                            SelectionContainer {
+                                Text(
+                                    msg.thinking.take(60) + (if (msg.thinking.length > 60) "…" else ""),
+                                    fontSize = 11.sp,
+                                    color = Color.White.copy(alpha = 0.45f)
+                                )
+                            }
                         }
                     }
                     Spacer(Modifier.height(2.dp))
                 }
                 // 富文本渲染：数学公式 + 基础 Markdown（与聊天页一致，同用 core.ui.RichMessageText）
-                RichMessageText(
-                    text = msg.text,
-                    streaming = msg.streaming,
-                    style = TextStyle(
-                        fontSize = 14.sp,
-                        lineHeight = 19.sp,
-                        color = Color.White.copy(alpha = 0.92f)
+                SelectionContainer {
+                    RichMessageText(
+                        text = msg.text,
+                        streaming = msg.streaming,
+                        style = TextStyle(
+                            fontSize = 14.sp,
+                            lineHeight = 19.sp,
+                            color = Color.White.copy(alpha = 0.92f)
+                        )
                     )
-                )
+                }
             }
         }
         if (!isUser && showActions) {

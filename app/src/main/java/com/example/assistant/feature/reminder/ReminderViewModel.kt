@@ -43,6 +43,18 @@ class ReminderViewModel(
         }
     }
 
+    /** 单条编辑提醒：取消旧闹钟 → 更新 DB → 按新时间重新排程 */
+    fun update(id: Long, title: String, triggerAtEpochMillis: Long, repeatRule: String?) {
+        if (title.isBlank()) return
+        viewModelScope.launch {
+            // 先取消旧闹钟（同时取消 5 分钟确认重复闹钟），再更新并排新闹钟
+            reminderScheduler.cancel(id)
+            reminderRepository.update(id, title.trim(), triggerAtEpochMillis, repeatRule)
+            reminderRepository.byId(id)?.let { reminderScheduler.schedule(it) }
+            message.value = "✏️ 提醒已更新"
+        }
+    }
+
     /** 删除提醒（同时取消闹钟） */
     fun delete(id: Long) {
         viewModelScope.launch {

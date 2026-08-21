@@ -26,6 +26,8 @@ data class DiaryEntryEntity(
     val content: String,
     /** 来源："voice" 语音记录 | "text" 文字 | "chat" 聊天转存 */
     val source: String = "text",
+    /** 条目标签（逗号分隔，空字符串 = 未分类；可从用户标签词汇表中选多个） */
+    val tags: String = "",
     val createdAtEpochMillis: Long = System.currentTimeMillis(),
     /**
      * @deprecated DB v6 起图片改存 diary_images 表（一条目多张），本列不再写入新值。
@@ -35,3 +37,13 @@ data class DiaryEntryEntity(
     @Deprecated("用 DiaryImageEntity（diary_images 表）代替")
     val imagePath: String? = null
 )
+
+/** 逗号分隔标签文本 → 标签列表（去空） */
+fun parseDiaryTags(csv: String): List<String> =
+    csv.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+/** 日记条目上的标签列表 */
+fun DiaryEntryEntity.tagList(): List<String> = parseDiaryTags(tags)
+
+/** 是否包含某个标签（完整匹配，防“AI”误匹配“AI与开发”） */
+fun DiaryEntryEntity.hasTag(tag: String): Boolean = tag in tagList()

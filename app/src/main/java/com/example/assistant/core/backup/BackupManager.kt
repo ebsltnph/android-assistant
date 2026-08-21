@@ -270,13 +270,16 @@ class BackupManager(
         val settings = BackupSettings(
             capabilityProfileIds = Capability.entries.associate { it.name to settingsStore.currentProfileIdFor(it) },
             ttsEnabled = settingsStore.ttsEnabled.first(),
+            dailySummaryEnabled = settingsStore.dailySummaryEnabled.first(),
             dailySummaryMinute = settingsStore.dailySummaryMinute.first(),
+            briefingEnabled = settingsStore.briefingEnabled.first(),
             briefingMinuteOfDay = settingsStore.briefingMinuteOfDay.first(),
             quietStartMinute = settingsStore.quietStartMinute.first(),
             quietEndMinute = settingsStore.quietEndMinute.first(),
             reasoningEffort = settingsStore.reasoningEffort.first(),
             floatingBallEnabled = settingsStore.floatingBallEnabled.first(),
             conversationMaxTurns = settingsStore.conversationMaxTurns.first(),
+            diaryTagsCsv = settingsStore.diaryTagsCsv.first(),
             secretLogEnabled = settingsStore.secretLogEnabled.first(),
             autoBackupEnabled = settingsStore.autoBackupEnabled.first(),
             autoBackupIntervalDays = settingsStore.autoBackupIntervalDays.first()
@@ -400,12 +403,15 @@ class BackupManager(
             settingsStore.setProfileIdFor(c, s.capabilityProfileIds[c.name] ?: "")
         }
         settingsStore.setTtsEnabled(s.ttsEnabled)
+        settingsStore.setDailySummaryEnabled(s.dailySummaryEnabled)
         settingsStore.setDailySummaryMinute(s.dailySummaryMinute)
+        settingsStore.setBriefingEnabled(s.briefingEnabled)
         settingsStore.setBriefingMinuteOfDay(s.briefingMinuteOfDay)
         settingsStore.setQuietWindow(s.quietStartMinute, s.quietEndMinute)
         settingsStore.setReasoningEffort(s.reasoningEffort)
         settingsStore.setFloatingBallEnabled(s.floatingBallEnabled)
         settingsStore.setConversationMaxTurns(s.conversationMaxTurns)
+        settingsStore.setDiaryTagsCsv(s.diaryTagsCsv)
         settingsStore.setSecretLogEnabled(s.secretLogEnabled)
         settingsStore.setAutoBackupEnabled(s.autoBackupEnabled)
         settingsStore.setAutoBackupIntervalDays(s.autoBackupIntervalDays)

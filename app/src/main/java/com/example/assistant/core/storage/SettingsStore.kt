@@ -48,15 +48,23 @@ class SettingsStore(context: Context) {
     /** 每日日记总结时间（分钟数，默认 21:00=1260，可精确到分钟） */
     val dailySummaryMinute: Flow<Int> = dataStore.data.map { it[KEY_SUMMARY_MINUTE] ?: 21 * 60 }
 
+    /** 每日小结自动任务开关（默认开；关闭后不自动生成，手动仍可用） */
+    val dailySummaryEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_SUMMARY_ENABLED] ?: true }
+
     /** 清晨简报时间（默认 7:30，存分钟数，可精确到分钟） */
     val briefingMinuteOfDay: Flow<Int> = dataStore.data.map { it[KEY_BRIEFING_MINUTES] ?: 7 * 60 + 30 }
+
+    /** 清晨简报自动任务开关（默认开；关闭后不自动推送） */
+    val briefingEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_BRIEFING_ENABLED] ?: true }
 
     /** 免打扰：开始/结束（分钟数，如 23*60=1380 / 7*60=420） */
     val quietStartMinute: Flow<Int> = dataStore.data.map { it[KEY_QUIET_START] ?: 23 * 60 }
     val quietEndMinute: Flow<Int> = dataStore.data.map { it[KEY_QUIET_END] ?: 7 * 60 }
 
     suspend fun setDailySummaryMinute(minute: Int) = dataStore.edit { it[KEY_SUMMARY_MINUTE] = minute }
+    suspend fun setDailySummaryEnabled(v: Boolean) = dataStore.edit { it[KEY_SUMMARY_ENABLED] = v }
     suspend fun setBriefingMinuteOfDay(minutes: Int) = dataStore.edit { it[KEY_BRIEFING_MINUTES] = minutes }
+    suspend fun setBriefingEnabled(v: Boolean) = dataStore.edit { it[KEY_BRIEFING_ENABLED] = v }
     suspend fun setQuietWindow(startMinute: Int, endMinute: Int) = dataStore.edit {
         it[KEY_QUIET_START] = startMinute
         it[KEY_QUIET_END] = endMinute
@@ -79,6 +87,11 @@ class SettingsStore(context: Context) {
     val conversationMaxTurns: Flow<Int> = dataStore.data.map { it[KEY_MAX_TURNS] ?: 10 }
     suspend fun setConversationMaxTurns(v: Int) = dataStore.edit { it[KEY_MAX_TURNS] = v }
 
+    // ---- 日记标签词汇表（用户自定义；AI 只能从这份列表里选 0-3 个） ----
+    /** 标签列表，逗号分隔。默认：AI与开发、物理学习与科研、生活、待办、经验 */
+    val diaryTagsCsv: Flow<String> = dataStore.data.map { it[KEY_DIARY_TAGS] ?: DEFAULT_DIARY_TAGS_CSV }
+    suspend fun setDiaryTagsCsv(csv: String) = dataStore.edit { it[KEY_DIARY_TAGS] = csv }
+
     // ---- 秘密功能：对话历史记录（数字分身素材，只存用户消息） ----
     /** 记录开关（**默认关**：用户手动开启后才记录；关闭不清空已有记录） */
     val secretLogEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_SECRET_LOG] ?: false }
@@ -97,16 +110,22 @@ class SettingsStore(context: Context) {
         private const val TAG = "SettingsStore"
         private val KEY_TTS = booleanPreferencesKey("tts_enabled")
         private val KEY_SUMMARY_MINUTE = intPreferencesKey("daily_summary_minute")
+        private val KEY_SUMMARY_ENABLED = booleanPreferencesKey("daily_summary_enabled")
         private val KEY_BRIEFING_MINUTES = intPreferencesKey("briefing_minutes")
+        private val KEY_BRIEFING_ENABLED = booleanPreferencesKey("briefing_enabled")
         private val KEY_QUIET_START = intPreferencesKey("quiet_start_minute")
         private val KEY_QUIET_END = intPreferencesKey("quiet_end_minute")
         private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
         private val KEY_MAX_TURNS = intPreferencesKey("conversation_max_turns")
+        private val KEY_DIARY_TAGS = stringPreferencesKey("diary_tags_csv")
         private val KEY_SECRET_LOG = booleanPreferencesKey("secret_log_enabled")
         private val KEY_AUTO_BACKUP = booleanPreferencesKey("auto_backup_enabled")
         private val KEY_AUTO_BACKUP_INTERVAL = intPreferencesKey("auto_backup_interval_days")
 
         private fun capabilityKey(c: Capability) = stringPreferencesKey("capability_${c.name}")
+
+        /** 默认日记标签词汇表（用户可增删） */
+        const val DEFAULT_DIARY_TAGS_CSV = "AI与开发,物理学习与科研,生活,待办,经验"
     }
 }

@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
@@ -271,27 +272,33 @@ private fun MessageBubble(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             if (thinkingExpanded) {
-                                Text(
-                                    msg.thinking + if (msg.streaming && msg.text.isEmpty()) "▍" else "",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                SelectionContainer {
+                                    Text(
+                                        msg.thinking + if (msg.streaming && msg.text.isEmpty()) "▍" else "",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             } else {
-                                Text(
-                                    msg.thinking.take(60) + (if (msg.thinking.length > 60) "…" else ""),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                SelectionContainer {
+                                    Text(
+                                        msg.thinking.take(60) + (if (msg.thinking.length > 60) "…" else ""),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
                     if (msg.text.isNotEmpty()) {
                         // 富文本渲染：数学公式 + 基础 Markdown（加粗/斜体/代码/标题/列表）
-                        RichMessageText(
-                            text = msg.text,
-                            streaming = msg.streaming,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
+                        SelectionContainer {
+                            RichMessageText(
+                                text = msg.text,
+                                streaming = msg.streaming,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
                     }
                 }
             }
