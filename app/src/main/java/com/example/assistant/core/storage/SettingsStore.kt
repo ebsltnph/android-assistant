@@ -88,9 +88,22 @@ class SettingsStore(context: Context) {
     suspend fun setConversationMaxTurns(v: Int) = dataStore.edit { it[KEY_MAX_TURNS] = v }
 
     // ---- 日记标签词汇表（用户自定义；AI 只能从这份列表里选 0-3 个） ----
-    /** 标签列表，逗号分隔。默认：AI与开发、物理学习与科研、生活、待办、经验 */
+    /** 标签列表，逗号分隔。默认：工作、生活、待办、经验 */
     val diaryTagsCsv: Flow<String> = dataStore.data.map { it[KEY_DIARY_TAGS] ?: DEFAULT_DIARY_TAGS_CSV }
     suspend fun setDiaryTagsCsv(csv: String) = dataStore.edit { it[KEY_DIARY_TAGS] = csv }
+
+    /**
+     * v1.4.0（发布前调整）默认标签改为通用词汇表。
+     * 若用户从未自定义（存的是旧版默认值），启动时自动升级为新默认；
+     * 用户改过的列表则原样保留。
+     */
+    suspend fun migrateLegacyDiaryTagsDefaultIfNeeded() {
+        dataStore.edit { prefs ->
+            if (prefs[KEY_DIARY_TAGS] == LEGACY_DEFAULT_DIARY_TAGS_CSV) {
+                prefs[KEY_DIARY_TAGS] = DEFAULT_DIARY_TAGS_CSV
+            }
+        }
+    }
 
     // ---- 秘密功能：对话历史记录（数字分身素材，只存用户消息） ----
     /** 记录开关（**默认关**：用户手动开启后才记录；关闭不清空已有记录） */
@@ -126,6 +139,9 @@ class SettingsStore(context: Context) {
         private fun capabilityKey(c: Capability) = stringPreferencesKey("capability_${c.name}")
 
         /** 默认日记标签词汇表（用户可增删） */
-        const val DEFAULT_DIARY_TAGS_CSV = "AI与开发,物理学习与科研,生活,待办,经验"
+        const val DEFAULT_DIARY_TAGS_CSV = "工作,生活,待办,经验"
+
+        /** v1.4.0 旧版默认标签；仅用于启动时迁移未自定义的用户 */
+        private const val LEGACY_DEFAULT_DIARY_TAGS_CSV = "AI与开发,物理学习与科研,生活,待办,经验"
     }
 }

@@ -67,7 +67,7 @@ data class BackupSettings(
     val floatingBallEnabled: Boolean = false,
     val conversationMaxTurns: Int = 10,
     /** 日记标签词汇表（逗号分隔） */
-    val diaryTagsCsv: String = "AI与开发,物理学习与科研,生活,待办,经验",
+    val diaryTagsCsv: String = "工作,生活,待办,经验",
     val secretLogEnabled: Boolean = false,
     /** 定期自动备份开关与间隔（天） */
     val autoBackupEnabled: Boolean = false,

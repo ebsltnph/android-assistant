@@ -73,6 +73,15 @@ class AssistantApplication : Application() {
             } catch (_: Exception) {
             }
         }
+
+        // v1.4.0（发布前调整）：旧版默认日记标签（AI与开发/物理学习与科研/…）升级为通用标签
+        // （工作/生活/待办/经验）。仅当用户存的是旧默认值时迁移，自定义过的不动。
+        appScope.launch {
+            try {
+                container.settingsStore.migrateLegacyDiaryTagsDefaultIfNeeded()
+            } catch (_: Exception) {
+            }
+        }
         Notifier.ensureChannels(this)
         scheduleDailySummaryWithSetting()
         scheduleEventPoll()

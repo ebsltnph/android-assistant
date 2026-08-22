@@ -45,5 +45,5 @@ fun parseDiaryTags(csv: String): List<String> =
 /** 日记条目上的标签列表 */
 fun DiaryEntryEntity.tagList(): List<String> = parseDiaryTags(tags)
 
-/** 是否包含某个标签（完整匹配，防“AI”误匹配“AI与开发”） */
+/** 是否包含某个标签（完整匹配，防“工作”误匹配“工作总结”等） */
 fun DiaryEntryEntity.hasTag(tag: String): Boolean = tag in tagList()
