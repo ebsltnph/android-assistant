@@ -82,6 +82,45 @@ class Agent(
         return chatRequested(text, memoryText, history, diaryTags)
     }
 
+    /** 静默工具回路的产出（不产生界面事件） */
+    data class SilentResult(
+        val ok: Boolean,
+        /** 成功执行过的工具名 */
+        val toolNames: List<String>,
+        val answer: String
+    )
+
+    /**
+     * 后台静默工具回路：跑完整工具循环但不产生任何界面事件、不进会话历史。
+     * 用途：视觉消息的记录处理（视觉模型没有工具回路，把分析结果作为素材交给
+     * 主模型整理入日记/写记忆），以及未来类似的后台小任务。
+     * 任何异常都返回 ok=false，由调用方兜底。
+     */
+    suspend fun silentReply(
+        userText: String,
+        memoryText: String? = null,
+        diaryTags: List<String> = emptyList()
+    ): SilentResult {
+        return try {
+            val profile = providerRegistry.profileFor(Capability.CHAT)
+                ?: return SilentResult(false, emptyList(), "")
+            if (!profile.isConfigured()) return SilentResult(false, emptyList(), "")
+            val conversation = listOf(ChatMessage("user", userText))
+            val messages = promptBuilder.buildChatMessages(
+                memoryText = memoryText,
+                conversation = conversation,
+                toolManual = toolRegistry.manual(),
+                volatileContext = promptBuilder.buildVolatileContext(diaryTags)
+            )
+            var final: ReplyEvent.Final? = null
+            chatReplyFlow(messages).collect { if (it is ReplyEvent.Final) final = it }
+            val f = final
+            SilentResult(f != null, f?.toolNames ?: emptyList(), f?.answer ?: "")
+        } catch (_: Exception) {
+            SilentResult(false, emptyList(), "")
+        }
+    }
+
     /** 组装对话回路的初始请求消息 */
     private suspend fun chatRequested(
         text: String,
@@ -121,7 +160,9 @@ class Agent(
         var toolRounds = 0
         val finalized = StringBuilder()                        // 各轮保留正文的累加
         val usedToolNames = LinkedHashSet<String>()           // 成功执行过的工具名
+        val usedLabels = LinkedHashSet<String>()              // 成功执行过的动作描述（页脚）
         val exchanges = mutableListOf<Pair<String, String>>() // (模型输出原文, 回传的结果消息)
+        val successMemo = HashMap<String, String>()           // 本回复内成功调用备忘（签名→feedback），重复调用直接复用
 
         fun absorbProse(prose: String) {
             val p = prose.trim()
@@ -155,7 +196,7 @@ class Agent(
             val act = !forcedFinal && toolRounds < ToolRegistry.MAX_TOOL_ROUNDS && calls.isNotEmpty()
             if (!act) {
                 absorbProse(toolRegistry.stripCallLines(acc))
-                emit(finish(finalized, usedToolNames, exchanges))
+                emit(finish(finalized, usedToolNames, usedLabels, exchanges))
                 return@flow
             }
 
@@ -165,15 +206,26 @@ class Agent(
             absorbProse(roundProse)
             emit(ReplyEvent.RoundSettled(roundProse))
 
-            // ---- 执行全部调用并组装结果消息 ----
-            emit(ReplyEvent.ToolsRunning(calls.map { it.label }))
+            // ---- 去重后执行调用并组装结果消息 ----
+            // 模型偶发重复输出同一行调用：本轮内按签名去重，跨轮成功结果直接复用（省网络也防状态重复）
+            val uniqueCalls = calls.distinctBy { it.tool.name + "|" + it.args.toString() }
+            emit(ReplyEvent.ToolsRunning(uniqueCalls.map { it.label }))
             val sb = StringBuilder("[结果]")
-            calls.forEachIndexed { i, call ->
-                val outcome = toolRegistry.execute(call)
+            uniqueCalls.forEachIndexed { i, call ->
+                val sig = call.tool.name + "|" + call.args.toString()
+                val cachedFeedback = successMemo[sig]
+                val outcome = if (cachedFeedback != null) {
+                    ToolOutcome.Success(cachedFeedback + "\n（与此前一次调用参数完全相同，以上为复用的结果）")
+                } else {
+                    val o = toolRegistry.execute(call)
+                    if (o is ToolOutcome.Success) successMemo[sig] = o.feedback
+                    o
+                }
                 sb.append("\n\n").append(i + 1).append(". tool=").append(call.tool.name)
                 when (outcome) {
                     is ToolOutcome.Success -> {
                         usedToolNames += call.tool.name
+                        usedLabels += call.label
                         sb.append("｜状态：成功\n").append(outcome.feedback)
                     }
                     is ToolOutcome.Failure ->
@@ -193,18 +245,19 @@ class Agent(
         }
 
         // guard 兜底出口（正常流程到不了这里）
-        emit(finish(finalized, usedToolNames, exchanges))
+        emit(finish(finalized, usedToolNames, usedLabels, exchanges))
     }
 
-    /** 组装最终回答：正文 + 已执行工具页脚 */
+    /** 组装最终回答：正文 + 已执行动作页脚；toolNames 随事件外传（记录兜底判断用） */
     private fun finish(
         finalized: StringBuilder,
         usedToolNames: Set<String>,
+        usedLabels: Set<String>,
         exchanges: List<Pair<String, String>>
     ): ReplyEvent.Final {
         val body = finalized.toString().ifBlank { "（模型没有返回内容，请重试或换个说法）" }
-        val answer = if (usedToolNames.isEmpty()) body
-        else body + "\n\n🔧 已执行：" + usedToolNames.joinToString("、")
+        val answer = if (usedLabels.isEmpty()) body
+        else body + "\n\n🔧 已执行：" + usedLabels.joinToString("、")
         return ReplyEvent.Final(answer, usedToolNames.toList(), exchanges.toList())
     }
 

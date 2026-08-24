@@ -264,9 +264,9 @@ class ChatViewModel(
                 val instruction = t.ifBlank { "请描述这张图片" }
                 val answer = streamVisionReply(imageBase64, instruction, streamingId)
                 session.addAssistant(answer)
+                // 视觉回复完成后：记录类请求走静默工具回路整理入库（失败自动兜底原文）
+                handleVisionRecordInBackground(t, answer, imageBase64)
             }
-            // 记录兜底：像记录请求就把原文+图直接入日记（视觉路径无对话回路，模型无法调 write_diary）
-            detectRecordAndSave(t, imageBase64)
             _isStreaming.value = false
         }
     }
@@ -361,7 +361,7 @@ class ChatViewModel(
         if (visionAnalyzer.visionProfile() == null) {
             append(ChatUiMessage(counter++, "assistant", VisionAnalyzer.GUIDE_TEXT))
             session.addAssistant(VisionAnalyzer.GUIDE_TEXT)
-            detectRecordAndSave(text, image.base64)
+            handleVisionRecordInBackground(text, "", image.base64)
             return
         }
         val streamingId = counter++
@@ -369,16 +369,44 @@ class ChatViewModel(
         val instruction = text.ifBlank { "请描述这张图片" }
         val answer = streamVisionReply(image.base64, instruction, streamingId)
         session.addAssistant(answer)
-        detectRecordAndSave(text, image.base64)
+        // 视觉回复完成后：记录类请求走静默工具回路整理入库（失败自动兜底原文）
+        handleVisionRecordInBackground(text, answer, image.base64)
     }
 
     /**
-     * 记录检测（图片消息专用）：像记录请求就把原文+图直接入日记。
-     * 视觉路径没有对话回路（模型无法调 write_diary），所以只做关键词检测 + 原文保存。
+     * 视觉消息的记录处理：先落图片文件，再跑一个**静默工具回路**——把用户要求+视觉分析
+     * 结果作为素材交给主模型，由它正常调 write_diary 整理正文/选标签/带图片路径入库
+     * （顺带也能 write_memory）。失败或模型没写 → 兜底原文+图直接入日记（记录不能丢）。
      */
-    private fun detectRecordAndSave(text: String, imageBase64: String) {
-        if (text.isBlank()) return
-        if (intentRouter.looksLikeDiaryRequest(text)) saveDiaryWithImageInBackground(imageBase64, text)
+    private fun handleVisionRecordInBackground(userText: String, visionAnswer: String, imageBase64: String) {
+        if (userText.isBlank()) return
+        if (!intentRouter.looksLikeDiaryRequest(userText)) return
+        scope.launch {
+            // 图片先落盘（write_diary 的 image_paths 参数直接引用该路径）
+            val imagePath = withContext(Dispatchers.IO) {
+                ImageUtils.decodeBase64Bitmap(imageBase64)?.let { bmp ->
+                    ImageUtils.saveToFilesDir(
+                        context, ImageUtils.scaleBitmap(bmp), "diary_${System.currentTimeMillis()}.jpg"
+                    )
+                }
+            }
+            val memoryText = memoryRepository.memoryContextText()
+            val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
+            val task = buildString {
+                append("[后台任务] 用户刚发送了一张图片并对它说：「${userText}」，其中包含记录日记的意愿。")
+                append("\n视觉模型对该图片的分析结果：\n").append(visionAnswer.take(1500))
+                if (imagePath != null) {
+                    append("\n图片已保存到本地路径：").append(imagePath)
+                }
+                append("\n请整理成一条简洁日记并用 write_diary 写入（有图片路径就放进 image_paths 参数；")
+                append("对话里有值得长期记住的信息也可用 write_memory）。完成后只需简短确认。")
+            }
+            val result = agent.silentReply(task, memoryText, diaryTags)
+            if (!result.ok || !result.toolNames.contains("write_diary")) {
+                // 兜底：原文+图直接入日记（记录不能丢）
+                writeDiary(userText, imagePaths = listOfNotNull(imagePath))
+            }
+        }
     }
 
     /**
@@ -409,18 +437,20 @@ class ChatViewModel(
                             else -> "$base\n\n${ev.prose}"
                         }
                         roundAcc = ""
-                        thinking = ""
+                        // 思考过程跨轮累加不清空（多轮工具的推理全程可见）
                     }
                     is Agent.ReplyEvent.ToolsRunning -> {
-                        updateMessage(messageId) {
-                            it.copy(text = "🔧 " + ev.labels.joinToString("、") + " …", thinking = "")
-                        }
+                        // 状态行追加在已定格正文之后（不覆盖前面轮次的内容），思考保留展示
+                        val status = "🔧 " + ev.labels.joinToString("、") + " …"
+                        val shown = if (base.isEmpty()) status else "$base\n\n$status"
+                        updateMessage(messageId) { it.copy(text = shown, thinking = thinking) }
                     }
                     is Agent.ReplyEvent.Final -> {
                         exchanges = ev.exchanges
                         toolNames = ev.toolNames
                         finalAnswer = ev.answer
-                        updateMessage(messageId) { it.copy(text = ev.answer, thinking = "") }
+                        // 最终回答保留完整思考过程（跨所有工具轮累计）
+                        updateMessage(messageId) { it.copy(text = ev.answer, thinking = thinking) }
                     }
                 }
                 if (ev is Agent.ReplyEvent.Delta) {
@@ -523,20 +553,6 @@ class ChatViewModel(
         diaryRepository.addEntry(book.id, content, source = "chat", imagePaths = imagePaths)
     }
 
-    /** 图片消息记录兜底：原文+图直接入日记（无对话回路，不走模型总结） */
-    private fun saveDiaryWithImageInBackground(imageBase64: String, rawText: String) {
-        scope.launch {
-            val path = withContext(Dispatchers.IO) {
-                ImageUtils.decodeBase64Bitmap(imageBase64)?.let { bmp ->
-                    ImageUtils.saveToFilesDir(
-                        context, ImageUtils.scaleBitmap(bmp), "diary_${System.currentTimeMillis()}.jpg"
-                    )
-                }
-            }
-            // 图片保存失败（path=null）文字仍照常入日记
-            writeDiary(rawText, imagePaths = listOfNotNull(path))
-        }
-    }
 
     /** 后台静默抽取长期记忆的旧入口已删除：对话内记忆改由主模型 write_memory 工具完成 */
 }

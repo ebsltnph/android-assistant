@@ -15,9 +15,10 @@ class WriteDiaryTool(
 
     override val name = "write_diary"
     override val description =
-        "write_diary(content, tags)：把用户要记录的内容写入日记本。" +
+        "write_diary(content, tags, image_paths?)：把用户要记录的内容写入日记本。" +
         "content 为整理后的简洁日记正文（一两句话、不要对话体）；" +
         "tags 为标签数组（0-3 个，只能从易变上下文消息给出的「可用日记标签」里选，没有合适的就不传）。" +
+        "image_paths 仅当任务说明里明确给出了已保存的图片本地路径时才传（原样复制进数组，不要自己编路径）。" +
         "args 示例：{\"content\":\"完成了搜索工具回路重构\",\"tags\":[\"工作\"]}"
 
     override fun actionLabel(args: JsonObject): String {
@@ -35,12 +36,17 @@ class WriteDiaryTool(
         val rejected = requested.filter { it !in vocab }
         val book = diaryRepository.defaultBook()
             ?: return ToolOutcome.Failure("默认日记本不存在（异常状态），请告知用户到日记页检查。")
-        diaryRepository.addEntry(book.id, content, source = "chat", tags = tags)
+        // 可选图片：只接受已存在的 diary_images 目录下文件（防模型编造任意路径）
+        val imagePaths = args.argStrList("image_paths").filter { p ->
+            p.contains("diary_images") && java.io.File(p).exists()
+        }
+        diaryRepository.addEntry(book.id, content, source = "chat", imagePaths = imagePaths, tags = tags)
+        val imgNote = if (imagePaths.isEmpty()) "" else "（含 ${imagePaths.size} 张图片）"
         val note = if (rejected.isEmpty()) ""
         else "；以下标签不在可用词汇表中已忽略：" + rejected.joinToString("、")
         return ToolOutcome.Success(
-            "已写入日记：" + content +
-            (if (tags.isEmpty()) "" else "（标签：" + tags.joinToString("、") + "）") + note +
+            "已写入日记$imgNote：$content" +
+            (if (tags.isEmpty()) "" else "（标签：${tags.joinToString("、")}）") + note +
                 "。请不要在回复里重复日记全文。"
         )
     }
