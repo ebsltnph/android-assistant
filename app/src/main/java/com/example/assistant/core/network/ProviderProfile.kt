@@ -37,10 +37,13 @@ data class ProviderProfile(
     fun isConfigured(): Boolean = baseUrl.isNotBlank() && apiKey.isNotBlank() && model.isNotBlank()
 }
 
-/** 能力指派；设置页可分别指派档案 */
+/**
+ * 能力指派；设置页可分别指派档案。
+ * （原 CLASSIFY「意图分类」能力位已随主模型统一调度架构删除：不再有独立的分类调用。
+ *   删除是安全的——指派备份导出/恢复都按现存枚举遍历，旧备份里的 CLASSIFY 键自动忽略；
+ *   DataStore 里残留的 capability_CLASSIFY 键成为无害孤儿数据。）
+ */
 enum class Capability(val displayName: String, val description: String) {
     CHAT("对话", "日常问答与全部工具调用使用的模型"),
-    VISION("识屏（视觉）", "截屏分析、OCR、翻译，需要支持图片输入的模型"),
-    /** 已无调用方：原独立意图分类调用随主模型统一调度架构移除；枚举保留兼容已存的档案 JSON */
-    CLASSIFY("意图分类（已停用）", "旧版本遗留能力位，现统一由对话模型完成，无需指派")
+    VISION("识屏（视觉）", "截屏分析、OCR、翻译，需要支持图片输入的模型")
 }
