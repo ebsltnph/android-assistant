@@ -38,6 +38,9 @@ $ADB shell dumpsys jobscheduler | grep -A20 "JOB androidx.work.systemjobschedule
 # GitHub 直连不通时走本地 Clash Verge 代理（127.0.0.1:7897，混合端口）：
 # 注意必须用 socks5 —— http 代理 + Windows schannel 会 TLS 握手失败
 git -c http.proxy=socks5://127.0.0.1:7897 -c https.proxy=socks5://127.0.0.1:7897 push origin master
+# DSH 沙箱内 schannel 无 TLS 凭据（SEC_E_NO_CREDENTIALS）、且 git 的 sh.exe 辅助进程
+# 被禁命名管道时：加 openssl 后端 + 在完整令牌（提权）下执行——2026-08-24 实测可用：
+git -c http.sslBackend=openssl -c http.proxy=socks5://127.0.0.1:7897 -c https.proxy=socks5://127.0.0.1:7897 push origin master
 ```
 
 ## 技术栈与版本
@@ -158,7 +161,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **maxTokens 调优**：期间总结跨多天输出更长，推理模型思考占配额，4096→8192→16384 才不 `finish_reason=length`（空内容附结束原因便于定位）
   - **核心文件**：`core/agent/PeriodSummaryGenerator.kt`、`data/db/entity/PeriodSummaryEntity.kt`、`feature/diary/DiaryScreen.kt` + `DiaryViewModel.kt`（PromptStore 新增 PERIOD_SUMMARY 提示词）
   - **版本号升级**：1.3.0 → **1.3.1 / code 8**
-- [x] **v1.4.0 日记标签 + 长期记忆独立入口 + 编辑能力 + 划词 + 开关 + 使用说明 + 提示词保存修复**（2026-08-??，已构建/真机验证/待推送）
+- [x] **v1.4.0 日记标签 + 长期记忆独立入口 + 编辑能力 + 划词 + 开关 + 使用说明 + 提示词保存修复**（2026-08-??，已构建/真机验证/已推送 8276d27）
   - **提示词保存 bug 修复**：`PromptEditDialog` 原用 `rememberCoroutineScope` 保存后立即关闭，scope 随对话框取消导致 DataStore 写入被取消；改为 `AppContainer.appScope` + 保存成功后再关闭 + 失败提示
   - **文本划词**：聊天/浮动界面富文本、日记条目、长期记忆、提醒/事件、小结/简报、提醒确认弹窗等主要文字外包 `SelectionContainer`（公式位图不可选，复制按钮保留）
   - **单条编辑**：日记内容（更新 content，不动图片）；长期记忆手动添加 + 编辑（保留 category/createdAt）；提醒编辑标题/时间/重复（先 cancel 旧闹钟 → UPDATE status pending + 清 ack → 重排）
@@ -170,6 +173,15 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **默认提示词优化**：助手系统/记忆抽取/小结/期间总结/搜索判断/识屏/记录整理小幅增强，未动 PromptBuilder 缓存外壳与模板占位
   - **默认标签通用化（发布前调整）**：默认标签从“AI与开发/物理学习与科研/生活/待办/经验”改为“工作/生活/待办/经验”；启动时仅把“旧默认值”迁移为新默认，用户自定义过的标签列表原样保留（仍随 v1.4.0 发布）
   - **版本号升级**：1.3.1 → **1.4.0 / code 9**
+- [x] **识屏框选（v1.4.x 功能，版本号未动不发版）**（2026-08-24，真机验证通过，已推送 bbae003）
+  - **功能**：识屏截屏完成后先弹全屏「选区层」（service/RegionPickerActivity.kt），拖动选框 → 确认后**只裁剪框内区域**进入识图流程；不框选直接「确定」= 识别整张截图；设置页「识屏后框选区域」开关**默认开**，关闭即恢复老的整屏识别
+  - **流程分流**：ScreenCaptureService.onFrameCaptured 按开关分流——框选模式存**整张原图**（region_pending_*.png，裁剪需要完整画面）→ 拉起选区层（服务即停）；选区层后台 decodeFile→createBitmap 裁剪→缩放宽≤1280→saveToCache(region_*.png)→删临时图→startActivity 浮动界面（SCREEN_SENSE 模式，与老路径同一入口，提取/翻译/总结/带图对话全部自然只针对框内）
+  - **选区层交互**：三段布局（顶部提示语 / Canvas weight(1f) 占中间 / 取消·确定）；无选区时按住拖动=画第一个框；已有框后**只有四角可拖**调整大小（hitCorner 命中半径 26dp；对角顶点固定 + 实时归一化防翻转），**按空白处不响应**（防误触丢框）；所有触点 clampToImage 钳制在截图显示区内
+  - **背景复用**：FloatingPanelActivity 的 NoiseLayer/EdgeGlow/NightDeep/NightBase 从 private 改 **internal** 供选区层 import（深墨夜景渐变+噪点+7 动态光斑同款），未复制代码
+  - **悬浮球防卡死（心跳机制）**：AppContainer.regionPickerHeartbeatAt 由选区层协程每 2s 刷新、onDestroy 清零；FloatingBallService 的 CAPTURING 自愈从“60s 一刀切”改为循环检查——心跳新鲜（<15s）继续等下一轮，否则恢复 HIDDEN（用户框选超 60 秒悬浮球不会提前重现）；选区层非正常关闭 onDestroy 自动兜底 HIDDEN
+  - **设置缓存直读**：开关值启动时缓存进 AppContainer.screenSenseRegionEnabled（@Volatile，截屏服务在 handlerThread 同步读）；设置页改动同时写 DataStore 和缓存（不等重启）
+  - **⚠️ Compose 绘制溢出坑（真机实锤）**：拖动坐标钳制正确 ≠ 视觉不越界——角手柄方块/描边会画出图像边界约一个手柄宽度（约 20px）。上下方向恰好贴画布边被裁掉看不出来，左右方向截图等比缩小后两侧有留白就露出来了（用户看到“横向超出一点、竖向正常”的根因）。修复=整个覆盖层用 clipRect(ox, oy, ox+dispW, oy+dispH) 裁剪到图片显示矩形内
+  - **Manifest**：RegionPickerActivity 与授权中转 Activity 同款配置（Translucent 主题/taskAffinity=""/excludeFromRecents/sensor/configChanges）；FGS 后台启动它与启动浮动界面同路径（SYSTEM_ALERT_WINDOW 豁免，荣耀实测可用）
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
