@@ -29,6 +29,14 @@ class ProviderRegistry(
      */
     private val effortUnsupported = mutableSetOf<String>()
 
+    /** 每个模型最近一次请求的思考参数实际状态（设置页展示用）：unset / sent:<值> / stripped */
+    private val effortStatus = mutableMapOf<String, String>()
+
+    /** 该模型最近一次请求的思考参数状态；null = 本会话还没发生过相关请求 */
+    fun effortStatusFor(profile: ProviderProfile): String? = effortStatus[statusKey(profile)]
+
+    private fun statusKey(profile: ProviderProfile) = "${profile.normalizedBaseUrl()}|${profile.model}"
+
     fun allProfiles(): List<ProviderProfile> = secretStore.loadProfiles()
 
     fun defaultProfile(): ProviderProfile? = allProfiles().firstOrNull { it.isDefault }
@@ -77,13 +85,13 @@ class ProviderRegistry(
     }
 
     /**
-     * 思考参数兼容调用：极少数模型/中转站连 OpenAI 通用参数 reasoning_effort
-     * 也不认识，带参调用会回 HTTP 400 "Unknown parameter: 'reasoning_effort'"。
-     * 自动降级策略：
+     * 思考参数兼容调用：极少数模型/中转站不认识 reasoning_effort 参数或某些档位值，
+     * 带参调用会回 HTTP 400。自动降级梯子：
      * 1. 带 reasoning_effort 正常调用；
-     * 2. HTTP 400 且错误信息明确指向未知参数 → 去掉该参数重试一次；
-     * 3. 降级成功后把该 (baseUrl|model) 记入内存缓存，后续调用直接发降级形态
-     *    不再试错（App 重启后重新探测一次，用户无感）。
+     * 2. HTTP 400 且错误指向该参数 → 先把 xhigh 降为 high（部分模型只认到 high）；
+     * 3. 仍不行 → 整个参数去掉重试，并把该 (baseUrl|model) 记入内存缓存，
+     *    后续调用直接发降级形态不再试错（App 重启后重新探测一次，用户无感）。
+     * 每次实际发出的形态记录进 [effortStatus]（设置页展示"是否真的生效"）。
      * 请求本身不带思考参数时直接调用（零开销、零风险）。
      */
     suspend fun <T> effortSafeCall(
@@ -93,10 +101,14 @@ class ProviderRegistry(
         api: OpenAiChatApi,
         call: suspend (String, ChatRequest) -> T
     ): T {
-        if (request.reasoningEffort == null) return call(header, request)
-
-        val key = "${profile.normalizedBaseUrl()}|${profile.model}"
-        var req = if (key in effortUnsupported) request.copy(reasoningEffort = null) else request
+        val key = statusKey(profile)
+        var req = if (key in effortUnsupported && request.reasoningEffort != null) {
+            effortStatus[key] = "stripped"
+            request.copy(reasoningEffort = null)
+        } else {
+            effortStatus[key] = request.reasoningEffort?.let { "sent:$it" } ?: "unset"
+            request
+        }
         while (true) {
             try {
                 return call(header, req)
@@ -115,11 +127,22 @@ class ProviderRegistry(
                     is ApiHttpException -> e.body
                     else -> null
                 }
-                // 只对"不认识参数"类 400 降级；其他错误原样抛给上层
-                if (code != 400 || body.isNullOrBlank() || !looksLikeUnknownParameter(body)) throw e
-                if (req.reasoningEffort == null) throw e // 已无参数可降级
-                effortUnsupported += key
-                req = req.copy(reasoningEffort = null)
+                // 只对"参数不认识/值非法"类 400 降级；其他错误原样抛给上层
+                if (code != 400 || body.isNullOrBlank() || !looksLikeReasoningParamProblem(body)) throw e
+                when {
+                    // 第一级：xhigh 超出模型支持范围 → 降到 high 再试一次
+                    req.reasoningEffort == "xhigh" -> {
+                        req = req.copy(reasoningEffort = "high")
+                        effortStatus[key] = "sent:high(xhigh降级)"
+                    }
+                    // 第二级：整个参数去掉并记住该模型不支持
+                    req.reasoningEffort != null -> {
+                        effortUnsupported += key
+                        effortStatus[key] = "stripped"
+                        req = req.copy(reasoningEffort = null)
+                    }
+                    else -> throw e // 已无参数可降级
+                }
             }
         }
     }
@@ -147,11 +170,12 @@ class ProviderRegistry(
         resp
     }
 
-    /** 错误信息是否指向"不认识请求参数"（各家 400 文案不同，宽松匹配） */
-    private fun looksLikeUnknownParameter(body: String): Boolean {
+    /** 错误信息是否指向 reasoning_effort 参数不被认识/值非法（各家 400 文案不同，宽松匹配） */
+    private fun looksLikeReasoningParamProblem(body: String): Boolean {
         val b = body.lowercase()
         return b.contains("unknown parameter") || b.contains("unknown_parameter") ||
-            (b.contains("reasoning_effort") && b.contains("parameter"))
+            (b.contains("reasoning_effort") &&
+                (b.contains("parameter") || b.contains("invalid") || b.contains("value")))
     }
 }
 

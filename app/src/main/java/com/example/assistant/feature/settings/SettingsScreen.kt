@@ -62,6 +62,7 @@ import com.example.assistant.core.network.ProviderProfile
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.ui.GlassCard
 import com.example.assistant.service.FloatingBallService
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -676,15 +677,43 @@ private fun ModelProviderCard(
                     ?: effortOptions.first().first,
                 onSelect = { onThinkingChange(it.second) }
             )
+            // 实际生效状态：参数是否真的随请求发出 / 是否被自动降级 / 全局旧设置兜底
+            val appCtx = LocalContext.current.applicationContext as AssistantApplication
+            var effortHint by remember(profile.reasoningEffort, profile.id) { mutableStateOf<String?>(null) }
+            LaunchedEffect(profile.reasoningEffort, profile.id, testResult) {
+                val reg = appCtx.container.providerRegistry
+                val global = appCtx.container.settingsStore.reasoningEffort.first()
+                val st = reg.effortStatusFor(profile)
+                effortHint = when {
+                    st == "stripped" ->
+                        "⚠️ 该模型不认识思考参数，请求已自动去掉该参数（重启 App 后会重新探测）"
+                    profile.reasoningEffort != "default" ->
+                        "每次对话发送 reasoning_effort=${profile.reasoningEffort}" +
+                            if (st?.startsWith("sent") == true) " ✓ 已发出" else ""
+                    global != "default" ->
+                        "档案为「跟随模型默认」，但旧版全局设置为 $global，实际按 $global 发送"
+                    else -> "不发送该参数，由模型自行决定思考深度"
+                }
+            }
+            effortHint?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
         }
     }
 }
 
 private val effortOptions = listOf(
     "跟随模型默认" to "default",
-    "简洁（思考短）" to "low",
-    "均衡" to "medium",
-    "深入（思考长）" to "high"
+    "极简（几乎不思考）" to "minimal",
+    "低（快）" to "low",
+    "中（均衡）" to "medium",
+    "高（深入）" to "high",
+    "极高（最强推理）" to "xhigh"
 )
 
 /** 一行"标签 + 下拉选择"设置项 */
