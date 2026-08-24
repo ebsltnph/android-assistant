@@ -90,7 +90,7 @@ data class TavilyResult(
     val score: Double = 0.0
 )
 
-/** Tavily 接口（独立于 OpenAI 兼容契约） */
+/** Tavily 接口（独立于 OpenAI 兼容契约）：搜索 /search + 网页抽取 /extract */
 interface TavilyApi {
     @POST("search")
     suspend fun search(
@@ -98,4 +98,72 @@ interface TavilyApi {
         @Header("X-Tavily-Access-Mode") accessMode: String?,
         @Body body: TavilyRequest
     ): TavilyResponse
+
+    @POST("extract")
+    suspend fun extract(
+        @Header("Authorization") auth: String,
+        @Header("X-Tavily-Access-Mode") accessMode: String?,
+        @Body body: TavilyExtractRequest
+    ): TavilyExtractResponse
+}
+
+// ======================= 网页正文抽取（/extract，read_webpage 工具用） =======================
+
+@Serializable
+data class TavilyExtractRequest(val urls: List<String>)
+
+@Serializable
+data class TavilyExtractResponse(
+    val results: List<TavilyExtractResult> = emptyList(),
+    @SerialName("failed_results")
+    val failedResults: List<TavilyFailedResult> = emptyList()
+)
+
+@Serializable
+data class TavilyExtractResult(
+    val url: String = "",
+    @SerialName("raw_content")
+    val rawContent: String? = null
+)
+
+@Serializable
+data class TavilyFailedResult(val url: String = "", val error: String? = null)
+
+/**
+ * Tavily Extract 实现：抓取并清洗网页正文。
+ * 与搜索同一服务/Key（keyless 模式同样支持），反爬严格的页面可能拿不到（错误回传给模型）。
+ */
+class TavilyExtractClient(private val secretStore: SecretStore) : PageReader {
+
+    private val api: TavilyApi = Retrofit.Builder()
+        .baseUrl("https://api.tavily.com/")
+        .client(
+            OkHttpClient.Builder()
+                // 抓正文比搜索慢，读超时放宽
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(45, TimeUnit.SECONDS)
+                .build()
+        )
+        .addConverterFactory(Json { ignoreUnknownKeys = true }
+            .asConverterFactory("application/json".toMediaType()))
+        .build()
+        .create(TavilyApi::class.java)
+
+    override suspend fun extract(url: String): String {
+        val key = secretStore.searchApiKey()
+        val auth = if (key.isNotBlank()) "Bearer $key" else ""
+        val accessMode = if (key.isBlank()) "keyless" else null
+        val response = api.extract(
+            auth = auth,
+            accessMode = accessMode,
+            body = TavilyExtractRequest(urls = listOf(url))
+        )
+        val content = response.results.firstOrNull()?.rawContent?.trim()
+        if (content.isNullOrBlank()) {
+            val reason = response.failedResults.firstOrNull()?.error?.takeIf { it.isNotBlank() }
+                ?: "页面没有可提取的正文"
+            throw IllegalStateException(reason)
+        }
+        return content
+    }
 }

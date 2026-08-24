@@ -72,10 +72,10 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 
 设计要点：
 - **单一 API 契约**：所有功能复用同一套 OpenAI 兼容接口；`ProviderRegistry` 按能力（对话/识屏/分类）解析提供商档案，按 baseUrl 缓存 Retrofit 实例
-- **提示词缓存结构**（`PromptBuilder` 保证）：
-  `messages[0]` 静态系统提示词（缓存）→ `messages[1]` 长期记忆块（缓存）→ `messages[2]` 当前上下文（日期时间等易变内容，**绝不放系统提示词里**）→ `messages[3..n]` 对话尾部（截断只删尾部）
-- **意图路由**：关键词快速路由（记录/提醒/识屏）→ LLM 分类兜底 → 聊天兜底
-- **对话搜索（2026-08-24 架构重构）**：是否搜索、搜什么词由**主模型在回复中自主决定**（不再单独调用判断模型），一轮回答内最多补搜 3 次——协议在 PromptBuilder 外壳，循环见 Agent.chatReplyFlow
+- **提示词缓存结构**（`PromptBuilder` 保证，五段布局）：
+  `messages[0]` 静态系统外壳+用户设定（缓存）→ `messages[1]` 长期记忆块（缓存）→ `messages[2]` **工具手册**（ToolRegistry 静态文本，缓存）→ `messages[3]` 易变上下文（时间/标签词汇表）→ `messages[4..n]` 对话尾部（截断只删尾部）
+- **意图路由**：仅识屏关键词本地直连；其余全部进对话回路由主模型自主调度（无独立分类调用）
+- **主模型统一工具调度（2026-08-24 架构定稿）**：提醒/记录/长期记忆/监控/搜索/网页阅读/识屏全部由主聊天模型经文本协议 `[调用] {"tool":...,"args":{...}}` 自主发起，`ToolRegistry` 解析分发、`Agent.chatReplyFlow` 统一回路执行与结果回传；仅剩识屏关键词本地直连与后台批处理（小结/期间总结/简报/事件轮询命中判断/日记页记忆抽取）走独立调用
 
 ## 开发阶段状态
 
@@ -191,6 +191,15 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **UI**：搜索期间气泡显示「🔍 正在搜索：词1、词2 …」，最终替换为正式回答（末尾附「🔍 已联网搜索：…」页脚）；ChatViewModel.streamReply 改为消费 ReplyEvent 流并返回 StreamOutcome(answer, exchanges)
   - **删除**：SearchJudger.kt 整个类 + AppContainer 装配 + PromptStore.SEARCH_JUDGE 提示词条目（设置页高级提示词列表自动少一项）——每条消息省一次 LLM 判断调用；extraContext 注入通道随之下线（buildChatMessages 去掉该参数）
   - **注意**：系统提示词外壳变化会使各厂商提示词缓存失效一次（之后重新稳定）；事件监控（EventPollWorker）的搜索路径不受影响，仍走自己的 Tavily+命中判断
+- [x] **架构大重构：主模型统一工具调度 + read_webpage 网页阅读（v1.4.x，版本号未动不发版）**（2026-08-24，构建通过已装机待真机验证）
+  - **动机**：搜索重构验证了「主模型自主决策」路线可行后推广到全部能力——原意图分类/记忆抽取/日记整理/监控抽取/时间解析五处独立 LLM 调用各有缺陷（决策不在主模型、无法自纠重试、每条消息固定多耗调用），收敛为统一工具回路
+  - **工具框架**：`core/agent/tools/` 新增 `AssistantTool` 接口（name/description/actionLabel/execute→ToolOutcome.Success/Failure）+ `ToolRegistry`（静态手册生成、`[调用] {json}` 行解析、按名分发、异常转 Failure）。新增能力=加实现类注册，零解析改动；args 容错读取（数字可写字符串、数组可写逗号串、args 可平铺顶层）
+  - **七个工具**：web_search（Tavily 搜索）/ read_webpage（**新**：Tavily /extract 读网页全文，截断 6000 字）/ set_reminder（结构化参数→本地 Calendar 算时间戳→入库排程，过去时间等校验错误回传自纠）/ write_memory（服务端仍过滤 importance≥7）/ write_diary（整理正文+词汇表内选标签）/ monitor_event（配置入库，域名正则兜底保留）/ screen_sense（委托 ScreenSenseController）
+  - **回路规则**：流式一轮结束扫描——有合法调用行就全部执行、结果以 `[结果]` user 消息接回进下一轮；纯调用轮整轮隐藏（气泡「🔧 …」状态）、混合轮正文剥掉调用行后经 RoundSettled 事件累加保留（不丢失）；单次回复最多 4 个工具轮 + guard>10 双保险；超限注入强制收尾指令
+  - **上下文重排**：PromptBuilder 改五段布局 [0]系统外壳 [1]长期记忆 [2]工具手册(静态) [3]易变上下文(时间+标签词汇表) [4..n]对话尾部——静态块不夹易变内容保缓存；标签词汇表动态故在 [3]
+  - **删除**：IntentRouter.llmClassify（关键词路由收缩为仅识屏直连）、DiarySummarizer 整类、EventExtractor 整类、ReminderTimeParser 的 LLM parse（只留 ParseResult/resolveTrigger 本地计算）、AssistantIntent 收缩为 ScreenSense 单成员；PromptStore 删 INTENT_CLASSIFIER/MONITOR_EXTRACT/REMINDER_PARSE/DIARY_SUMMARIZE 四键（Capability.CLASSIFY 枚举保留兼容旧档案 JSON，标注已停用）
+  - **兜底链**：①记录——像记录请求但模型没调 write_diary → 回复完成后静默存原文（looksLikeDiaryRequest 关键词检测，「记录不能丢」）；②图片消息记录（视觉路径无对话回路）→ 关键词检测+原文+图直接入日记（不再总结，质量略降可接受）；③浮动面板「提醒」气泡改走对话回路（createReminderNow=sendText 归一化前缀），与聊天同质量；④识屏面板通知改为 ChatViewModel 统一监听 controller.requests 转发（关键词路径与工具路径同源，executeCommand 不再手动发事件）
+  - **UI**：ToolsRunning 事件驱动「🔧 动作1、动作2 …」状态文本；Final 附「🔧 已执行：…」页脚；chatStream maxTokens 2048→4096（多轮工具+推理思考配额）
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

@@ -1,10 +1,11 @@
 package com.example.assistant.core.agent
 
+import com.example.assistant.core.agent.tools.ToolOutcome
+import com.example.assistant.core.agent.tools.ToolRegistry
 import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.ChatStream
 import com.example.assistant.core.network.ProviderProfile
 import com.example.assistant.core.network.ProviderRegistry
-import com.example.assistant.core.network.SearchClient
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.network.dto.ChatRequest
 import com.example.assistant.core.network.dto.ChatResponse
@@ -13,131 +14,127 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 
 /**
- * Agent 编排器：
- * 1. 意图路由（关键词 → LLM 分类 → 聊天兜底）
- * 2. 记录类意图（说"记录…"或 LLM 判定）不拦截：聊天照常回复 + 同步写日记（recordHint）
- * 3. 命令类意图（识屏/提醒/监控）由上层分发到对应处理器
- * 4. 对话类意图走 LLM 流式回复（缓存友好的消息结构，见 PromptBuilder）
- * 5. 联网搜索由**主模型自主决定**（不再单独调用判断模型）：系统提示词外壳带搜索协议，
- *    模型需要时输出"[搜索] 搜索词"，这里执行搜索把结果发回，模型可继续补搜（有上限），
- *    直到给出正式回答。见 [chatReplyFlow]。
+ * Agent 编排器（主模型统一调度架构）：
+ * 1. 意图路由：仅剩识屏关键词本地直连（瞬时、无需模型）；其余全部走对话回路，
+ *    由主聊天模型在回复中自主调用工具完成（提醒/记录/记忆/监控/搜索/读网页/识屏）
+ * 2. chatReplyFlow 工具回路：模型流式输出 → 解析 [调用] 行 → 本地执行 → 结果回传 →
+ *    模型继续（可自纠重试、连环调用），直到给出正式回答
+ * 3. 缓存友好：静态块（系统外壳/工具手册）与易变块（时间/标签）分离，见 PromptBuilder
  */
 class Agent(
     private val providerRegistry: ProviderRegistry,
     private val promptBuilder: PromptBuilder,
     private val intentRouter: IntentRouter,
-    private val searchClient: SearchClient
+    private val toolRegistry: ToolRegistry
 ) {
 
-    /**
-     * 单次回复的事件流（chatReplyFlow 产出，界面层据此渲染气泡）。
-     */
+    /** 单次回复的事件流（chatReplyFlow 产出，界面层据此渲染气泡） */
     sealed interface ReplyEvent {
-        /** 流式增量：text 为本轮流式文本增量；开头疑似"[搜索"标记的缓冲期 text 为空串（thinking 正常累计） */
+        /** 流式增量：text 在标记缓冲期为空串；thinking 为思考增量 */
         data class Delta(val text: String, val thinking: String) : ReplyEvent
 
-        /** 主模型请求了搜索，正在执行（界面可显示「正在搜索…」状态） */
-        data class Searching(val queries: List<String>) : ReplyEvent
+        /**
+         * 一轮流结束：本轮保留的正文并入气泡基线（纯调用轮 prose 为空串=仅重置流式区），
+         * 下一轮的流式文本从基线之后追加显示。
+         */
+        data class RoundSettled(val prose: String) : ReplyEvent
 
-        /** 最终回答（answer 已含搜索页脚）；exchanges = 搜索中间轮记录，写回会话历史用 */
+        /** 正在执行一批工具调用（界面显示「🔧 …」状态） */
+        data class ToolsRunning(val labels: List<String>) : ReplyEvent
+
+        /** 最终回答（answer 已含执行页脚）；toolNames = 成功执行过的工具名；exchanges = 工具中间轮 */
         data class Final(
             val answer: String,
-            val searchedQueries: List<String>,
+            val toolNames: List<String>,
             val exchanges: List<Pair<String, String>>
         ) : ReplyEvent
     }
 
     sealed interface AgentResult {
-        /** 需要走 LLM 对话（流式） */
+        /** 需要走对话回路（流式 + 工具循环） */
         data class ChatRequested(
-            val messages: List<ChatMessage>,
-            /** 记录提示：非空表示聊天同时要把用户原话写入日记（bookName 为 null 时写默认日记本） */
-            val recordHint: RecordHint? = null
+            val messages: List<ChatMessage>
         ) : AgentResult
 
-        /** 命令类意图（本地执行，由上层处理） */
+        /** 命令类意图（目前仅识屏关键词直连；由上层处理） */
         data class Command(val intent: AssistantIntent) : AgentResult
 
         /** 未配置模型等无法处理的情况 */
         data class Error(val message: String) : AgentResult
     }
 
-    /** 记录提示：聊天照常流式回复，同时把用户这句话写入日记本 */
-    data class RecordHint(val bookName: String? = null)
-
     /**
-     * 路由用户消息，返回执行结果。
-     * 记录类意图（说"记录…"或 LLM 分类判定）不拦截：转为「聊天照常回复 + 同步写日记」，
-     * 由上层在流式回复的同时把用户原话写入日记本。
+     * 路由用户消息。识屏关键词本地直连（瞬时、离线可用）；其余一律进对话回路，
+     * 由主模型决定是否调用工具、调用哪个——不再有独立的意图分类/判断调用。
      *
-     * @param history 会话历史对话尾部（应已含当前用户消息）；不传则只带当前消息
+     * @param history 会话历史对话尾部（应已含当前用户消息）
+     * @param diaryTags 用户自定义日记标签词汇表（进易变上下文，供 write_diary 选标签）
      */
-    suspend fun route(text: String, memoryText: String? = null, history: List<ChatMessage> = emptyList()): AgentResult {
+    suspend fun route(
+        text: String,
+        memoryText: String? = null,
+        history: List<ChatMessage> = emptyList(),
+        diaryTags: List<String> = emptyList()
+    ): AgentResult {
+        // 关键词只保留识屏直连
         val keyword = intentRouter.keywordRoute(text)
-
-        // 关键词明确说"记录…"：聊天 + 同步写日记（不拦截）
-        if (keyword is AssistantIntent.RecordDiary) {
-            return chatRequested(text, memoryText, history, RecordHint(keyword.bookName))
-        }
-
-        // 其他关键词命令（识屏/提醒/监控）：本地执行
         if (keyword != null) return AgentResult.Command(keyword)
-
-        // 关键词未命中 → LLM 分类兜底（是否记录也由 LLM 判断）
-        val llmHit = intentRouter.llmClassify(text)
-        if (llmHit is AssistantIntent.RecordDiary) {
-            return chatRequested(text, memoryText, history, RecordHint(llmHit.bookName))
-        }
-        if (llmHit != null && llmHit !is AssistantIntent.Chat) return AgentResult.Command(llmHit)
-
-        // 聊天兜底
-        return chatRequested(text, memoryText, history, null)
+        return chatRequested(text, memoryText, history, diaryTags)
     }
 
-    /**
-     * 组装聊天请求（记录类与普通聊天共用）。
-     * 是否需要搜索、搜什么词，全部交给主模型在回复中决定（协议见 PromptBuilder 外壳），
-     * 这里只负责组装基础消息，不再预判搜索、不再额外消耗一次 LLM 调用。
-     */
+    /** 组装对话回路的初始请求消息 */
     private suspend fun chatRequested(
         text: String,
         memoryText: String?,
         history: List<ChatMessage>,
-        recordHint: RecordHint?
+        diaryTags: List<String>
     ): AgentResult {
         val profile = providerRegistry.profileFor(Capability.CHAT)
             ?: return AgentResult.Error("尚未配置模型提供商，请到「设置」填写")
         if (!profile.isConfigured()) {
             return AgentResult.Error("模型提供商未配置完整，请到「设置」检查")
         }
-
         val conversation = if (history.isNotEmpty()) history else listOf(ChatMessage("user", text))
-        val messages = promptBuilder.buildChatMessages(memoryText, conversation)
-        return AgentResult.ChatRequested(messages, recordHint)
+        val messages = promptBuilder.buildChatMessages(
+            memoryText = memoryText,
+            conversation = conversation,
+            toolManual = toolRegistry.manual(),
+            volatileContext = promptBuilder.buildVolatileContext(diaryTags)
+        )
+        return AgentResult.ChatRequested(messages)
     }
 
     /**
-     * 主模型驱动的搜索循环（架构核心）：
+     * 主模型驱动的工具回路（架构核心）：
      *
      *   流式收集一轮回复
-     *     ├─ 整条消息都是 "[搜索] 词" 行 → 执行搜索，结果作为 user 消息接上，再收集一轮
-     *     │                                （已达上限则改为注入"请直接回答"指令强制收尾）
-     *     └─ 否则视为正式回答，结束
+     *     ├─ 存在合法"[调用]"行 → 执行全部调用，结果以 user 消息接回对话，再收集一轮
+     *     │   （纯调用轮整轮隐藏；混合轮正文剥掉调用行后累加保留，不丢失）
+     *     └─ 否则视为正式回答结束
      *
-     * 缓冲策略：开头疑似"[搜索"标记时文本暂不上屏（避免内部标记闪现在气泡里），
-     * 流结束后统一判定是搜索请求还是正文。异常情况由 guard 上限保证必然终止。
+     * 单次回复最多 MAX_TOOL_ROUNDS 个工具轮；超限注入强制收尾指令；
+     * guard 上限双保险保证任何情况下必然终止。
      */
     fun chatReplyFlow(baseMessages: List<ChatMessage>): Flow<ReplyEvent> = flow {
         var messages = baseMessages
-        var forcedFinal = false          // 达搜索上限后置 true：下一轮无论输出什么都当作最终回答
-        val doneQueries = mutableListOf<String>()
-        val exchanges = mutableListOf<Pair<String, String>>() // (模型的搜索请求原文, 发回的结果消息)
+        var forcedFinal = false
+        var toolRounds = 0
+        val finalized = StringBuilder()                        // 各轮保留正文的累加
+        val usedToolNames = LinkedHashSet<String>()           // 成功执行过的工具名
+        val exchanges = mutableListOf<Pair<String, String>>() // (模型输出原文, 回传的结果消息)
+
+        fun absorbProse(prose: String) {
+            val p = prose.trim()
+            if (p.isEmpty()) return
+            if (finalized.isNotEmpty()) finalized.append("\n\n")
+            finalized.append(p)
+        }
 
         var guard = 0
         while (true) {
-            if (++guard > 8) break // 双保险：协议被模型玩坏也不会死循环
+            if (++guard > GUARD_LIMIT) break
 
-            // ---- 一轮流式收集（带开头标记缓冲）----
+            // ---- 一轮流式收集（开头标记缓冲：疑似"[调用"时不上屏）----
             var acc = ""
             var released = false
             chatStream(messages).collect { chunk ->
@@ -145,8 +142,7 @@ class Agent(
                 val t = delta?.textContent.orEmpty()
                 val th = delta?.reasoningContent.orEmpty()
                 if (t.isNotEmpty()) acc += t
-                if (!released && stillBuffering(acc)) {
-                    // 缓冲期：文本不上屏，思考过程照常展示
+                if (!released && toolRegistry.stillBuffering(acc)) {
                     if (th.isNotEmpty()) emit(ReplyEvent.Delta("", th))
                 } else {
                     released = true
@@ -154,38 +150,65 @@ class Agent(
                 }
             }
 
-            // ---- 判定这一轮是搜索请求还是最终回答 ----
-            val queries = if (forcedFinal || acc.isBlank()) null else extractSearchRequests(acc)
-            if (queries == null) {
-                val cleaned = stripSearchLines(acc)
-                val footer = if (doneQueries.isEmpty()) ""
-                else "\n\n🔍 已联网搜索：" + doneQueries.joinToString("、")
-                emit(ReplyEvent.Final(cleaned + footer, doneQueries.toList(), exchanges.toList()))
+            // ---- 判定这一轮是否发起工具调用 ----
+            val calls = toolRegistry.parseCalls(acc)
+            val act = !forcedFinal && toolRounds < ToolRegistry.MAX_TOOL_ROUNDS && calls.isNotEmpty()
+            if (!act) {
+                absorbProse(toolRegistry.stripCallLines(acc))
+                emit(finish(finalized, usedToolNames, exchanges))
                 return@flow
             }
 
-            if (doneQueries.size >= MAX_SEARCH_ROUNDS) {
-                // 次数用完模型还想搜：注入指令强制它基于已有结果作答
-                messages = messages +
-                    ChatMessage("assistant", acc) +
-                    ChatMessage("user", SEARCH_LIMIT_NOTE)
-                forcedFinal = true
-                continue
-            }
+            toolRounds++
+            val pure = toolRegistry.isPureCallTurn(acc)
+            val roundProse = if (pure) "" else toolRegistry.stripCallLines(acc).trim()
+            absorbProse(roundProse)
+            emit(ReplyEvent.RoundSettled(roundProse))
 
-            // 执行搜索，结果以 user 消息形式接在对话后（模型下一轮能看到）
-            emit(ReplyEvent.Searching(queries))
-            val resultsMsg = searchResultsMessage(queries)
-            doneQueries.addAll(queries)
-            exchanges += acc to resultsMsg
+            // ---- 执行全部调用并组装结果消息 ----
+            emit(ReplyEvent.ToolsRunning(calls.map { it.label }))
+            val sb = StringBuilder("[结果]")
+            calls.forEachIndexed { i, call ->
+                val outcome = toolRegistry.execute(call)
+                sb.append("\n\n").append(i + 1).append(". tool=").append(call.tool.name)
+                when (outcome) {
+                    is ToolOutcome.Success -> {
+                        usedToolNames += call.tool.name
+                        sb.append("｜状态：成功\n").append(outcome.feedback)
+                    }
+                    is ToolOutcome.Failure ->
+                        sb.append("｜状态：失败\n").append(outcome.error)
+                }
+            }
+            sb.append("\n\n请根据以上结果继续：信息足够就直接给出正式回答；有失败可修正参数重新调用（剩余次数有限），或如实告知用户。")
+            val resultsMsg = sb.toString()
+
             messages = messages + ChatMessage("assistant", acc) + ChatMessage("user", resultsMsg)
+            exchanges += acc to resultsMsg
+
+            if (toolRounds >= ToolRegistry.MAX_TOOL_ROUNDS && !forcedFinal) {
+                messages += ChatMessage("user", ToolRegistry.FORCED_FINAL_NOTE)
+                forcedFinal = true
+            }
         }
 
         // guard 兜底出口（正常流程到不了这里）
-        emit(ReplyEvent.Final("（搜索轮次异常终止，请重试）", doneQueries.toList(), exchanges.toList()))
+        emit(finish(finalized, usedToolNames, exchanges))
     }
 
-    /** 发送流式对话请求（会话尾部由调用方维护，这里只发一次请求） */
+    /** 组装最终回答：正文 + 已执行工具页脚 */
+    private fun finish(
+        finalized: StringBuilder,
+        usedToolNames: Set<String>,
+        exchanges: List<Pair<String, String>>
+    ): ReplyEvent.Final {
+        val body = finalized.toString().ifBlank { "（模型没有返回内容，请重试或换个说法）" }
+        val answer = if (usedToolNames.isEmpty()) body
+        else body + "\n\n🔧 已执行：" + usedToolNames.joinToString("、")
+        return ReplyEvent.Final(answer, usedToolNames.toList(), exchanges.toList())
+    }
+
+    /** 发送流式对话请求（单次请求；工具回路由 chatReplyFlow 编排多次调用本方法） */
     suspend fun chatStream(messages: List<ChatMessage>): Flow<ChatResponse> {
         val profile = providerRegistry.profileFor(Capability.CHAT)
             ?: throw IllegalStateException("未配置对话提供商")
@@ -195,7 +218,8 @@ class Agent(
             model = profile.model,
             messages = messages,
             temperature = 0.7,
-            maxTokens = 2048,
+            // 4096：推理模型思考占配额，且多轮工具场景回答更长（2048 曾被吃光）
+            maxTokens = 4096,
             stream = true,
             reasoningEffort = effort
         )
@@ -228,74 +252,8 @@ class Agent(
         }
     }
 
-    /** 执行一组搜索并组装成发回给模型的「[搜索结果]」消息 */
-    private suspend fun searchResultsMessage(queries: List<String>): String = buildString {
-        append("[搜索结果]")
-        for (q in queries) {
-            // 单个词搜索失败不阻塞其他词，更不阻塞聊天本身
-            val results = try {
-                searchClient.search(q, maxResults = 5)
-            } catch (_: Exception) {
-                emptyList()
-            }
-            append("\n\n搜索词：").append(q)
-            if (results.isEmpty()) {
-                append("\n（没有找到相关结果）")
-            } else results.forEachIndexed { i, r ->
-                append("\n").append(i + 1).append(". ").append(r.title)
-                append("\n   来源：").append(r.url)
-                append("\n   ").append(r.content.take(300))
-            }
-        }
-        append("\n\n以上是系统自动搜索的结果。若信息足以回答，请直接给出正式回答（不要再出现任何标记）；")
-        append("若仍有明显缺口，可再输出一行\"[搜索] 更精确的搜索词\"补充搜索（剩余次数有限，省着用）。")
-    }
-
     companion object {
-        /** 单次回复允许的最大搜索轮数 */
-        private const val MAX_SEARCH_ROUNDS = 3
-
-        /** 搜索请求标记（协议与 PromptBuilder 外壳里的说明保持一致） */
-        private const val MARK = "[搜索]"
-
-        /** 达到搜索上限后的强制收尾指令 */
-        private const val SEARCH_LIMIT_NOTE =
-            "（已达单次回复的搜索次数上限。请综合以上搜索结果与你自己的知识直接回答用户的问题，不要再输出[搜索]）"
-
-        /** 匹配一行搜索请求：兼容半角/全角方括号、冒号可有可无（如 "[搜索] 词" / "［搜索］：词"） */
-        private val SEARCH_LINE =
-            Regex("""^[ \t]*[\[［][ \t]*搜[ \t]*索[ \t]*[\]］][ \t]*[:：]?[ \t]*(.+?)[ \t]*$""")
-
-        /** 开头仍在打搜索标记（或只有空白）→ 文本暂缓上屏，等流结束统一判定 */
-        internal fun stillBuffering(acc: String): Boolean {
-            val t = acc.trimStart()
-            if (t.isEmpty()) return true
-            return startsAsMark(t, MARK) || startsAsMark(t, "［搜索］")
-        }
-
-        private fun startsAsMark(t: String, mark: String): Boolean =
-            if (t.length <= mark.length) mark.startsWith(t) else t.startsWith(mark)
-
-        /**
-         * 判断整条回复是否为纯搜索请求：每一非空行都是"[搜索] 词"行。
-         * 是 → 返回去重后的搜索词列表；否（含空消息、带正文的混合输出）→ null。
-         */
-        internal fun extractSearchRequests(text: String): List<String>? {
-            val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
-            if (lines.isEmpty()) return null
-            val queries = mutableListOf<String>()
-            for (line in lines) {
-                val m = SEARCH_LINE.matchEntire(line) ?: return null
-                queries += m.groupValues[1]
-            }
-            return queries.map { it.trim() }.filter { it.isNotEmpty() }.distinct().takeIf { it.isNotEmpty() }
-        }
-
-        /** 防御：从最终回答里剥掉混进正文的搜索标记行（模型没守协议时避免内部符号外露） */
-        internal fun stripSearchLines(text: String): String =
-            text.lines()
-                .filterNot { SEARCH_LINE.matchEntire(it.trim()) != null }
-                .joinToString("\n")
-                .trimEnd()
+        /** 循环保险丝：正常最多 纯答/多轮工具+强制收尾 轮 */
+        private const val GUARD_LIMIT = 10
     }
 }

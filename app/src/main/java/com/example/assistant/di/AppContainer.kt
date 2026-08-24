@@ -4,19 +4,28 @@ import android.content.Context
 import com.example.assistant.core.agent.Agent
 import com.example.assistant.core.agent.DailyBriefingGenerator
 import com.example.assistant.core.agent.DailySummaryGenerator
-import com.example.assistant.core.agent.DiarySummarizer
-import com.example.assistant.core.agent.EventExtractor
 import com.example.assistant.core.agent.EventHitJudge
 import com.example.assistant.core.agent.IntentRouter
 import com.example.assistant.core.agent.MemoryExtractor
 import com.example.assistant.core.agent.PeriodSummaryGenerator
 import com.example.assistant.core.agent.PromptBuilder
 import com.example.assistant.core.agent.ReminderTimeParser
+import com.example.assistant.core.agent.tools.MonitorEventTool
+import com.example.assistant.core.agent.tools.ReadWebpageTool
+import com.example.assistant.core.agent.tools.ScreenSenseTool
+import com.example.assistant.core.agent.tools.SetReminderTool
+import com.example.assistant.core.agent.tools.ToolRegistry
+import com.example.assistant.core.agent.tools.WebSearchTool
+import com.example.assistant.core.agent.tools.WriteDiaryTool
+import com.example.assistant.core.agent.tools.WriteMemoryTool
 import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.backup.BackupManager
+import com.example.assistant.core.network.PageReader
 import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.SearchClient
+import com.example.assistant.core.network.TavilyExtractClient
 import com.example.assistant.core.network.TavilySearchClient
+import com.example.assistant.data.db.entity.parseDiaryTags
 import com.example.assistant.core.quiet.QuietHours
 import com.example.assistant.core.storage.ConversationLog
 import com.example.assistant.core.storage.PromptStore
@@ -36,6 +45,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 
 /**
  * 手动依赖注入容器：所有全局单例在这里创建。
@@ -110,15 +120,30 @@ class AppContainer(context: Context) {
         ProviderRegistry(secretStore, settingsStore)
     }
     val searchClient: SearchClient by lazy { TavilySearchClient(secretStore) }
+    val pageReader: PageReader by lazy { TavilyExtractClient(secretStore) }
 
-    // ---- Agent 编排 ----
+    // ---- Agent 编排（主模型统一调度：工具注册表 + 对话回路） ----
     val promptBuilder: PromptBuilder by lazy { PromptBuilder(promptStore) }
-    val intentRouter: IntentRouter by lazy { IntentRouter(providerRegistry, promptStore) }
-    val agent: Agent by lazy {
-        Agent(providerRegistry, promptBuilder, intentRouter, searchClient)
+    val intentRouter: IntentRouter by lazy { IntentRouter() }
+    val toolRegistry: ToolRegistry by lazy {
+        ToolRegistry(
+            listOf(
+                WebSearchTool(searchClient),
+                ReadWebpageTool(pageReader),
+                SetReminderTool(reminderRepository, reminderScheduler, reminderTimeParser),
+                WriteMemoryTool(memoryRepository),
+                // 可用标签随设置变化，用惰性提供者每次执行时现读
+                WriteDiaryTool(diaryRepository) { parseDiaryTags(settingsStore.diaryTagsCsv.first()) },
+                MonitorEventTool(eventRepository),
+                ScreenSenseTool(screenSenseController)
+            )
+        )
     }
+    val agent: Agent by lazy {
+        Agent(providerRegistry, promptBuilder, intentRouter, toolRegistry)
+    }
+    /** 记忆抽取仅保留给日记页手动保存用（对话内记忆改由 write_memory 工具完成） */
     val memoryExtractor: MemoryExtractor by lazy { MemoryExtractor(providerRegistry, promptStore) }
-    val diarySummarizer: DiarySummarizer by lazy { DiarySummarizer(providerRegistry, promptStore) }
     val dailySummaryGenerator: DailySummaryGenerator by lazy {
         DailySummaryGenerator(
             diaryRepository = diaryRepository,
@@ -138,11 +163,11 @@ class AppContainer(context: Context) {
         )
     }
 
-    // ---- P4：提醒 / 免打扰 / 搜索 / 事件监控 ----
-    val reminderTimeParser: ReminderTimeParser by lazy { ReminderTimeParser(providerRegistry, promptStore) }
+    // ---- P4：提醒 / 免打扰 / 事件监控 ----
+    /** 提醒时间本地计算（无 LLM；set_reminder 工具用） */
+    val reminderTimeParser: ReminderTimeParser by lazy { ReminderTimeParser() }
     val reminderScheduler: ReminderScheduler by lazy { ReminderScheduler(appContext) }
     val quietHours: QuietHours by lazy { QuietHours(settingsStore) }
-    val eventExtractor: EventExtractor by lazy { EventExtractor(providerRegistry, promptStore) }
     val eventHitJudge: EventHitJudge by lazy { EventHitJudge(providerRegistry, promptStore) }
     val dailyBriefingGenerator: DailyBriefingGenerator by lazy {
         DailyBriefingGenerator(
@@ -164,16 +189,9 @@ class AppContainer(context: Context) {
             context = appContext,
             agent = agent,
             intentRouter = intentRouter,
-            diarySummarizer = diarySummarizer,
             settingsStore = settingsStore,
             diaryRepository = diaryRepository,
             memoryRepository = memoryRepository,
-            memoryExtractor = memoryExtractor,
-            reminderRepository = reminderRepository,
-            reminderTimeParser = reminderTimeParser,
-            reminderScheduler = reminderScheduler,
-            eventRepository = eventRepository,
-            eventExtractor = eventExtractor,
             visionAnalyzer = visionAnalyzer,
             screenSenseController = screenSenseController,
             conversationLog = conversationLog

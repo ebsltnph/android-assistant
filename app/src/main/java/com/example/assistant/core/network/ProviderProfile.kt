@@ -37,9 +37,10 @@ data class ProviderProfile(
     fun isConfigured(): Boolean = baseUrl.isNotBlank() && apiKey.isNotBlank() && model.isNotBlank()
 }
 
-/** 三种能力，设置页可分别指派档案 */
+/** 能力指派；设置页可分别指派档案 */
 enum class Capability(val displayName: String, val description: String) {
-    CHAT("对话", "日常问答使用的模型"),
+    CHAT("对话", "日常问答与全部工具调用使用的模型"),
     VISION("识屏（视觉）", "截屏分析、OCR、翻译，需要支持图片输入的模型"),
-    CLASSIFY("意图分类", "判断用户意图的轻量模型（默认复用对话档案）")
+    /** 已无调用方：原独立意图分类调用随主模型统一调度架构移除；枚举保留兼容已存的档案 JSON */
+    CLASSIFY("意图分类（已停用）", "旧版本遗留能力位，现统一由对话模型完成，无需指派")
 }

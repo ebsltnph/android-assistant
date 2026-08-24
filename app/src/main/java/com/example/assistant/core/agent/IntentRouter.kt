@@ -1,28 +1,18 @@
 package com.example.assistant.core.agent
 
-import com.example.assistant.core.network.Capability
-import com.example.assistant.core.network.ProviderRegistry
-import com.example.assistant.core.network.dto.ChatMessage
-import com.example.assistant.core.network.dto.ChatRequest
-import com.example.assistant.core.storage.PromptStore
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-
 /**
- * 意图路由：关键词快速路径（免网络、省电）→ LLM 分类兜底 → 聊天兜底。
- * 分类不用 response_format=json_object（v4 flash 支持不稳定），见 JsonExtract 说明。
+ * 意图路由（纯本地关键词，不联网、不调 LLM）。
+ * 架构收敛后只保留识屏直连——其余意图由主模型在工具回路中自主判断执行；
+ * 记录类关键词保留一个检测函数供「记录兜底」（模型漏发 write_diary 时静默存原文）使用。
  */
-class IntentRouter(
-    private val providerRegistry: ProviderRegistry,
-    private val promptStore: PromptStore
-) {
+class IntentRouter {
 
-    /** 关键词路由（纯本地，不联网）。返回 null 表示未命中，需要 LLM 或聊天兜底 */
+    /** 关键词路由。返回 null = 无直连意图，走对话回路 */
     fun keywordRoute(text: String): AssistantIntent? {
         val t = text.trim()
         if (t.isEmpty()) return null
 
-        // 识屏：优先级最高（"翻译"等词也可能出现在聊天里，但"识屏/截屏/屏幕"更明确）
+        // 识屏：唯一保留的本地直连（"翻译"等词也可能出现在聊天里，但"识屏/截屏/屏幕"更明确）
         if (t.containsAny(KEYWORDS_SCREEN)) {
             val action = when {
                 t.containsAny(listOf("翻译")) -> ScreenAction.TRANSLATE
@@ -31,80 +21,17 @@ class IntentRouter(
             }
             return AssistantIntent.ScreenSense(action)
         }
-
-        // 记录（日记）：合并为单一「日记」本后一律写默认本（不再按关键词选本）
-        if (t.containsAny(KEYWORDS_DIARY)) {
-            val content = stripKeywords(t, KEYWORDS_DIARY)
-            return AssistantIntent.RecordDiary(content.ifBlank { t }, null)
-        }
-
-        // 提醒
-        if (t.containsAny(KEYWORDS_REMINDER)) {
-            return AssistantIntent.SetReminder(t, t)
-        }
-
-        // 事件监控
-        if (t.containsAny(KEYWORDS_MONITOR)) {
-            return AssistantIntent.MonitorEvent(stripKeywords(t, KEYWORDS_MONITOR))
-        }
-
         return null
     }
 
-    /** LLM 分类兜底：关键词未命中且已配置模型时，用短提示词分类 */
-    suspend fun llmClassify(text: String): AssistantIntent? = withContext(Dispatchers.IO) {
-        val profile = providerRegistry.profileFor(Capability.CLASSIFY) ?: return@withContext null
-        if (!profile.isConfigured()) return@withContext null
-
-        try {
-            val api = providerRegistry.apiFor(profile)
-            val prompt = promptStore.prompt(PromptStore.PromptKey.INTENT_CLASSIFIER)
-            val effort = providerRegistry.reasoningEffortFor(profile)
-            val request = ChatRequest(
-                model = profile.model,
-                messages = listOf(
-                    ChatMessage("system", prompt),
-                    ChatMessage("user", text)
-                ),
-                temperature = 0.0,
-                // 1024：推理模型思考占配额（v4 flash 曾因 512 被吃光返回空分类）
-                maxTokens = 1024,
-                reasoningEffort = effort
-            )
-            val header = providerRegistry.authHeader(profile.apiKey)
-            val response = providerRegistry.chatCompat(profile, request, header, api)
-            val content = response.choices.firstOrNull()?.message?.textContent ?: return@withContext null
-            val obj = JsonExtract.objectOf(content) ?: return@withContext null
-            when (JsonExtract.str(obj, "intent")) {
-                "record_diary" -> AssistantIntent.RecordDiary(text)
-                "set_reminder" -> AssistantIntent.SetReminder(text, text)
-                "screen_sense" -> AssistantIntent.ScreenSense(ScreenAction.EXTRACT_TEXT)
-                "monitor_event" -> AssistantIntent.MonitorEvent(text)
-                else -> null
-            }
-        } catch (e: Exception) {
-            // 分类失败不阻塞用户，交给聊天兜底
-            null
-        }
-    }
+    /** 是否像一条记录请求（记录兜底用；不做任何拦截） */
+    fun looksLikeDiaryRequest(text: String): Boolean = text.trim().containsAny(KEYWORDS_DIARY)
 
     private fun String.containsAny(keywords: List<String>): Boolean =
         keywords.any { this.contains(it) }
 
-    /** 去掉触发关键词，留下实质内容 */
-    private fun stripKeywords(text: String, keywords: List<String>): String {
-        var result = text.trim()
-        for (kw in keywords) {
-            result = result.replace(kw, "").trim()
-        }
-        return result
-    }
-
     companion object {
         private val KEYWORDS_DIARY = listOf("记录", "记一下", "写日记", "记到", "帮我记")
-        private val KEYWORDS_REMINDER = listOf("提醒", "闹钟", "到点", "待办")
         private val KEYWORDS_SCREEN = listOf("识屏", "截屏", "截个屏", "这个屏幕", "翻译这个")
-        // 监控只保留"持续关注"类明确意图；"搜索/查一下/新闻"走聊天 → 对话搜索（全 LLM 判断）
-        private val KEYWORDS_MONITOR = listOf("关注", "帮我留意", "盯一下", "持续关注")
     }
 }
