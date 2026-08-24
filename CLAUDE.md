@@ -174,7 +174,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **默认提示词优化**：助手系统/记忆抽取/小结/期间总结/搜索判断/识屏/记录整理小幅增强，未动 PromptBuilder 缓存外壳与模板占位
   - **默认标签通用化（发布前调整）**：默认标签从“AI与开发/物理学习与科研/生活/待办/经验”改为“工作/生活/待办/经验”；启动时仅把“旧默认值”迁移为新默认，用户自定义过的标签列表原样保留（仍随 v1.4.0 发布）
   - **版本号升级**：1.3.1 → **1.4.0 / code 9**
-- [x] **识屏框选（v1.4.x 功能，版本号未动不发版）**（2026-08-24，真机验证通过，已推送 bbae003）
+- [x] **识屏框选**（2026-08-24，真机验证通过，已随 v1.5.0 发布）
   - **功能**：识屏截屏完成后先弹全屏「选区层」（service/RegionPickerActivity.kt），拖动选框 → 确认后**只裁剪框内区域**进入识图流程；不框选直接「确定」= 识别整张截图；设置页「识屏后框选区域」开关**默认开**，关闭即恢复老的整屏识别
   - **流程分流**：ScreenCaptureService.onFrameCaptured 按开关分流——框选模式存**整张原图**（region_pending_*.png，裁剪需要完整画面）→ 拉起选区层（服务即停）；选区层后台 decodeFile→createBitmap 裁剪→缩放宽≤1280→saveToCache(region_*.png)→删临时图→startActivity 浮动界面（SCREEN_SENSE 模式，与老路径同一入口，提取/翻译/总结/带图对话全部自然只针对框内）
   - **选区层交互**：三段布局（顶部提示语 / Canvas weight(1f) 占中间 / 取消·确定）；无选区时按住拖动=画第一个框；已有框后**只有四角可拖**调整大小（hitCorner 命中半径 26dp；对角顶点固定 + 实时归一化防翻转），**按空白处不响应**（防误触丢框）；所有触点 clampToImage 钳制在截图显示区内
@@ -183,7 +183,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **设置缓存直读**：开关值启动时缓存进 AppContainer.screenSenseRegionEnabled（@Volatile，截屏服务在 handlerThread 同步读）；设置页改动同时写 DataStore 和缓存（不等重启）
   - **⚠️ Compose 绘制溢出坑（真机实锤）**：拖动坐标钳制正确 ≠ 视觉不越界——角手柄方块/描边会画出图像边界约一个手柄宽度（约 20px）。上下方向恰好贴画布边被裁掉看不出来，左右方向截图等比缩小后两侧有留白就露出来了（用户看到“横向超出一点、竖向正常”的根因）。修复=整个覆盖层用 clipRect(ox, oy, ox+dispW, oy+dispH) 裁剪到图片显示矩形内
   - **Manifest**：RegionPickerActivity 与授权中转 Activity 同款配置（Translucent 主题/taskAffinity=""/excludeFromRecents/sensor/configChanges）；FGS 后台启动它与启动浮动界面同路径（SYSTEM_ALERT_WINDOW 豁免，荣耀实测可用）
-- [x] **对话搜索架构重构：主模型自主搜索（v1.4.x 功能，版本号未动不发版）**（2026-08-24，构建通过已装机待真机验证）
+- [x] **对话搜索架构重构：主模型自主搜索**（2026-08-24，真机验证通过；后被同日「主模型统一工具调度」泛化取代，[搜索] 专用协议升级为通用 [调用] 工具协议）
   - **动机**：原方案「每条消息先由独立 SearchJudger 调用判断是否搜索 → 搜一次注入上下文」有两个根本缺陷——① 搜索决策不在主模型上（多一次 LLM 调用、判断与回答脱节）；② 一轮只搜一次，结果不够也无法补搜
   - **新协议**：PromptBuilder 外壳后缀固定追加【联网搜索】协议（外壳永不变化→缓存前缀稳定，用户编辑提示词也删不掉）——需要实时信息时模型**只输出 `[搜索] 搜索词` 行**（可多行多个词）并停止；系统执行 Tavily 搜索后把结果以 `[搜索结果]` 开头的 user 消息接进对话再请求；结果不足可再次发起，**单次回复最多 3 轮**；超限后注入强制收尾指令（"已达上限请直接回答"）防死循环
   - **循环实现**：Agent.chatReplyFlow(baseMessages): Flow<ReplyEvent>——Delta（流式增量）/Searching（正在搜索）/Final（最终回答+exchanges）三类事件；guard>8 双保险终止。**开头标记缓冲**：流式文本以 `[`/`[搜`/`[搜索`… 开头时暂不上屏（兼容全角 `［搜索］`），避免内部标记闪现在气泡里，流结束统一判定纯搜索请求（每行都匹配 SEARCH_LINE 正则才算）vs 正文
@@ -191,7 +191,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **UI**：搜索期间气泡显示「🔍 正在搜索：词1、词2 …」，最终替换为正式回答（末尾附「🔍 已联网搜索：…」页脚）；ChatViewModel.streamReply 改为消费 ReplyEvent 流并返回 StreamOutcome(answer, exchanges)
   - **删除**：SearchJudger.kt 整个类 + AppContainer 装配 + PromptStore.SEARCH_JUDGE 提示词条目（设置页高级提示词列表自动少一项）——每条消息省一次 LLM 判断调用；extraContext 注入通道随之下线（buildChatMessages 去掉该参数）
   - **注意**：系统提示词外壳变化会使各厂商提示词缓存失效一次（之后重新稳定）；事件监控（EventPollWorker）的搜索路径不受影响，仍走自己的 Tavily+命中判断
-- [x] **架构大重构：主模型统一工具调度 + read_webpage 网页阅读（v1.4.x，版本号未动不发版）**（2026-08-24，构建通过已装机待真机验证）
+- [x] **架构大重构：主模型统一工具调度 + read_webpage 网页阅读**（2026-08-24，真机验证通过）
   - **动机**：搜索重构验证了「主模型自主决策」路线可行后推广到全部能力——原意图分类/记忆抽取/日记整理/监控抽取/时间解析五处独立 LLM 调用各有缺陷（决策不在主模型、无法自纠重试、每条消息固定多耗调用），收敛为统一工具回路
   - **工具框架**：`core/agent/tools/` 新增 `AssistantTool` 接口（name/description/actionLabel/execute→ToolOutcome.Success/Failure）+ `ToolRegistry`（静态手册生成、`[调用] {json}` 行解析、按名分发、异常转 Failure）。新增能力=加实现类注册，零解析改动；args 容错读取（数字可写字符串、数组可写逗号串、args 可平铺顶层）
   - **七个工具**：web_search（Tavily 搜索）/ read_webpage（**新**：Tavily /extract 读网页全文，截断 6000 字）/ set_reminder（结构化参数→本地 Calendar 算时间戳→入库排程，过去时间等校验错误回传自纠）/ write_memory（服务端仍过滤 importance≥7）/ write_diary（整理正文+词汇表内选标签）/ monitor_event（配置入库，域名正则兜底保留）/ screen_sense（委托 ScreenSenseController）
@@ -200,6 +200,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **删除**：IntentRouter.llmClassify（关键词路由收缩为仅识屏直连）、DiarySummarizer 整类、EventExtractor 整类、ReminderTimeParser 的 LLM parse（只留 ParseResult/resolveTrigger 本地计算）、AssistantIntent 收缩为 ScreenSense 单成员；PromptStore 删 INTENT_CLASSIFIER/MONITOR_EXTRACT/REMINDER_PARSE/DIARY_SUMMARIZE 四键（Capability.CLASSIFY 枚举保留兼容旧档案 JSON，标注已停用）
   - **兜底链**：①记录——像记录请求但模型没调 write_diary → 回复完成后静默存原文（looksLikeDiaryRequest 关键词检测，「记录不能丢」）；②图片消息记录（视觉路径无对话回路）→ 关键词检测+原文+图直接入日记（不再总结，质量略降可接受）；③浮动面板「提醒」气泡改走对话回路（createReminderNow=sendText 归一化前缀），与聊天同质量；④识屏面板通知改为 ChatViewModel 统一监听 controller.requests 转发（关键词路径与工具路径同源，executeCommand 不再手动发事件）
   - **UI**：ToolsRunning 事件驱动「🔧 动作1、动作2 …」状态文本；Final 附「🔧 已执行：…」页脚；chatStream maxTokens 2048→4096（多轮工具+推理思考配额）
+- [x] **v1.5.0 发布**（2026-08-24）：版本号 1.4.0 → **1.5.0 / code 10**；打包发布内容 = 识屏框选 + 主模型统一工具调度（含 read_webpage 网页阅读、五档思考深度与生效状态提示、分段时间线气泡、带图记录静默整理回路）+ 主界面视觉焕新（环境光背景/玻璃导航栏/时段问候/不对称圆角气泡/金色发送键）；助手系统提示词默认值更新（自定义过的用户需恢复默认获取新版）；数据与备份双向兼容。GitHub Release v1.5.0 附 APK
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
