@@ -22,11 +22,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.assistant.AssistantApplication
@@ -38,6 +43,7 @@ import com.example.assistant.data.db.entity.MonitoredEventEntity
 import com.example.assistant.data.db.entity.ReminderEntity
 import com.example.assistant.feature.memory.MemoryScreen
 import com.example.assistant.service.FloatingBallService
+import com.example.assistant.ui.theme.ChampagneGold
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -101,14 +107,33 @@ fun HomeScreen(modifier: Modifier = Modifier) {
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // ---- 标题 ----
+        // ---- 标题（按时段问候 + 日期）----
         item {
-            Column(modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)) {
-                Text("你好，我是随身助手", style = MaterialTheme.typography.headlineSmall)
+            val cal = remember { Calendar.getInstance() }
+            val hour = cal.get(Calendar.HOUR_OF_DAY)
+            val greet = when {
+                hour < 5 -> "夜深了"
+                hour < 12 -> "早上好"
+                hour < 14 -> "中午好"
+                hour < 18 -> "下午好"
+                else -> "晚上好"
+            }
+            val dateText = SimpleDateFormat("M月d日 EEEE", Locale.getDefault()).format(cal.time)
+            Column(modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)) {
                 Text(
-                    "今天想聊点什么？",
+                    buildAnnotatedString {
+                        append(greet + "，我是")
+                        withStyle(SpanStyle(color = ChampagneGold, fontWeight = FontWeight.SemiBold)) {
+                            append(" 随身助手")
+                        }
+                    },
+                    style = MaterialTheme.typography.headlineSmall
+                )
+                Text(
+                    dateText + " · 今天想聊点什么？",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp)
                 )
             }
         }

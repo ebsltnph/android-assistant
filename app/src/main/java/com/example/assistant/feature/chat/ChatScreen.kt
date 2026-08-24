@@ -4,15 +4,20 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,6 +25,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -35,6 +41,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,12 +55,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.assistant.AssistantApplication
 import com.example.assistant.core.ui.RichMessageText
 
@@ -114,13 +125,25 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // 空状态英雄区：玻璃圆盘 + 气泡吉祥物
+                Box(
+                    modifier = Modifier
+                        .size(88.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.06f))
+                        .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("🫧", fontSize = 38.sp)
+                }
+                Spacer(Modifier.height(16.dp))
                 Text("你好，我是随身助手", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "直接打字提问，或点键盘上的麦克风图标语音输入。\n也可以说「记录…」「提醒我…」「识屏…」，我会自动识别。\n点 + 可以上传图片一起分析。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 32.dp)
+                    modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 8.dp)
                 )
             }
         } else {
@@ -184,34 +207,54 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             }
         }
 
-        OutlinedTextField(
-            value = input,
-            onValueChange = { vm.setInput(it) },
-            placeholder = { Text("问问助手…") },
-            trailingIcon = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 上传图片（附件模式，与文字一起发给识屏模型）
-                    IconButton(
-                        onClick = {
-                            pickImageLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
-                        enabled = !isStreaming
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = "添加图片")
-                    }
-                    IconButton(
-                        onClick = { vm.send() },
-                        enabled = !isStreaming
-                    ) {
-                        Icon(Icons.Filled.Send, contentDescription = "发送")
-                    }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // 上传图片（附件模式，与文字一起发给识屏模型）
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f)
+            ) {
+                IconButton(
+                    onClick = {
+                        pickImageLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    enabled = !isStreaming
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = "添加图片", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-            },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-            maxLines = 5
-        )
+            }
+            OutlinedTextField(
+                value = input,
+                onValueChange = { vm.setInput(it) },
+                placeholder = { Text("问问助手…") },
+                shape = RoundedCornerShape(22.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFFE4B863).copy(alpha = 0.55f),
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                ),
+                modifier = Modifier.weight(1f),
+                maxLines = 5
+            )
+            // 发送：有内容时点亮香槟金
+            val canSend = !isStreaming && (input.isNotBlank() || pendingImage != null)
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = if (canSend) Color(0xFFE4B863)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f)
+            ) {
+                IconButton(onClick = { vm.send() }, enabled = canSend) {
+                    Icon(
+                        Icons.Filled.Send, contentDescription = "发送",
+                        tint = if (canSend) Color(0xFF1A1300) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
         Text(
             "💡 点键盘上的麦克风图标可直接语音输入",
             style = MaterialTheme.typography.labelSmall,
@@ -235,17 +278,37 @@ private fun MessageBubble(
     ) {
         // 气泡 + 外侧操作按钮：用户消息按钮在右下，助手消息按钮在左下
         Column(horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
+            // 不对称圆角：靠近发言者一侧的底角收紧，形成「说话」的方向感
+            val bubbleShape = RoundedCornerShape(
+                topStart = 18.dp, topEnd = 18.dp,
+                bottomEnd = if (isUser) 6.dp else 18.dp,
+                bottomStart = if (isUser) 18.dp else 6.dp
+            )
             Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isUser) {
-                        MaterialTheme.colorScheme.primaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    }
+                shape = bubbleShape,
+                colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                border = BorderStroke(
+                    1.dp,
+                    if (isUser) Color(0xFFE4B863).copy(alpha = 0.38f)
+                    else Color.White.copy(alpha = 0.13f)
                 ),
                 modifier = Modifier.widthIn(max = 320.dp)
             ) {
-                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Column(
+                    modifier = Modifier
+                        .background(
+                            if (isUser) Brush.linearGradient(
+                                listOf(
+                                    Color(0xFFE4B863).copy(alpha = 0.20f),
+                                    Color(0xFFE4B863).copy(alpha = 0.11f)
+                                )
+                            )
+                            else Brush.verticalGradient(
+                                listOf(Color.White.copy(alpha = 0.085f), Color.White.copy(alpha = 0.05f))
+                            )
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
                     // 消息附带图片（识屏截图 / 上传图片）
                     msg.image?.let {
                         Image(

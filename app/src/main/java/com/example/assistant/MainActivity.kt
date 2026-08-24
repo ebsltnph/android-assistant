@@ -11,6 +11,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -35,7 +37,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -53,6 +57,7 @@ import com.example.assistant.feature.settings.SettingsScreen
 import com.example.assistant.core.vision.ScreenSenseStarter
 import com.example.assistant.tiles.ScreenSenseTileService
 import com.example.assistant.ui.theme.AssistantTheme
+import com.example.assistant.ui.theme.NightBackdrop
 
 /** 底部导航的五个主页面 */
 enum class MainTab(
@@ -97,7 +102,11 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             AssistantTheme {
-                AssistantApp()
+                // 环境光背景铺在最底层：玻璃卡片/半透明导航栏都能透出光晕层次
+                Box(Modifier.fillMaxSize()) {
+                    NightBackdrop(Modifier.matchParentSize())
+                    AssistantApp()
+                }
                 // 提醒通知点击 → 确认弹窗（确认后才停止 5 分钟重复通知）
                 ReminderConfirmDialog(app = container)
             }
@@ -300,8 +309,13 @@ fun AssistantApp() {
     val currentTab by AppSharedState.currentTab.collectAsState()
 
     Scaffold(
+        // 容器透明：让环境光背景透出来；导航栏半透明玻璃感
+        containerColor = Color.Transparent,
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                containerColor = Color(0xFF0B1322).copy(alpha = 0.72f),
+                tonalElevation = 0.dp
+            ) {
                 MainTab.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = currentTab == tab,
