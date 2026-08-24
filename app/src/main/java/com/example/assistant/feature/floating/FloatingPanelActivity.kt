@@ -95,6 +95,7 @@ import com.example.assistant.core.vision.ScreenSenseStarter
 import com.example.assistant.di.AppContainer
 import com.example.assistant.feature.chat.ChatUiMessage
 import com.example.assistant.feature.chat.ChatViewModel
+import com.example.assistant.feature.chat.MsgSegment
 import com.example.assistant.ui.theme.AssistantTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -673,51 +674,49 @@ private fun MessageBubble(
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
-                // 思考过程：默认收起只显示摘要，点击展开/收起（与聊天页一致）
-                if (msg.thinking.isNotBlank()) {
-                    var thinkingExpanded by remember { mutableStateOf(false) }
-                    Column(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { thinkingExpanded = !thinkingExpanded }
-                            .padding(vertical = 2.dp)
-                    ) {
-                        Text(
-                            if (thinkingExpanded) "💭 思考过程（点击收起）" else "💭 思考过程（点击展开）",
-                            fontSize = 11.sp,
-                            color = Color.White.copy(alpha = 0.45f)
-                        )
-                        if (thinkingExpanded) {
-                            SelectionContainer {
-                                Text(
-                                    msg.thinking,
-                                    fontSize = 11.sp,
-                                    color = Color.White.copy(alpha = 0.45f)
-                                )
+                if (msg.segments.isNotEmpty()) {
+                    // 多轮工具回复：思考块/正文段/工具执行行按真实使用顺序渲染（与聊天页一致）
+                    msg.segments.forEachIndexed { si, seg ->
+                        when (seg) {
+                            is MsgSegment.Think -> ThinkingBlock(
+                                emoji = "💭",
+                                text = seg.text,
+                                showCursor = msg.streaming && si == msg.segments.lastIndex
+                            )
+                            is MsgSegment.Text -> if (seg.text.isNotEmpty()) {
+                                SelectionContainer {
+                                    RichMessageText(
+                                        text = seg.text,
+                                        streaming = msg.streaming && si == msg.segments.lastIndex,
+                                        style = TextStyle(
+                                            fontSize = 14.sp,
+                                            lineHeight = 19.sp,
+                                            color = Color.White.copy(alpha = 0.92f)
+                                        )
+                                    )
+                                }
                             }
-                        } else {
-                            SelectionContainer {
-                                Text(
-                                    msg.thinking.take(60) + (if (msg.thinking.length > 60) "…" else ""),
-                                    fontSize = 11.sp,
-                                    color = Color.White.copy(alpha = 0.45f)
-                                )
-                            }
+                            is MsgSegment.Tools -> ToolsStatusLine(seg.labels)
                         }
+                        if (si != msg.segments.lastIndex) Spacer(Modifier.height(4.dp))
                     }
-                    Spacer(Modifier.height(2.dp))
-                }
-                // 富文本渲染：数学公式 + 基础 Markdown（与聊天页一致，同用 core.ui.RichMessageText）
-                SelectionContainer {
-                    RichMessageText(
-                        text = msg.text,
-                        streaming = msg.streaming,
-                        style = TextStyle(
-                            fontSize = 14.sp,
-                            lineHeight = 19.sp,
-                            color = Color.White.copy(alpha = 0.92f)
+                } else {
+                    // 单段消息：旧字段渲染（思考过程默认收起只显示摘要，点击展开/收起）
+                    if (msg.thinking.isNotBlank()) {
+                        ThinkingBlock(emoji = "💭", text = msg.thinking, showCursor = msg.streaming && msg.text.isEmpty())
+                    }
+                    // 富文本渲染：数学公式 + 基础 Markdown（与聊天页一致，同用 core.ui.RichMessageText）
+                    SelectionContainer {
+                        RichMessageText(
+                            text = msg.text,
+                            streaming = msg.streaming,
+                            style = TextStyle(
+                                fontSize = 14.sp,
+                                lineHeight = 19.sp,
+                                color = Color.White.copy(alpha = 0.92f)
+                            )
                         )
-                    )
+                    }
                 }
             }
         }
@@ -730,6 +729,43 @@ private fun MessageBubble(
             )
         }
     }
+}
+
+/** 可折叠思考块（分段时间线用，浮动界面配色；showCursor=流式进行中且是最后一个片段） */
+@Composable
+private fun ThinkingBlock(emoji: String, text: String, showCursor: Boolean) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { expanded = !expanded }
+            .padding(vertical = 2.dp)
+    ) {
+        Text(
+            if (expanded) "$emoji 思考过程（点击收起）" else "$emoji 思考过程（点击展开）",
+            fontSize = 11.sp,
+            color = Color.White.copy(alpha = 0.45f)
+        )
+        val shown = if (expanded) text + if (showCursor) "▍" else ""
+        else text.take(60) + (if (text.length > 60) "…" else "")
+        SelectionContainer {
+            Text(
+                shown,
+                fontSize = 11.sp,
+                color = Color.White.copy(alpha = 0.45f)
+            )
+        }
+    }
+}
+
+/** 工具执行状态行（气泡内的「🔧 …」小字） */
+@Composable
+private fun ToolsStatusLine(labels: List<String>) {
+    Text(
+        "🔧 " + labels.joinToString("、"),
+        fontSize = 12.sp,
+        color = Color.White.copy(alpha = 0.55f)
+    )
 }
 
 /** 气泡侧边的操作按钮列（贴底部）：复制；重做（仅最后一条助手回复） */

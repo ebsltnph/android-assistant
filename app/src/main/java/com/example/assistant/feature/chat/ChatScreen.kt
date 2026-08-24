@@ -257,47 +257,42 @@ private fun MessageBubble(
                                 .background(MaterialTheme.colorScheme.surface)
                         )
                     }
-                    // 思考过程：默认收起只显示摘要，点击展开/收起（思考可能很长）
-                    if (msg.thinking.isNotEmpty()) {
-                        var thinkingExpanded by remember { mutableStateOf(false) }
-                        Column(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable { thinkingExpanded = !thinkingExpanded }
-                                .padding(vertical = 2.dp)
-                        ) {
-                            Text(
-                                if (thinkingExpanded) "🧠 思考过程（点击收起）" else "🧠 思考过程（点击展开）",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            if (thinkingExpanded) {
-                                SelectionContainer {
-                                    Text(
-                                        msg.thinking + if (msg.streaming && msg.text.isEmpty()) "▍" else "",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                    if (msg.segments.isNotEmpty()) {
+                        // 多轮工具回复：思考块/正文段/工具执行行按真实使用顺序渲染
+                        msg.segments.forEachIndexed { si, seg ->
+                            when (seg) {
+                                is MsgSegment.Think -> ThinkingBlock(
+                                    emoji = "🧠",
+                                    text = seg.text,
+                                    showCursor = msg.streaming && si == msg.segments.lastIndex
+                                )
+                                is MsgSegment.Text -> if (seg.text.isNotEmpty()) {
+                                    SelectionContainer {
+                                        RichMessageText(
+                                            text = seg.text,
+                                            streaming = msg.streaming && si == msg.segments.lastIndex,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
                                 }
-                            } else {
-                                SelectionContainer {
-                                    Text(
-                                        msg.thinking.take(60) + (if (msg.thinking.length > 60) "…" else ""),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
+                                is MsgSegment.Tools -> ToolsStatusLine(seg.labels)
                             }
                         }
-                    }
-                    if (msg.text.isNotEmpty()) {
-                        // 富文本渲染：数学公式 + 基础 Markdown（加粗/斜体/代码/标题/列表）
-                        SelectionContainer {
-                            RichMessageText(
-                                text = msg.text,
-                                streaming = msg.streaming,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
+                    } else {
+                        // 单段消息（视觉回复/命令提示等）：旧字段渲染
+                        // 思考过程：默认收起只显示摘要，点击展开/收起（思考可能很长）
+                        if (msg.thinking.isNotEmpty()) {
+                            ThinkingBlock(emoji = "🧠", text = msg.thinking, showCursor = msg.streaming && msg.text.isEmpty())
+                        }
+                        if (msg.text.isNotEmpty()) {
+                            // 富文本渲染：数学公式 + 基础 Markdown（加粗/斜体/代码/标题/列表）
+                            SelectionContainer {
+                                RichMessageText(
+                                    text = msg.text,
+                                    streaming = msg.streaming,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
                         }
                     }
                 }
@@ -330,4 +325,41 @@ private fun MessageBubble(
             }
         }
     }
+}
+
+/** 可折叠思考块（分段时间线用；showCursor=流式进行中且是最后一个片段） */
+@Composable
+private fun ThinkingBlock(emoji: String, text: String, showCursor: Boolean) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .clickable { expanded = !expanded }
+            .padding(vertical = 2.dp)
+    ) {
+        Text(
+            if (expanded) "$emoji 思考过程（点击收起）" else "$emoji 思考过程（点击展开）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        val shown = if (expanded) text + if (showCursor) "▍" else ""
+        else text.take(60) + (if (text.length > 60) "…" else "")
+        SelectionContainer {
+            Text(
+                shown,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 工具执行状态行（气泡内的「🔧 …」小字） */
+@Composable
+private fun ToolsStatusLine(labels: List<String>) {
+    Text(
+        "🔧 " + labels.joinToString("、"),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
 }

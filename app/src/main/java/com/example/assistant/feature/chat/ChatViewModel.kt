@@ -38,8 +38,25 @@ data class ChatUiMessage(
     val thinking: String = "",
     val streaming: Boolean = false,
     /** 消息附带的图片缩略图（识屏截图 / 上传的图片），空表示无图 */
-    val image: Bitmap? = null
+    val image: Bitmap? = null,
+    /** 分段内容（按真实时序：思考块/正文段/工具执行行）；非空时优先于 text/thinking 渲染 */
+    val segments: List<MsgSegment> = emptyList()
 )
+
+/**
+ * 助手消息的一个片段（多轮工具回复按真实使用顺序排列）：
+ * 思考块与正文段各自成段、工具执行行夹在中间，界面按列表顺序原样渲染。
+ */
+sealed interface MsgSegment {
+    /** 推理模型的一段思考过程（可折叠显示） */
+    data class Think(val text: String) : MsgSegment
+
+    /** 一段正文（流式文本；轮次结束时由 Agent 剥掉调用标记后的干净正文） */
+    data class Text(val text: String) : MsgSegment
+
+    /** 一次工具执行批（气泡里的「🔧 …」状态行） */
+    data class Tools(val labels: List<String>) : MsgSegment
+}
 
 /** 待发送附件：缩略图（附件栏显示）+ base64（发送时给视觉模型） */
 data class PendingImage(
@@ -417,18 +434,45 @@ class ChatViewModel(
      * - Final：替换为最终回答
      */
     private suspend fun streamReply(messages: List<ChatMessage>, messageId: Long): StreamOutcome {
-        var base = ""      // 已定格正文（各轮保留正文的累加）
+        var base = ""      // 已定格正文（各轮保留正文的累加；维护 text 字段供复制/滚动）
         var roundAcc = ""  // 本轮流式文本累计
-        var thinking = ""
+        var textThisRound = false  // 本轮是否流出过正文（RoundSettled 时定位要清洗的段）
         var exchanges: List<Pair<String, String>> = emptyList()
         var toolNames: List<String> = emptyList()
         var finalAnswer: String? = null
+        // 分段时间线：思考块/正文段/工具执行行按真实顺序排列，界面原样渲染
+        val segments = mutableListOf<MsgSegment>()
+
+        fun appendThink(delta: String) {
+            if (delta.isEmpty()) return
+            val last = segments.lastOrNull()
+            if (last is MsgSegment.Think) segments[segments.lastIndex] = last.copy(text = last.text + delta)
+            else segments += MsgSegment.Think(delta)
+        }
+
+        fun appendText(delta: String) {
+            if (delta.isEmpty()) return
+            textThisRound = true
+            val last = segments.lastOrNull()
+            if (last is MsgSegment.Text) segments[segments.lastIndex] = last.copy(text = last.text + delta)
+            else segments += MsgSegment.Text(delta)
+        }
+
+        fun snapshot(textShown: String) {
+            updateMessage(messageId) {
+                it.copy(text = textShown, segments = segments.toList())
+            }
+        }
+
         try {
             agent.chatReplyFlow(messages).collect { ev ->
                 when (ev) {
                     is Agent.ReplyEvent.Delta -> {
+                        appendThink(ev.thinking)
+                        appendText(ev.text)
                         roundAcc += ev.text
-                        if (ev.thinking.isNotEmpty()) thinking += ev.thinking
+                        val shown = (if (base.isEmpty()) "" else "$base\n\n") + roundAcc
+                        snapshot(shown)
                     }
                     is Agent.ReplyEvent.RoundSettled -> {
                         base = when {
@@ -436,32 +480,37 @@ class ChatViewModel(
                             ev.prose.isEmpty() -> base
                             else -> "$base\n\n${ev.prose}"
                         }
+                        // 本轮流出的正文段：替换为剥掉调用标记后的干净正文（纯调用轮没有正文段）
+                        if (textThisRound) {
+                            val li = segments.indexOfLast { it is MsgSegment.Text }
+                            if (li >= 0) {
+                                if (ev.prose.isEmpty()) segments.removeAt(li)
+                                else segments[li] = MsgSegment.Text(ev.prose)
+                            }
+                        }
+                        textThisRound = false
                         roundAcc = ""
-                        // 思考过程跨轮累加不清空（多轮工具的推理全程可见）
+                        snapshot(base)
                     }
                     is Agent.ReplyEvent.ToolsRunning -> {
-                        // 状态行追加在已定格正文之后（不覆盖前面轮次的内容），思考保留展示
+                        segments += MsgSegment.Tools(ev.labels)
                         val status = "🔧 " + ev.labels.joinToString("、") + " …"
-                        val shown = if (base.isEmpty()) status else "$base\n\n$status"
-                        updateMessage(messageId) { it.copy(text = shown, thinking = thinking) }
+                        snapshot(if (base.isEmpty()) status else "$base\n\n$status")
                     }
                     is Agent.ReplyEvent.Final -> {
                         exchanges = ev.exchanges
                         toolNames = ev.toolNames
                         finalAnswer = ev.answer
-                        // 最终回答保留完整思考过程（跨所有工具轮累计）
-                        updateMessage(messageId) { it.copy(text = ev.answer, thinking = thinking) }
+                        snapshot(ev.answer)
                     }
-                }
-                if (ev is Agent.ReplyEvent.Delta) {
-                    val shown = (if (base.isEmpty()) "" else "$base\n\n") + roundAcc
-                    updateMessage(messageId) { it.copy(text = shown, thinking = thinking) }
                 }
             }
             updateMessage(messageId) { it.copy(streaming = false) }
         } catch (e: Exception) {
-            val tail = "\n\n[出错：${e.message}]"
-            updateMessage(messageId) { it.copy(text = base + roundAcc + tail, streaming = false) }
+            val tail = "[出错：${e.message}]"
+            appendText(tail)
+            snapshot((base + "\n\n" + roundAcc).trim())
+            updateMessage(messageId) { it.copy(streaming = false) }
         }
         // 最终回答以 Final 事件为准；异常中断时退回已定格正文+本轮累计
         val answer = finalAnswer ?: (base + "\n\n" + roundAcc).trim()
@@ -508,8 +557,8 @@ class ChatViewModel(
         scope.launch {
             _isStreaming.value = true
             _error.value = null
-            // 清空该条并重新流式
-            updateMessage(messageId) { it.copy(text = "", thinking = "", streaming = true) }
+            // 清空该条并重新流式（分段时间线一并清空重建）
+            updateMessage(messageId) { it.copy(text = "", thinking = "", streaming = true, segments = emptyList()) }
             val outcome = streamReply(messages, messageId)
             // 会话尾部同步替换为该新回复（中间工具轮已在上次回复时入历史，这里只换最后的回答）
             session.replaceLastAssistant(outcome.answer)
