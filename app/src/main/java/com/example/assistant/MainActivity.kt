@@ -25,6 +25,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,6 +58,7 @@ import com.example.assistant.feature.settings.SettingsScreen
 import com.example.assistant.core.vision.ScreenSenseStarter
 import com.example.assistant.tiles.ScreenSenseTileService
 import com.example.assistant.ui.theme.AssistantTheme
+import com.example.assistant.ui.theme.ChampagneGold
 import com.example.assistant.ui.theme.NightBackdrop
 
 /** 底部导航的五个主页面 */
@@ -321,7 +323,14 @@ fun AssistantApp() {
                         selected = currentTab == tab,
                         onClick = { AppSharedState.currentTab.value = tab },
                         icon = { Icon(tab.icon, contentDescription = tab.label) },
-                        label = { Text(tab.label) }
+                        label = { Text(tab.label) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = ChampagneGold,
+                            selectedTextColor = ChampagneGold,
+                            indicatorColor = ChampagneGold.copy(alpha = 0.15f),
+                            unselectedIconColor = Color(0xFF9FACC6),
+                            unselectedTextColor = Color(0xFF9FACC6)
+                        )
                     )
                 }
             }

@@ -16,10 +16,10 @@ val NightSurfaceVariant = Color(0xFF16233A)
 /** 再亮一档（surfaceContainerHighest 等） */
 val NightSurfaceHigh = Color(0xFF1C2B47)
 
-/** 主文字（近白） */
-val NightOnBackground = Color(0xFFE8EDF7)
-/** 次要文字（灰蓝） */
-val NightOnSurfaceVariant = Color(0xFF8A97AE)
+/** 主文字（近白，2026-08-24 提亮一档改善深底可读性） */
+val NightOnBackground = Color(0xFFEFF3FC)
+/** 次要文字（灰蓝；原 8A97AE 在低亮度下近黑，提亮保证对比度） */
+val NightOnSurfaceVariant = Color(0xFFADB9D2)
 
 /** 香槟金强调色（全 App 唯一强调色） */
 val ChampagneGold = Color(0xFFE4B863)
