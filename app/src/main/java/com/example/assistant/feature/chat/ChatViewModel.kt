@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import com.example.assistant.core.agent.Agent
 import com.example.assistant.core.agent.Agent.AgentResult
+import com.example.assistant.core.agent.Agent.ReplyEvent
 import com.example.assistant.core.agent.AssistantIntent
 import com.example.assistant.core.agent.DiarySummarizer
 import com.example.assistant.core.agent.EventExtractor
@@ -53,6 +54,13 @@ data class ChatUiMessage(
 data class PendingImage(
     val thumbnail: Bitmap,
     val base64: String
+)
+
+/** 一轮流式回复的产出：最终回答 + 搜索中间轮记录（写回会话历史，后续追问可见） */
+private data class StreamOutcome(
+    val answer: String,
+    /** (模型搜索请求原文, 发回的搜索结果消息) 列表；未触发搜索时为空 */
+    val exchanges: List<Pair<String, String>> = emptyList()
 )
 
 /**
@@ -312,7 +320,7 @@ class ChatViewModel(
         }
     }
 
-    /** 普通文字消息：搜索判断 + 路由 + 流式回复（原有逻辑） */
+    /** 普通文字消息：路由 + 流式回复（是否搜索、搜什么由主模型在回复中决定，见 Agent.chatReplyFlow） */
     private suspend fun sendText(text: String) {
         // 秘密功能：记录用户发出的内容（数字分身素材）
         conversationLog.log(text)
@@ -340,8 +348,13 @@ class ChatViewModel(
                 // 记住请求消息，供"重新生成"复用
                 regenerateMessages[streamingId] = result.messages
                 append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
-                val answer = streamReply(result.messages, streamingId)
-                session.addAssistant(answer)
+                val outcome = streamReply(result.messages, streamingId)
+                // 搜索中间轮写回会话历史：后续追问时模型能看到搜过什么、拿到过哪些结果
+                outcome.exchanges.forEach { (request, resultsMsg) ->
+                    session.addAssistant(request)
+                    session.addUser(resultsMsg)
+                }
+                session.addAssistant(outcome.answer)
                 // 记录类请求：**回复完成后**后台用「最近几轮对话 + 本次助手回复」
                 // LLM 总结入日记——总结模型能看到主聊天模型的回复与上下文，
                 // 避免孤立总结丢上下文（如「记录一下刚才说的方案」单独看没有信息）；
@@ -388,28 +401,41 @@ class ChatViewModel(
     }
 
     /**
-     * 收集流式回复，实时更新消息文本，返回最终内容。
-     * 思考过程与正式回答分开积累、同时展示（思考部分带标注）。
+     * 收集一轮完整回复（含主模型驱动的搜索循环），实时更新消息文本。
+     * 思考过程与正式回答分开积累、同时展示（思考部分带标注）；
+     * 搜索期间气泡显示「正在搜索…」状态，最终替换为正式回答（含搜索页脚）。
      */
-    private suspend fun streamReply(messages: List<ChatMessage>, messageId: Long): String {
-        var acc = ""
+    private suspend fun streamReply(messages: List<ChatMessage>, messageId: Long): StreamOutcome {
+        var shown = ""      // 气泡当前显示的文本
+        var roundAcc = ""   // 本轮流式文本累计（每轮搜索后重置）
         var thinking = ""
+        var exchanges: List<Pair<String, String>> = emptyList()
         try {
-            agent.chatStream(messages).collect { chunk ->
-                val delta = chunk.choices.firstOrNull()?.delta
-                val text = delta?.textContent.orEmpty()
-                val think = delta?.reasoningContent.orEmpty()
-                if (text.isNotEmpty()) acc += text
-                if (think.isNotEmpty()) thinking += think
-                updateMessage(messageId) { it.copy(text = acc, thinking = thinking) }
+            agent.chatReplyFlow(messages).collect { ev ->
+                when (ev) {
+                    is ReplyEvent.Delta -> {
+                        roundAcc += ev.text
+                        if (ev.thinking.isNotEmpty()) thinking += ev.thinking
+                        shown = roundAcc
+                    }
+                    is ReplyEvent.Searching -> {
+                        roundAcc = ""
+                        shown = "🔍 正在搜索：" + ev.queries.joinToString("、") + " …"
+                        thinking = ""
+                    }
+                    is ReplyEvent.Final -> {
+                        shown = ev.answer
+                        exchanges = ev.exchanges
+                    }
+                }
+                updateMessage(messageId) { it.copy(text = shown, thinking = thinking) }
             }
             updateMessage(messageId) { it.copy(streaming = false) }
         } catch (e: Exception) {
-            val tail = "\n\n[出错：${e.message}]"
-            acc += tail
-            updateMessage(messageId) { it.copy(text = acc, streaming = false) }
+            shown += "\n\n[出错：${e.message}]"
+            updateMessage(messageId) { it.copy(text = shown, streaming = false) }
         }
-        return acc
+        return StreamOutcome(shown, exchanges)
     }
 
     /** 视觉模型流式回复（附件图片），失败信息附到消息尾部 */
@@ -450,9 +476,10 @@ class ChatViewModel(
             _error.value = null
             // 清空该条并重新流式
             updateMessage(messageId) { it.copy(text = "", thinking = "", streaming = true) }
-            val answer = streamReply(messages, messageId)
-            // 会话尾部同步替换为该新回复（保持后续上下文一致）
-            session.replaceLastAssistant(answer)
+            val outcome = streamReply(messages, messageId)
+            // 会话尾部同步替换为该新回复（保持后续上下文一致；
+            // 中间搜索轮已在上次回复时入会话历史，这里只换最后的回答）
+            session.replaceLastAssistant(outcome.answer)
             _isStreaming.value = false
         }
     }
@@ -587,12 +614,19 @@ class ChatViewModel(
      * 记录总结用的对话上下文：**只取最近一轮**（本次用户消息 + 本次助手回复）。
      * 用户话题可能非常跳跃，多轮上下文容易把记录带偏（记到不想记的内容），
      * 所以只用本轮；助手回复能让总结模型看到主聊天模型的确认/回放内容。
+     * 注意按角色取最后一条而非 takeLast(2)：主模型搜索时中间会多出
+     * 「[搜索]请求/[搜索结果]」两条消息，盲取尾部会把结果原文当对话内容。
      * 调用时机：必须在 session.addAssistant(回复) 之后（见 sendText/视觉回复后）。
      */
-    private fun diaryContext(): String =
-        session.all.takeLast(2).joinToString("\n") { msg ->
-            "${if (msg.role == "user") "用户" else "助手"}：${msg.textContent}"
-        }
+    private fun diaryContext(): String {
+        val msgs = session.all
+        val lastUser = msgs.lastOrNull { it.role == "user" }
+        val lastAssistant = msgs.lastOrNull { it.role == "assistant" }
+        return listOfNotNull(
+            lastUser?.let { "用户：${it.textContent}" },
+            lastAssistant?.let { "助手：${it.textContent}" }
+        ).joinToString("\n")
+    }
 
     /** 后台静默抽取长期记忆（带重要性过滤，评分不足的不存），失败不打扰用户 */
     private fun extractMemoryInBackground(text: String) {

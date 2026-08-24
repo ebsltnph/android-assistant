@@ -913,7 +913,7 @@ private fun PromptsAdvancedPage(
         item { SubPageHeader("提示词高级设置", onBack) }
         item {
             Text(
-                "低频提示词（记忆抽取 / 小结 / 分类 / 时间解析 / 事件 / 简报 / 搜索判断）。可随时编辑或恢复默认。",
+                "低频提示词（记忆抽取 / 小结 / 分类 / 时间解析 / 事件 / 简报）。可随时编辑或恢复默认。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

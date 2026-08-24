@@ -74,7 +74,8 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 - **单一 API 契约**：所有功能复用同一套 OpenAI 兼容接口；`ProviderRegistry` 按能力（对话/识屏/分类）解析提供商档案，按 baseUrl 缓存 Retrofit 实例
 - **提示词缓存结构**（`PromptBuilder` 保证）：
   `messages[0]` 静态系统提示词（缓存）→ `messages[1]` 长期记忆块（缓存）→ `messages[2]` 当前上下文（日期时间等易变内容，**绝不放系统提示词里**）→ `messages[3..n]` 对话尾部（截断只删尾部）
-- **意图路由**：关键词快速路由（记录/提醒/识屏/搜索）→ LLM 分类兜底 → 聊天兜底
+- **意图路由**：关键词快速路由（记录/提醒/识屏）→ LLM 分类兜底 → 聊天兜底
+- **对话搜索（2026-08-24 架构重构）**：是否搜索、搜什么词由**主模型在回复中自主决定**（不再单独调用判断模型），一轮回答内最多补搜 3 次——协议在 PromptBuilder 外壳，循环见 Agent.chatReplyFlow
 
 ## 开发阶段状态
 
@@ -87,7 +88,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - [x] P3 高级设置（2026-08-01）：**思考开关 + 思考深度**（设置页「高级设置」分区；ProviderRegistry.thinkingParams() 统一应用，ChatRequest 加 thinking/reasoning_effort 字段，只在该项非"default"时发送；用户实测 v4 flash 关思考质量不差、速度更快）
 - [x] **P4 提醒 + 对话搜索 + 事件监控 + 清晨简报**（2026-08-01 完成并真机验证）
   - P4 增强（2026-08-01）：**提醒需手动确认**——提醒触发后通知可点击（进 App 弹「提醒确认」窗），**未确认每 5 分钟重复通知**（ReminderScheduler.scheduleAckRepeat 独立 requestCode；ReminderReceiver 首次触发写日记/重排 + **续排 5min——重复触发分支也要续排，否则只重复一次**；确认后 ack + cancelAckRepeat + 一次性 markFired）；DB v4（ackedAtEpochMillis 列）；僵尸清理只清已确认的；启动/Boot 恢复未确认提醒的重复闹钟；重复提醒每天触发后需重新确认
-  - **对话搜索**：SearchClient 接口 + Tavily（keyless 免注册兜底/填 key 1000 次每月）；全 LLM 判断触发（SearchJudger，所有聊天消息先判断）；结果注入 PromptBuilder extraContext（不破坏缓存前缀）
+  - **对话搜索**（原方案已被 2026-08-24 主模型自主搜索取代，见下方专条）：SearchClient 接口 + Tavily（keyless 免注册兜底/填 key 1000 次每月）沿用至今；原 SearchJudger「每条消息先单独 LLM 判断 + extraContext 注入」已删除
   - **定时提醒**：聊天"提醒我X"→ ReminderTimeParser **结构化解析+本地算时间戳**（模型日期算术不可靠，曾算出 7月3日）；AlarmManager 精确闹钟（未授权 setWindow 兜底+提醒页引导授权）；重复提醒（daily/weekly 触发后重排）；BootReceiver 开机重排；**触发自动写日记**（source=reminder）；僵尸提醒自动清理（启动时）
   - **事件监控**：EventPollWorker 周期 6h（事件级 pollHours 过滤）；Tavily news 搜索 + LLM 命中判断（有 conditionKeywords 走本地关键词）；24h 通知去重；**自定义规则 customRule + 限定域名 includeDomains**（Room v3 迁移；聊天创建自动提取，本地 URL 正则兜底）；周期数字输入框（1-168h）；提醒页「立即检查」
   - **清晨简报**：MorningBriefingWorker（默认 7:30 分钟可配）；**昨日**小结（严格取昨天）+ 今日提醒 → LLM 组装；**落库首页随时可看** + 通知点击弹窗
@@ -182,6 +183,14 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **设置缓存直读**：开关值启动时缓存进 AppContainer.screenSenseRegionEnabled（@Volatile，截屏服务在 handlerThread 同步读）；设置页改动同时写 DataStore 和缓存（不等重启）
   - **⚠️ Compose 绘制溢出坑（真机实锤）**：拖动坐标钳制正确 ≠ 视觉不越界——角手柄方块/描边会画出图像边界约一个手柄宽度（约 20px）。上下方向恰好贴画布边被裁掉看不出来，左右方向截图等比缩小后两侧有留白就露出来了（用户看到“横向超出一点、竖向正常”的根因）。修复=整个覆盖层用 clipRect(ox, oy, ox+dispW, oy+dispH) 裁剪到图片显示矩形内
   - **Manifest**：RegionPickerActivity 与授权中转 Activity 同款配置（Translucent 主题/taskAffinity=""/excludeFromRecents/sensor/configChanges）；FGS 后台启动它与启动浮动界面同路径（SYSTEM_ALERT_WINDOW 豁免，荣耀实测可用）
+- [x] **对话搜索架构重构：主模型自主搜索（v1.4.x 功能，版本号未动不发版）**（2026-08-24，构建通过已装机待真机验证）
+  - **动机**：原方案「每条消息先由独立 SearchJudger 调用判断是否搜索 → 搜一次注入上下文」有两个根本缺陷——① 搜索决策不在主模型上（多一次 LLM 调用、判断与回答脱节）；② 一轮只搜一次，结果不够也无法补搜
+  - **新协议**：PromptBuilder 外壳后缀固定追加【联网搜索】协议（外壳永不变化→缓存前缀稳定，用户编辑提示词也删不掉）——需要实时信息时模型**只输出 `[搜索] 搜索词` 行**（可多行多个词）并停止；系统执行 Tavily 搜索后把结果以 `[搜索结果]` 开头的 user 消息接进对话再请求；结果不足可再次发起，**单次回复最多 3 轮**；超限后注入强制收尾指令（"已达上限请直接回答"）防死循环
+  - **循环实现**：Agent.chatReplyFlow(baseMessages): Flow<ReplyEvent>——Delta（流式增量）/Searching（正在搜索）/Final（最终回答+exchanges）三类事件；guard>8 双保险终止。**开头标记缓冲**：流式文本以 `[`/`[搜`/`[搜索`… 开头时暂不上屏（兼容全角 `［搜索］`），避免内部标记闪现在气泡里，流结束统一判定纯搜索请求（每行都匹配 SEARCH_LINE 正则才算）vs 正文
+  - **上下文连续性**：搜索中间轮（assistant `[搜索]…` + user `[搜索结果]…`）在回复完成后写回 Session 历史——后续追问模型能看到搜过什么、拿到过什么；diaryContext 相应改为按角色取最后一条（原来盲取 takeLast(2) 会把搜索结果原文当成对话喂给总结）
+  - **UI**：搜索期间气泡显示「🔍 正在搜索：词1、词2 …」，最终替换为正式回答（末尾附「🔍 已联网搜索：…」页脚）；ChatViewModel.streamReply 改为消费 ReplyEvent 流并返回 StreamOutcome(answer, exchanges)
+  - **删除**：SearchJudger.kt 整个类 + AppContainer 装配 + PromptStore.SEARCH_JUDGE 提示词条目（设置页高级提示词列表自动少一项）——每条消息省一次 LLM 判断调用；extraContext 注入通道随之下线（buildChatMessages 去掉该参数）
+  - **注意**：系统提示词外壳变化会使各厂商提示词缓存失效一次（之后重新稳定）；事件监控（EventPollWorker）的搜索路径不受影响，仍走自己的 Tavily+命中判断
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

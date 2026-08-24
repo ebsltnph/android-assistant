@@ -12,7 +12,6 @@ import com.example.assistant.core.agent.MemoryExtractor
 import com.example.assistant.core.agent.PeriodSummaryGenerator
 import com.example.assistant.core.agent.PromptBuilder
 import com.example.assistant.core.agent.ReminderTimeParser
-import com.example.assistant.core.agent.SearchJudger
 import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.backup.BackupManager
 import com.example.assistant.core.network.ProviderRegistry
@@ -115,9 +114,8 @@ class AppContainer(context: Context) {
     // ---- Agent 编排 ----
     val promptBuilder: PromptBuilder by lazy { PromptBuilder(promptStore) }
     val intentRouter: IntentRouter by lazy { IntentRouter(providerRegistry, promptStore) }
-    val searchJudger: SearchJudger by lazy { SearchJudger(providerRegistry, promptStore) }
     val agent: Agent by lazy {
-        Agent(providerRegistry, promptBuilder, intentRouter, searchJudger, searchClient)
+        Agent(providerRegistry, promptBuilder, intentRouter, searchClient)
     }
     val memoryExtractor: MemoryExtractor by lazy { MemoryExtractor(providerRegistry, promptStore) }
     val diarySummarizer: DiarySummarizer by lazy { DiarySummarizer(providerRegistry, promptStore) }
