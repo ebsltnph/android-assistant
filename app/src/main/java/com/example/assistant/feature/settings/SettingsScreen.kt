@@ -89,6 +89,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val assignments by vm.assignments.collectAsState()
     val testResult by vm.testResult.collectAsState()
     val floatingBallEnabled by vm.floatingBallEnabled.collectAsState()
+    val screenSenseRegionEnabled by vm.screenSenseRegionEnabled.collectAsState()
     val searchApiKey by vm.searchApiKey.collectAsState()
     val summaryMinute by vm.summaryMinute.collectAsState()
     val dailySummaryEnabled by vm.dailySummaryEnabled.collectAsState()
@@ -149,6 +150,12 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 onToggleFloatingBall = { on ->
                     vm.setFloatingBallEnabled(on)
                     if (on) FloatingBallService.start(context) else FloatingBallService.stop(context)
+                },
+                screenSenseRegionEnabled = screenSenseRegionEnabled,
+                onToggleScreenSenseRegion = { on ->
+                    vm.setScreenSenseRegionEnabled(on)
+                    // 同步更新 container 缓存：截屏服务直接读缓存，不等重启
+                    app.container.screenSenseRegionEnabled = on
                 }
             )
             SettingsSubPage.USER_GUIDE -> UsageGuidePage(
@@ -257,7 +264,9 @@ private fun SettingsMainList(
     onOpenOverlaySettings: () -> Unit,
     onShowBallHelp: () -> Unit,
     onEditPrompt: (PromptStore.PromptKey) -> Unit,
-    onToggleFloatingBall: (Boolean) -> Unit
+    onToggleFloatingBall: (Boolean) -> Unit,
+    screenSenseRegionEnabled: Boolean,
+    onToggleScreenSenseRegion: (Boolean) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -310,6 +319,27 @@ private fun SettingsMainList(
                         Text("悬浮窗权限：未开启", color = MaterialTheme.colorScheme.error)
                         TextButton(onClick = onOpenOverlaySettings) { Text("去开启") }
                     }
+                }
+            }
+        }
+
+        // ---- 2.5 识屏框选（v1.4.1）----
+        item {
+            GlassCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("识屏后框选区域", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            if (screenSenseRegionEnabled) "截屏后先拖动框选，只识别框内部分"
+                            else "关闭中：直接识别整个屏幕（截图即识别范围）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = screenSenseRegionEnabled,
+                        onCheckedChange = onToggleScreenSenseRegion
+                    )
                 }
             }
         }

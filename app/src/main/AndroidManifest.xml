@@ -117,6 +117,17 @@
             android:screenOrientation="sensor"
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
+        <!-- 识屏框选层（v1.4.1 可选功能）：截屏后显示整图供用户拖框，
+             确认后只识别框内区域。独立 task + 排除最近任务，与浮动界面同风格 -->
+        <activity
+            android:name=".service.RegionPickerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Assistant.Translucent"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:screenOrientation="sensor"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
         <!-- 提醒到点广播 -->
         <receiver
             android:name=".receiver.ReminderReceiver"

@@ -244,9 +244,9 @@ private enum class QuickAction(val label: String, val accent: Color) {
     CHAT("对话", Color(0xFFB0BEC5)),           // 蓝灰
 }
 
-/** 深墨夜景底色（glassmorphism 风格基底） */
-private val NightDeep = Color(0xFF060A13)
-private val NightBase = Color(0xFF0B1322)
+/** 深墨夜景底色（glassmorphism 风格基底；识屏框选层 RegionPicker 复用同款背景） */
+internal val NightDeep = Color(0xFF060A13)
+internal val NightBase = Color(0xFF0B1322)
 
 /** 浮动界面主界面：变暗 + 动态光晕 + 输出区 + 背景上的气泡与输入框 */
 @Composable
@@ -765,9 +765,10 @@ private fun BubbleActions(
 /**
  * 噪点蒙层：确定性伪随机细颗粒（无状态、不闪烁），
  * 蒙在变暗层上模拟毛玻璃的细腻质感。
+ * internal：识屏框选层（RegionPickerActivity）复用同款背景。
  */
 @Composable
-private fun NoiseLayer() {
+internal fun NoiseLayer() {
     Canvas(Modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
@@ -806,9 +807,10 @@ private data class GlowSpec(
  * - 大光斑偏暗（氛围铺底），小光斑偏亮（点睛）
  * - 运动：顺时针 / 逆时针沿边缘游走 + 屏幕内 Lissajous 曲线穿越（不贴边）
  * - 亮度呼吸 + 向内漂移，营造自然氛围光
+ * internal：识屏框选层（RegionPickerActivity）复用同款背景。
  */
 @Composable
-private fun EdgeGlow() {
+internal fun EdgeGlow() {
     val glows = listOf(
         GlowSpec(Color(0xFF64B5F6), 0.30f, 0.36f, 1.0f, 0.00f, GlowMotion.CLOCKWISE), // 蓝，大，顺
         GlowSpec(Color(0xFF4DD0E1), 0.33f, 0.22f, 1.7f, 0.13f, GlowMotion.CLOCKWISE), // 青，中，顺

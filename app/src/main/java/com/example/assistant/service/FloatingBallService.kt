@@ -78,11 +78,17 @@ class FloatingBallService : Service() {
                         AppContainer.PanelState.CAPTURING -> {
                             hideBall()
                             // 自愈：授权/截屏流程中断（如系统回收权限 Activity 未回调）
-                            // 时，60 秒后强制恢复悬浮球，避免状态卡死球永远不出现
+                            // 时，60 秒后强制恢复悬浮球，避免状态卡死球永远不出现。
+                            // v1.4.1 框选：选区层（RegionPickerActivity）显示期间心跳
+                            // 持续刷新——用户框选超过 60 秒属正常等待，继续延后自愈
                             scope.launch {
-                                kotlinx.coroutines.delay(60_000)
-                                if (container.panelState.value == AppContainer.PanelState.CAPTURING) {
+                                while (true) {
+                                    kotlinx.coroutines.delay(60_000)
+                                    if (container.panelState.value != AppContainer.PanelState.CAPTURING) break
+                                    val fresh = System.currentTimeMillis() - container.regionPickerHeartbeatAt < 15_000
+                                    if (fresh) continue   // 框选层还活着 → 再等一轮
                                     container.panelState.value = AppContainer.PanelState.HIDDEN
+                                    break
                                 }
                             }
                         }

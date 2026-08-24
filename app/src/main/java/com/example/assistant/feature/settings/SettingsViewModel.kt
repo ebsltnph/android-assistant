@@ -93,6 +93,15 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setFloatingBallEnabled(v) }
     }
 
+    // ---- v1.4.1：识屏框选 ----
+    /** 识屏后先弹选区层手动框选（**默认开** = 截屏后先框选再识别） */
+    val screenSenseRegionEnabled: StateFlow<Boolean> = settingsStore.screenSenseRegionEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setScreenSenseRegionEnabled(v: Boolean) {
+        viewModelScope.launch { settingsStore.setScreenSenseRegionEnabled(v) }
+    }
+
     // ---- 对话：聊天上下文长度（轮数，默认 10） ----
     val conversationMaxTurns: StateFlow<Int> = settingsStore.conversationMaxTurns
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 10)

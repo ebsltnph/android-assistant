@@ -82,6 +82,15 @@ class AssistantApplication : Application() {
             } catch (_: Exception) {
             }
         }
+        // v1.4.1 识屏框选：启动时把开关缓存进 container（截屏服务无 Compose 环境，
+        // 直接同步读缓存值；设置页改动会同步更新缓存，见 SettingsScreen）
+        appScope.launch {
+            try {
+                container.screenSenseRegionEnabled =
+                    container.settingsStore.screenSenseRegionEnabled.first()
+            } catch (_: Exception) {
+            }
+        }
         Notifier.ensureChannels(this)
         scheduleDailySummaryWithSetting()
         scheduleEventPoll()

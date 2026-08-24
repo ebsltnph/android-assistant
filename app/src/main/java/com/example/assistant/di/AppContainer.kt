@@ -60,6 +60,22 @@ class AppContainer(context: Context) {
     enum class PanelState { HIDDEN, PANEL_OPEN, CAPTURING }
     val panelState: MutableStateFlow<PanelState> = MutableStateFlow(PanelState.HIDDEN)
 
+    /**
+     * 识屏框选（v1.4.1）：截屏完成后先弹「选区层」让用户拖动画框，确认后只识别
+     * 框内区域。设置开关（screen_sense_region_enabled）在 Application 启动时缓存进来，
+     * 供截屏服务（无 Compose 环境）直接同步读取。
+     */
+    @Volatile
+    var screenSenseRegionEnabled: Boolean = true
+
+    /**
+     * 选区层心跳：RegionPickerActivity 显示期间由其协程周期刷新的时间戳。
+     * 截屏服务等待选区结果时若发现心跳停止（进程被杀后服务重建/Activity 意外消失），
+     * 自动放弃等待走整屏识别，避免识屏流程卡死。
+     */
+    @Volatile
+    var regionPickerHeartbeatAt: Long = 0L
+
     // ---- 存储 ----
     val secretStore: SecretStore by lazy { SecretStore(appContext) }
     val settingsStore: SettingsStore by lazy { SettingsStore(appContext) }

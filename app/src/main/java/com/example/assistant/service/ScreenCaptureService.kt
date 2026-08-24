@@ -148,8 +148,30 @@ class ScreenCaptureService : Service() {
         val container = (application as AssistantApplication).container
         // 取消「识屏准备中」提示（提醒关通知栏的）
         Notifier.cancelScreenSensePreparing(this)
-        val scaled = ImageUtils.scaleBitmap(bitmap)
         val dir = File(cacheDir, "screensense").apply { mkdirs() }
+        // v1.4.1 框选模式：设置开启时先弹「选区层」让用户拖框，
+        // 确认后由 RegionPickerActivity 裁剪并接续浮动界面（本服务到此结束）
+        if (container.screenSenseRegionEnabled) {
+            // 存**整张原图**（框选需要完整画面）；裁剪与缩放由选区层完成
+            val fullFile = File(dir, "region_pending_${System.currentTimeMillis()}.png")
+            try {
+                FileOutputStream(fullFile).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+            } catch (e: Exception) {
+                container.panelState.value = AppContainer.PanelState.HIDDEN
+                stopSelf()
+                return
+            }
+            releaseCapture()
+            // 心跳起点：悬浮球服务的 CAPTURING 自愈据此判断框选层是否存活
+            container.regionPickerHeartbeatAt = System.currentTimeMillis()
+            startActivity(RegionPickerActivity.intentFor(this, fullFile.absolutePath))
+            stopSelf()
+            return
+        }
+        // ---- 默认（整屏识别）老路径 ----
+        val scaled = ImageUtils.scaleBitmap(bitmap)
         val file = File(dir, "screen_${System.currentTimeMillis()}.png")
         try {
             FileOutputStream(file).use { out ->

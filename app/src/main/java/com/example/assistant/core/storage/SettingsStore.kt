@@ -77,6 +77,13 @@ class SettingsStore(context: Context) {
     val reasoningEffort: Flow<String> = dataStore.data.map { it[KEY_REASONING_EFFORT] ?: "default" }
     suspend fun setReasoningEffort(v: String) = dataStore.edit { it[KEY_REASONING_EFFORT] = v }
 
+    // ---- v1.4.1：识屏框选 ----
+    /** 识屏后先弹出选区层手动框选（**默认开**；关闭 = 老行为，直接识别整张截图） */
+    val screenSenseRegionEnabled: Flow<Boolean> =
+        dataStore.data.map { it[KEY_SCREEN_SENSE_REGION] ?: true }
+    suspend fun setScreenSenseRegionEnabled(v: Boolean) =
+        dataStore.edit { it[KEY_SCREEN_SENSE_REGION] = v }
+
     // ---- P6：悬浮球 ----
     /** 悬浮球开关（默认关；开着 → 前台服务常驻，开机自动恢复） */
     val floatingBallEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_FLOATING_BALL] ?: false }
@@ -130,6 +137,7 @@ class SettingsStore(context: Context) {
         private val KEY_QUIET_END = intPreferencesKey("quiet_end_minute")
         private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
+        private val KEY_SCREEN_SENSE_REGION = booleanPreferencesKey("screen_sense_region_enabled")
         private val KEY_MAX_TURNS = intPreferencesKey("conversation_max_turns")
         private val KEY_DIARY_TAGS = stringPreferencesKey("diary_tags_csv")
         private val KEY_SECRET_LOG = booleanPreferencesKey("secret_log_enabled")
