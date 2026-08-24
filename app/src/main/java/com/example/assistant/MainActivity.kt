@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -311,8 +312,10 @@ fun AssistantApp() {
     val currentTab by AppSharedState.currentTab.collectAsState()
 
     Scaffold(
-        // 容器透明：让环境光背景透出来；导航栏半透明玻璃感
+        // 容器透明让环境光背景透出；contentColor 必须显式给主题亮色——
+        // 否则 contentColorFor(Transparent) 解析为黑色，全部正文变黑（踩坑实锤）
         containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         bottomBar = {
             NavigationBar(
                 containerColor = Color(0xFF0B1322).copy(alpha = 0.72f),

@@ -34,9 +34,9 @@ fun NightBackdrop(modifier: Modifier = Modifier) {
                 center = center
             )
         }
-        glow(Color(0xFFE4B863).copy(alpha = 0.17f), 0.95f, -0.06f, 0.66f)  // 右上：香槟金晨光（加强）
-        glow(Color(0xFF7FB3E3).copy(alpha = 0.13f), 0.00f, 1.06f, 0.58f)   // 左下：夜空蓝（加强）
-        glow(Color(0xFFFFFFFF).copy(alpha = 0.055f), -0.06f, 0.26f, 0.40f) // 左上：冷白高光
-        glow(Color(0xFFE4B863).copy(alpha = 0.07f), 0.10f, 0.72f, 0.34f)   // 左中：金微光（呼应导航栏上方）
+        glow(Color(0xFFE4B863).copy(alpha = 0.21f), 0.95f, -0.06f, 0.70f)  // 右上：香槟金晨光
+        glow(Color(0xFF7FB3E3).copy(alpha = 0.16f), 0.00f, 1.08f, 0.60f)   // 左下：夜空蓝
+        glow(Color(0xFFFFFFFF).copy(alpha = 0.07f), -0.06f, 0.26f, 0.42f)  // 左上：冷白高光
+        glow(Color(0xFFE4B863).copy(alpha = 0.09f), 0.10f, 0.74f, 0.36f)   // 左中：金微光
     }
 }
