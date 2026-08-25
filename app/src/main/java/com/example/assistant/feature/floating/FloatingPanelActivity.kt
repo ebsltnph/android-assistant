@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Screenshot
@@ -546,6 +547,7 @@ private fun FloatingPanelScreen(
                     isStreaming = isStreaming,
                     speakingMsgId = speakingMsgId,
                     onSpeak = { vm.speakMessage(it) },
+                    onEditResend = { msg -> vm.withdrawForEdit(msg.id)?.let { input = it } },
                     onCopy = { msg ->
                         clipboard?.setText(android.text.SpannableString(msg.text))
                     },
@@ -810,6 +812,7 @@ private fun OutputArea(
     isStreaming: Boolean,
     speakingMsgId: Long?,
     onSpeak: (ChatUiMessage) -> Unit,
+    onEditResend: (ChatUiMessage) -> Unit,
     onCopy: (ChatUiMessage) -> Unit,
     onRegenerate: (Long) -> Unit
 ) {
@@ -835,6 +838,9 @@ private fun OutputArea(
                         isLastAssistant = msg.role == "assistant" && msg.id == lastId,
                         speakingThis = speakingMsgId == msg.id,
                         onSpeak = { onSpeak(msg) },
+                        showEditResend = msg.role == "user" &&
+                            msg.id == messages.lastOrNull { it.role == "user" }?.id,
+                        onEditResend = { onEditResend(msg) },
                         onCopy = { onCopy(msg) },
                         onRegenerate = { onRegenerate(msg.id) }
                     )
@@ -851,6 +857,8 @@ private fun MessageBubble(
     isLastAssistant: Boolean,
     speakingThis: Boolean,
     onSpeak: () -> Unit,
+    showEditResend: Boolean,
+    onEditResend: () -> Unit,
     onCopy: () -> Unit,
     onRegenerate: () -> Unit
 ) {
@@ -882,6 +890,8 @@ private fun MessageBubble(
                 showSpeak = false,
                 speakingThis = speakingThis,
                 onSpeak = onSpeak,
+                showEditResend = showEditResend,
+                onEditResend = onEditResend,
                 onCopy = onCopy,
                 onRegenerate = onRegenerate
             )
@@ -954,6 +964,8 @@ private fun MessageBubble(
                 showSpeak = true,
                 speakingThis = speakingThis,
                 onSpeak = onSpeak,
+                showEditResend = false,
+                onEditResend = onEditResend,
                 onCopy = onCopy,
                 onRegenerate = onRegenerate
             )
@@ -998,7 +1010,7 @@ private fun ToolsStatusLine(labels: List<String>) {
     )
 }
 
-/** 气泡侧边的操作按钮列（贴底部）：复制；朗读（助手消息）；重做（仅最后一条助手回复） */
+/** 气泡侧边的操作按钮列（贴底部）：复制；编辑重发（最后一条用户消息）；朗读；重做 */
 @Composable
 private fun BubbleActions(
     isUser: Boolean,
@@ -1006,6 +1018,8 @@ private fun BubbleActions(
     showSpeak: Boolean,
     speakingThis: Boolean,
     onSpeak: () -> Unit,
+    showEditResend: Boolean,
+    onEditResend: () -> Unit,
     onCopy: () -> Unit,
     onRegenerate: () -> Unit
 ) {
@@ -1017,6 +1031,17 @@ private fun BubbleActions(
                 tint = Color.White.copy(alpha = 0.55f),
                 modifier = Modifier.size(13.dp)
             )
+        }
+        // 编辑重发（仅最后一条文字用户消息）：撤回该轮，文字回输入框改完再发
+        if (isUser && showEditResend) {
+            IconButton(onClick = onEditResend, modifier = Modifier.size(26.dp)) {
+                Icon(
+                    Icons.Filled.Edit,
+                    contentDescription = "编辑重发",
+                    tint = Color.White.copy(alpha = 0.55f),
+                    modifier = Modifier.size(13.dp)
+                )
+            }
         }
         // 朗读按钮：金色高亮 = 正在朗读这条（再点停止）；灰色 = 待朗读
         if (showSpeak) {

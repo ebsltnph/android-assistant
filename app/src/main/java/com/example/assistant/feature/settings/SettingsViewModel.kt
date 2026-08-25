@@ -1,5 +1,9 @@
 package com.example.assistant.feature.settings
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.assistant.core.agent.Agent
@@ -12,8 +16,12 @@ import com.example.assistant.core.storage.SettingsStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 class SettingsViewModel(
     private val secretStore: SecretStore,
@@ -99,6 +107,59 @@ class SettingsViewModel(
 
     fun setPanelAutoVoiceEnabled(v: Boolean) {
         viewModelScope.launch { settingsStore.setPanelAutoVoiceEnabled(v) }
+    }
+
+    // ---- v1.5.x：悬浮球外观 ----
+    val bubbleIconEmoji: StateFlow<String> = settingsStore.bubbleIconEmoji
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    val bubbleIconImagePath: StateFlow<String> = settingsStore.bubbleIconImagePath
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    /** 选 emoji 图标（清掉自定义图片，两者互斥、图片优先所以必须清） */
+    fun setBubbleIconEmoji(v: String) {
+        viewModelScope.launch {
+            settingsStore.setBubbleIconImagePath("")
+            settingsStore.setBubbleIconEmoji(v)
+        }
+    }
+
+    /**
+     * 从相册导入自定义图片做悬浮球图标：居中裁方 → 缩到 256px → 存私有目录。
+     * 成功后自动清掉 emoji（图片优先）。onDone(true)=导入成功。
+     */
+    fun importBubbleImage(context: Context, uri: Uri, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    // 先记住当前图片路径：新图落盘后把旧文件删掉（避免残留）
+                    val oldPath = settingsStore.bubbleIconImagePath.first()
+                    val src = context.contentResolver.openInputStream(uri)?.use {
+                        BitmapFactory.decodeStream(it)
+                    } ?: return@withContext false
+                    // 居中裁成正方形再缩放（悬浮球是圆的，方图裁圆形不变形）
+                    val side = minOf(src.width, src.height)
+                    if (side <= 0) return@withContext false
+                    val square = Bitmap.createBitmap(
+                        src, (src.width - side) / 2, (src.height - side) / 2, side, side
+                    )
+                    val scaled = Bitmap.createScaledBitmap(square, 256, 256, true)
+                    // 每次导入用独立文件名：路径变化才会触发悬浮球重载（同路径覆盖内容不会刷新）
+                    val f = File(context.filesDir, "bubble_icon_" + System.currentTimeMillis() + ".png")
+                    f.outputStream().use { scaled.compress(Bitmap.CompressFormat.PNG, 90, it) }
+                    settingsStore.setBubbleIconEmoji("")
+                    settingsStore.setBubbleIconImagePath(f.absolutePath)
+                    // 删除上一张自定义图片文件
+                    if (oldPath.isNotBlank() && oldPath != f.absolutePath) {
+                        try { File(oldPath).delete() } catch (_: Exception) {}
+                    }
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+            }
+            onDone(ok)
+        }
     }
 
     // ---- v1.4.1：识屏框选 ----

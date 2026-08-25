@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
 import android.view.WindowManager
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -21,7 +22,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.assistant.AssistantApplication
@@ -140,7 +147,20 @@ class FloatingBallService : Service() {
                 y = ballY
             },
             content = {
+                // 设置里的自定义图标实时收集（content lambda 是 Composable 环境）
+                val iconEmoji by container.settingsStore.bubbleIconEmoji
+                    .collectAsState(initial = "")
+                val iconImagePath by container.settingsStore.bubbleIconImagePath
+                    .collectAsState(initial = "")
+                // 图片图标按路径懒加载（换图/清空时自动重载）
+                val iconBitmap by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(null, iconImagePath) {
+                    value = if (iconImagePath.isBlank()) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        try { android.graphics.BitmapFactory.decodeFile(iconImagePath) } catch (_: Exception) { null }
+                    }
+                }
                 BallContent(
+                    iconEmoji = iconEmoji,
+                    iconImage = iconBitmap,
                     onTap = ::onBallTap,
                     onDragMove = { dx, dy -> window.moveBy(dx, dy) },
                     onDragEnd = ::snapToEdge
@@ -276,6 +296,8 @@ class FloatingBallService : Service() {
  */
 @Composable
 private fun BallContent(
+    iconEmoji: String,
+    iconImage: android.graphics.Bitmap?,
     onTap: () -> Unit,
     onDragMove: (Float, Float) -> Unit,
     onDragEnd: () -> Unit
@@ -327,11 +349,26 @@ private fun BallContent(
                 }
             }
     ) {
-        Icon(
-            Icons.Filled.AutoAwesome,
-            contentDescription = "随身助手",
-            tint = Color(0xFFE4B863),
-            modifier = Modifier.size(24.dp)
-        )
+        // 图标优先级：自定义图片（直接占满整球，不留深色边）> emoji > 默认金色星芒
+        if (iconImage != null) {
+            Image(
+                bitmap = iconImage.asImageBitmap(),
+                contentDescription = "随身助手",
+                modifier = Modifier.matchParentSize()
+            )
+        } else if (iconEmoji.isNotBlank()) {
+            Text(
+                iconEmoji,
+                fontSize = 26.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+        } else {
+            Icon(
+                Icons.Filled.AutoAwesome,
+                contentDescription = "随身助手",
+                tint = Color(0xFFE4B863),
+                modifier = Modifier.size(24.dp)
+            )
+        }
     }
 }

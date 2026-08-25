@@ -98,6 +98,19 @@ class SettingsStore(context: Context) {
     suspend fun setPanelAutoVoiceEnabled(v: Boolean) =
         dataStore.edit { it[KEY_PANEL_AUTO_VOICE] = v }
 
+    // ---- v1.5.x：悬浮球外观 ----
+    /** 悬浮球中央 emoji 图标（空串 = 未用 emoji）。与自定义图片互斥：图片优先 */
+    val bubbleIconEmoji: Flow<String> =
+        dataStore.data.map { it[KEY_BUBBLE_ICON_EMOJI] ?: "" }
+    suspend fun setBubbleIconEmoji(v: String) =
+        dataStore.edit { it[KEY_BUBBLE_ICON_EMOJI] = v }
+
+    /** 悬浮球自定义图片（应用私有目录内的绝对路径；空串 = 未用图片，优先级高于 emoji） */
+    val bubbleIconImagePath: Flow<String> =
+        dataStore.data.map { it[KEY_BUBBLE_ICON_IMAGE] ?: "" }
+    suspend fun setBubbleIconImagePath(v: String) =
+        dataStore.edit { it[KEY_BUBBLE_ICON_IMAGE] = v }
+
     // ---- 对话 ----
     /** 聊天上下文长度（对话轮数，默认 10；范围 5-50 由设置页 UI 约束） */
     val conversationMaxTurns: Flow<Int> = dataStore.data.map { it[KEY_MAX_TURNS] ?: 10 }
@@ -147,6 +160,8 @@ class SettingsStore(context: Context) {
         private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
         private val KEY_PANEL_AUTO_VOICE = booleanPreferencesKey("panel_auto_voice_enabled")
+        private val KEY_BUBBLE_ICON_EMOJI = stringPreferencesKey("bubble_icon_emoji")
+        private val KEY_BUBBLE_ICON_IMAGE = stringPreferencesKey("bubble_icon_image_path")
         private val KEY_SCREEN_SENSE_REGION = booleanPreferencesKey("screen_sense_region_enabled")
         private val KEY_MAX_TURNS = intPreferencesKey("conversation_max_turns")
         private val KEY_DIARY_TAGS = stringPreferencesKey("diary_tags_csv")

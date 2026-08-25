@@ -39,6 +39,18 @@ class Session(private var maxTurns: Int = 10) {
         messages.addLast(ChatMessage("assistant", text))
     }
 
+    /**
+     * 撤回最后一轮（编辑重发用）：从尾部找到最后一条 user 消息，
+     * 把它和它后面的所有消息（助手回复、工具轮结果等）一并删除。
+     * 没有用户消息时不做任何事。
+     */
+    fun removeLastTurn() {
+        val idx = messages.indexOfLast { it.role == "user" }
+        if (idx >= 0) {
+            while (messages.size > idx) messages.removeLast()
+        }
+    }
+
     fun clear() = messages.clear()
 
     private fun trim() {

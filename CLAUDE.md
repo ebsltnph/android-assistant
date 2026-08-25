@@ -211,6 +211,9 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
     - ⚠️ **荣耀 X50 GT 实测死路（adb 诊断实锤）**：全机唯一 RecognitionService 是荣耀自家的 MagicVoiceRecognitionService——注册了但第三方绑定后**零回调静默失效**；且全机无任何 Activity 处理 RecognizerIntent（系统语音窗不存在）。对策：① 不设 EXTRA_SPEECH_INPUT_*_SILENCE_* 参数（部分引擎设了永不结束的著名坑）；② PanelVoiceController 内置看门狗——8 秒无任何引擎回调（含 onRmsChanged 声浪喂狗）判死；③ 死后先试系统语音窗兜底，也没有则**平滑降级弹键盘**并提示，绝不干等。其他安卓机开开关即可用完整听写
     - 核心文件：`core/speech/PanelVoiceController.kt`（看门狗+部分结果回调）、manifest 加 RECORD_AUDIO、FloatingBallService.onBallTap 带 autoVoice=true、intentFor 加 EXTRA_AUTO_VOICE
   - **TTS 朗读回复**：`core/speech/TtsManager.kt` 封装系统 TextToSpeech（荣耀自带引擎中文可用；懒初始化、QUEUE_FLUSH 新朗读打断旧朗读、speaking StateFlow）。两个触发面：① **speak 工具**（第 9 个工具，模型自主判断何时朗读）——description 强约束 text 必须是提炼后的口语短文（去 markdown/公式，压缩成一两句），用户确认的设计「读哪些、读多长都由模型决定」；② **气泡旁喇叭按钮**（聊天页+浮动面板都有）——ChatViewModel.speakMessage 记 `_speakingMsgId`：点正在读的这条=停止、点别的=无缝切换；正在读的那条喇叭金色高亮（自然播完由 init 里 collect speaking 清标记）。`ChatUiMessage.spokenBody()` 提取可朗读正文（分段消息只拼正文段，跳过思考块/工具行）
+- [x] **编辑重发 + 悬浮球图标自定义**（2026-08-25，真机验证通过，已推送未发版——随下个版本发布）
+  - **编辑重发**：最后一条用户消息旁 ✏️ 图标（聊天页+浮动面板同款）——点击撤回该轮（UI 列表 take(idx) + Session.removeLastTurn 同步删历史），原文填回输入框，改完再发送即全新一轮（上下文与界面一致）。带图消息也支持：原图 base64 按 msgId 登记 `imageBase64ByMsgId`（LinkedHashMap removeEldestEntry 限 40 条，clearConversation 清空）；聊天页 withdrawForEdit(restoreImage=true) 自动把 PendingImage 还原进附件栏；面板无附件栏只还文字。流式中不可用；三个带图创建点（sendWithImage/quickSendVision）都登记 base64
+  - **悬浮球图标自定义**：设置→悬浮球→「悬浮球图标」弹窗三选一：默认玻璃球 / emoji 网格（15 个）/ 相册导入图片（PickVisualMedia → 居中裁方 256px PNG 存 filesDir，悬浮球上 matchParentSize 铺满整球不留深色边）。存储两键互斥：`bubble_icon_emoji` / `bubble_icon_image_path`（图片优先，任一设置时清另一个）。渲染在 FloatingBallService content lambda（Composable 环境）collectAsState 实时生效，图片按路径 produceState 懒加载。⚠️ 坑：换图必须**换文件名**——同路径覆盖内容时 DataStore 值不变、StateFlow 不发射、produceState 不重载；改为时间戳文件名 + 导入后删旧图文件
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

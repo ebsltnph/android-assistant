@@ -32,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
@@ -156,11 +157,14 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(messages, key = { it.id }) { msg ->
+                    val lastEditableUserId = messages.lastOrNull { it.role == "user" }?.id
                     MessageBubble(
                         msg = msg,
                         isLastAssistant = msg.role == "assistant" && msg.id == messages.lastOrNull()?.id,
                         speakingThis = speakingMsgId == msg.id,
                         onSpeak = { vm.speakMessage(msg) },
+                        showEditResend = msg.role == "user" && msg.id == lastEditableUserId,
+                        onEditResend = { vm.withdrawForEdit(msg.id, restoreImage = true)?.let { vm.setInput(it) } },
                         onCopy = {
                             clipboard.setText(AnnotatedString(msg.text))
                             Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
@@ -274,6 +278,8 @@ private fun MessageBubble(
     isLastAssistant: Boolean,
     speakingThis: Boolean,
     onSpeak: () -> Unit,
+    showEditResend: Boolean,
+    onEditResend: () -> Unit,
     onCopy: () -> Unit,
     onRegenerate: () -> Unit
 ) {
@@ -379,6 +385,17 @@ private fun MessageBubble(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(14.dp)
                         )
+                    }
+                    // 编辑重发（仅最后一条用户消息）：撤回该轮并把文字填回输入框，改完再发
+                    if (isUser && showEditResend) {
+                        IconButton(onClick = onEditResend, modifier = Modifier.size(30.dp)) {
+                            Icon(
+                                Icons.Filled.Edit,
+                                contentDescription = "编辑重发",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
                     // 朗读按钮（仅助手消息）：金色高亮 = 正在朗读这条，再点停止
                     if (!isUser) {

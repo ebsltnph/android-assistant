@@ -147,6 +147,11 @@ class ChatViewModel(
     private val session = Session()
     private var counter = 0L
 
+    /** 带图用户消息的原图 base64（编辑重发时恢复进附件栏用）；超 40 条丢最旧 */
+    private val imageBase64ByMsgId = object : LinkedHashMap<Long, String>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>): Boolean = size > 40
+    }
+
     /**
      * 识屏流程被触发的事件：浮动界面订阅它直接走自己的识图流程。
      * 关键词直连与 screen_sense 工具两条路径统一经 controller.requests 转发到这里，
@@ -320,7 +325,9 @@ class ChatViewModel(
             _error.value = null
             val placeholder = if (t.isNotEmpty()) "[📷 屏幕截图]\n$t" else "[📷 屏幕截图]"
             session.addUser(placeholder)
-            _messages.update { it + ChatUiMessage(counter++, "user", t, image = thumbnail) }
+            val visionMsgId = counter++
+            _messages.update { it + ChatUiMessage(visionMsgId, "user", t, image = thumbnail) }
+            imageBase64ByMsgId[visionMsgId] = imageBase64
             if (visionAnalyzer.visionProfile() == null) {
                 append(ChatUiMessage(counter++, "assistant", VisionAnalyzer.GUIDE_TEXT))
                 session.addAssistant(VisionAnalyzer.GUIDE_TEXT)
@@ -422,7 +429,9 @@ class ChatViewModel(
     private suspend fun sendWithImage(text: String, image: PendingImage) {
         val placeholder = if (text.isNotEmpty()) "[📷 用户发送了一张图片]\n$text" else "[📷 用户发送了一张图片]"
         session.addUser(placeholder)
-        _messages.update { it + ChatUiMessage(counter++, "user", text, image = image.thumbnail) }
+        val newId = counter++
+        _messages.update { it + ChatUiMessage(newId, "user", text, image = image.thumbnail) }
+        imageBase64ByMsgId[newId] = image.base64
         // 未配置视觉模型 → 明确引导，不发起无意义的调用（记录意图仍照常入日记）
         if (visionAnalyzer.visionProfile() == null) {
             append(ChatUiMessage(counter++, "assistant", VisionAnalyzer.GUIDE_TEXT))
@@ -615,9 +624,33 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * 编辑重发：撤回「最后一条用户消息」——界面与会话历史同步删掉它及其后的助手回复，
+     * 返回原文供调用方填回输入框；用户改完再发送即全新一轮，上下文与界面保持一致。
+     * 带图消息：restoreImage=true 时把原图恢复进附件栏（聊天页）；面板无附件栏传 false。
+     * 返回 null = 不可撤回（正在流式 / 该条不是最后的用户消息）。
+     */
+    fun withdrawForEdit(messageId: Long, restoreImage: Boolean = false): String? {
+        if (_isStreaming.value) return null
+        val list = _messages.value
+        val lastUser = list.lastOrNull { it.role == "user" } ?: return null
+        if (lastUser.id != messageId) return null
+        val idx = list.indexOf(lastUser)
+        _messages.update { it.take(idx) }
+        session.removeLastTurn()
+        if (lastUser.image != null) {
+            val b64 = imageBase64ByMsgId.remove(lastUser.id)
+            if (restoreImage && b64 != null) {
+                _pendingImage.value = PendingImage(lastUser.image, b64)
+            }
+        }
+        return lastUser.text
+    }
+
     fun clearConversation() {
         session.clear()
         regenerateMessages.clear()
+        imageBase64ByMsgId.clear()
         _messages.value = emptyList()
     }
 

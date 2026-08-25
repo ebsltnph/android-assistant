@@ -7,9 +7,13 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -53,6 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -91,6 +96,13 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val testResult by vm.testResult.collectAsState()
     val floatingBallEnabled by vm.floatingBallEnabled.collectAsState()
     val panelAutoVoiceEnabled by vm.panelAutoVoiceEnabled.collectAsState()
+    val bubbleIconEmoji by vm.bubbleIconEmoji.collectAsState()
+    // 悬浮球自定义图片：相册选图 → VM 裁剪存私有目录
+    val bubbleImagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) vm.importBubbleImage(context, uri) { }
+    }
     val screenSenseRegionEnabled by vm.screenSenseRegionEnabled.collectAsState()
     val searchApiKey by vm.searchApiKey.collectAsState()
     val summaryMinute by vm.summaryMinute.collectAsState()
@@ -155,6 +167,15 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 },
                 panelAutoVoiceEnabled = panelAutoVoiceEnabled,
                 onTogglePanelAutoVoice = { on -> vm.setPanelAutoVoiceEnabled(on) },
+                bubbleIconEmoji = bubbleIconEmoji,
+                onSetBubbleIcon = { vm.setBubbleIconEmoji(it) },
+                onPickBubbleImage = {
+                    bubbleImagePicker.launch(
+                        androidx.activity.result.PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.ImageOnly
+                        )
+                    )
+                },
                 screenSenseRegionEnabled = screenSenseRegionEnabled,
                 onToggleScreenSenseRegion = { on ->
                     vm.setScreenSenseRegionEnabled(on)
@@ -271,9 +292,14 @@ private fun SettingsMainList(
     onToggleFloatingBall: (Boolean) -> Unit,
     panelAutoVoiceEnabled: Boolean,
     onTogglePanelAutoVoice: (Boolean) -> Unit,
+    bubbleIconEmoji: String,
+    onSetBubbleIcon: (String) -> Unit,
+    onPickBubbleImage: () -> Unit,
     screenSenseRegionEnabled: Boolean,
     onToggleScreenSenseRegion: (Boolean) -> Unit
 ) {
+    // 悬浮球图标选择弹窗开关（对话框与入口行不在同一 item 作用域，故放函数级）
+    var showIconPicker by remember { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -347,6 +373,78 @@ private fun SettingsMainList(
                         onCheckedChange = onTogglePanelAutoVoice
                     )
                 }
+                // 悬浮球图标：点开选择 emoji，实时生效
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 8.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("悬浮球图标", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "更换悬浮球中间显示的图案"
+                            ,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = { showIconPicker = true }) {
+                        Text(if (bubbleIconEmoji.isBlank()) "默认" else bubbleIconEmoji)
+                    }
+                }
+            }
+        }
+
+        // 悬浮球图标选择弹窗（emoji 网格；首项=默认玻璃球）
+        if (showIconPicker) {
+            item {
+            AlertDialog(
+                onDismissRequest = { showIconPicker = false },
+                title = { Text("选择悬浮球图标") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                showIconPicker = false
+                                onPickBubbleImage()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("🖼️ 从相册选择图片") }
+                        val options: List<Pair<String, String>> =
+                            listOf("" to "默认") + listOf("🫧", "✨", "🤖", "💫", "🌙", "⚡", "🍀", "🎯", "🧠", "🌟", "🐱", "☕", "🎈", "🌈", "🔥").map { it to it }
+                        options.chunked(4).forEach { rowItems ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                rowItems.forEach { (value, label) ->
+                                    val selected = bubbleIconEmoji == value
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .size(52.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(
+                                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                            )
+                                            .border(
+                                                1.dp,
+                                                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                RoundedCornerShape(14.dp)
+                                            )
+                                            .clickable {
+                                                onSetBubbleIcon(value)
+                                                showIconPicker = false
+                                            }
+                                    ) {
+                                        Text(if (label == "默认") "默认" else value, fontSize = 15.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showIconPicker = false }) { Text("关闭") }
+                }
+            )
             }
         }
 
