@@ -16,6 +16,7 @@ data class ProviderProfile(
     val apiKey: String = "",
     val model: String = "",
     val supportsVision: Boolean = false, // 是否支持图片输入（识屏需要）
+    val supportsAudio: Boolean = false, // 是否支持音频转文字（悬浮球语音输入的远程识别用）
     val isDefault: Boolean = false,
     // 思考深度（per-provider）："default" | "low" | "medium" | "high"
     // （OpenAI 通用参数 reasoning_effort；"default" 跟随模型默认并用旧全局设置兜底，
@@ -45,5 +46,6 @@ data class ProviderProfile(
  */
 enum class Capability(val displayName: String, val description: String) {
     CHAT("对话", "日常问答与全部工具调用使用的模型"),
-    VISION("识屏（视觉）", "截屏分析、OCR、翻译，需要支持图片输入的模型")
+    VISION("识屏（视觉）", "截屏分析、OCR、翻译，需要支持图片输入的模型"),
+    ASR("语音识别", "悬浮球语音输入的远程转写（音频转文字），需支持 OpenAI 语音接口的模型")
 }

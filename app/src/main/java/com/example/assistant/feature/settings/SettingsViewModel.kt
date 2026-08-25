@@ -101,12 +101,12 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setFloatingBallEnabled(v) }
     }
 
-    // ---- v1.5.x：点悬浮球自动开始语音听写 ----
-    val panelAutoVoiceEnabled: StateFlow<Boolean> = settingsStore.panelAutoVoiceEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    // ---- v1.5.x：悬浮球语音输入方式 + 远程识别接口配置 ----
+    val panelVoiceMode: StateFlow<String> = settingsStore.panelVoiceMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "ime")
 
-    fun setPanelAutoVoiceEnabled(v: Boolean) {
-        viewModelScope.launch { settingsStore.setPanelAutoVoiceEnabled(v) }
+    fun setPanelVoiceMode(v: String) {
+        viewModelScope.launch { settingsStore.setPanelVoiceMode(v) }
     }
 
     // ---- v1.5.x：悬浮球外观 ----

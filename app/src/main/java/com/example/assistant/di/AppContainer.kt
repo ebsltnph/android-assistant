@@ -23,6 +23,7 @@ import com.example.assistant.core.agent.tools.WriteDiaryTool
 import com.example.assistant.core.agent.tools.WriteMemoryTool
 import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.backup.BackupManager
+import com.example.assistant.core.network.AsrClient
 import com.example.assistant.core.network.PageReader
 import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.SearchClient
@@ -191,6 +192,9 @@ class AppContainer(context: Context) {
 
     // ---- v1.5.x：语音输出（TTS 朗读，进程级单例） ----
     val ttsManager: TtsManager by lazy { TtsManager(appContext) }
+
+    // ---- v1.5.x：远程语音识别客户端（悬浮球语音输入 remote 模式用） ----
+    val asrClient: AsrClient by lazy { AsrClient.create() }
     val visionAnalyzer: VisionAnalyzer by lazy { VisionAnalyzer(providerRegistry, promptStore) }
 
     // ---- P6：聊天核心（进程级共享单例：聊天页与浮动界面共用同一会话） ----

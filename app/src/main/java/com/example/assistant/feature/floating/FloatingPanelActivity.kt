@@ -55,6 +55,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Screenshot
 import androidx.compose.material.icons.filled.Send
@@ -97,6 +98,7 @@ import androidx.compose.ui.unit.sp
 import com.example.assistant.AssistantApplication
 import com.example.assistant.R
 import com.example.assistant.core.speech.PanelVoiceController
+import com.example.assistant.core.speech.RemoteVoiceRecorder
 import com.example.assistant.core.ui.RichMessageText
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.core.vision.ScreenSenseStarter
@@ -106,6 +108,7 @@ import com.example.assistant.feature.chat.ChatViewModel
 import com.example.assistant.feature.chat.MsgSegment
 import com.example.assistant.ui.theme.AssistantTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
@@ -343,14 +346,17 @@ private fun FloatingPanelScreen(
     }
 
     // ---- v1.5.x：语音听写（点悬浮球自动开始；识别完自动发送进面板对话） ----
-    var listening by remember { mutableStateOf(false) }   // 正在聆听（麦克风开）
+    // 三种方式（设置里选）：ime=键盘语音引导 / system=系统听写 / remote=远程识别 API
+    var listening by remember { mutableStateOf(false) }   // 正在聆听/录音（麦克风开）
+    var transcribing by remember { mutableStateOf(false) } // 录音完成，正在等远程识别返回
     var voicePartial by remember { mutableStateOf("") }   // 实时识别文字预览
     var voiceError by remember { mutableStateOf<String?>(null) } // 听写错误提示（几秒自动消失）
-    val panelAutoVoice by vm.panelAutoVoiceEnabled.collectAsState()
+    val voiceMode by vm.panelVoiceMode.collectAsState()
     val voice = remember { PanelVoiceController(context) }
-    DisposableEffect(Unit) { onDispose { voice.destroy() } }
+    val remoteRecorder = remember { RemoteVoiceRecorder(context) }
+    DisposableEffect(Unit) { onDispose { voice.destroy(); remoteRecorder.cancel() } }
 
-    // 麦克风权限（RECORD_AUDIO，运行时申请一次）
+    // 麦克风权限（RECORD_AUDIO，运行时申请一次）——system 与 remote 都需要
     val recordAudioPermission = android.Manifest.permission.RECORD_AUDIO
 
     fun beginListening() {
@@ -370,11 +376,56 @@ private fun FloatingPanelScreen(
         )
     }
 
-    // 注意：局部函数须先声明后引用，permLauncher 放在 beginListening 之后
+    /** 远程识别：录音 → 上传识别 API → 文字自动发进面板对话 */
+    fun beginRemoteRecording() {
+        if (listening || transcribing || isStreaming) return
+        listening = true
+        voicePartial = ""
+        remoteRecorder.start(
+            onFinish = { file ->
+                scope.launch {
+                    listening = false
+                    transcribing = true
+                    try {
+                        // 识别模型 = 「模型配置 → 能力指派 → 语音识别」指派的档案
+                        val prof = container.providerRegistry.profileFor(
+                            com.example.assistant.core.network.Capability.ASR
+                        )
+                        if (prof == null || !prof.isConfigured()) {
+                            voiceError = "未指派语音识别模型：请到 设置→模型配置→能力指派→语音识别 选择" +
+                                "（编辑提供商时打开「支持语音识别」开关）"
+                            return@launch
+                        }
+                        when (val r = container.asrClient.transcribe(
+                            prof.normalizedBaseUrl(), prof.apiKey, prof.model, file
+                        )) {
+                            is com.example.assistant.core.network.AsrClient.Result.Text ->
+                                if (r.text.isNotBlank()) vm.quickSend(r.text)
+                                else voiceError = "没识别出内容，请再试一次"
+                            is com.example.assistant.core.network.AsrClient.Result.Error -> voiceError = r.message
+                        }
+                    } catch (e: Exception) {
+                        voiceError = "识别失败：" + (e.message ?: "未知错误")
+                    } finally {
+                        transcribing = false
+                        try { file.delete() } catch (_: Exception) {}
+                    }
+                }
+            },
+            onError = { msg -> scope.launch { listening = false; voiceError = msg } }
+        )
+    }
+
+    // 权限授予后按「当时申请的方式」继续（system→听写 / remote→录音）
+    var awaitingPermissionForRemote by remember { mutableStateOf(false) }
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) beginListening() else voiceError = "麦克风权限被拒绝，无法语音输入"
+        if (!granted) {
+            voiceError = "麦克风权限被拒绝，无法语音输入"
+            return@rememberLauncherForActivityResult
+        }
+        if (awaitingPermissionForRemote) beginRemoteRecording() else beginListening()
     }
 
     // 系统语音识别窗（兜底）：内联 SpeechRecognizer 无响应时自动切这个——
@@ -409,38 +460,69 @@ private fun FloatingPanelScreen(
         }
     }
 
-    // 聆听中滑系统返回手势/按返回键 = 只停止聆听、留在面板（用户确认的交互）；
+    // 聆听/录音中滑系统返回手势/按返回键 = 只停止聆听、留在面板；
     // 非聆听时返回仍走原逻辑关面板（onBackPressed）
-    BackHandler(enabled = listening) {
+    BackHandler(enabled = listening || transcribing) {
         voice.stop()
+        remoteRecorder.cancel()
         listening = false
+        transcribing = false
         voicePartial = ""
     }
 
-    // 自动触发：悬浮球路径打开 → 等入场动画后：
-    //   开关开 = 直接开始系统语音识别（适合支持的机型）；
-    //   开关关（默认）= 方案B：自动聚焦输入框并弹出键盘，引导点键盘上的麦克风（输入法语音）
+    /** 按指定方式启动语音输入（悬浮球自动触发与面板麦克风按钮共用同一入口） */
+    fun startVoiceByMode(m: String) {
+        when (m) {
+            "system" -> {
+                if (!voice.available) {
+                    voiceError = "本机没有可用的语音识别服务，已为你弹出键盘（可点键盘上的麦克风）"
+                    inputFocus.requestFocus(); keyboard?.show()
+                    return
+                }
+                val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                    context, recordAudioPermission
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (granted) beginListening() else {
+                    awaitingPermissionForRemote = false
+                    permLauncher.launch(recordAudioPermission)
+                }
+            }
+            "remote" -> {
+                val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                    context, recordAudioPermission
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (granted) beginRemoteRecording() else {
+                    awaitingPermissionForRemote = true
+                    permLauncher.launch(recordAudioPermission)
+                }
+            }
+            else -> {
+                // 键盘语音引导（仅主模式；识屏结果页不打扰）
+                if (mode == FloatingPanelActivity.PanelMode.MAIN) {
+                    inputFocus.requestFocus()
+                    keyboard?.show()
+                }
+            }
+        }
+    }
+
+    // 自动触发：悬浮球路径打开 → 等入场动画后按设置的方式启动。
+    // 稳定性：① 方式值直接读设置（stateIn 初值有竞态，曾导致偶尔不触发）；
+    //         ② 上一条还在回复时等它完成再开始（isStreaming 期间静默跳过也是「偶尔不触发」的原因）
     LaunchedEffect(autoVoiceRequested) {
         if (!autoVoiceRequested) return@LaunchedEffect
         kotlinx.coroutines.delay(450) // 让面板先完成入场动画再动键盘/麦克风
-        if (!panelAutoVoice) {
-            // 方案B：弹键盘（仅主模式；识屏结果页不打扰）
-            if (mode == FloatingPanelActivity.PanelMode.MAIN) {
-                inputFocus.requestFocus()
-                keyboard?.show()
-            }
+        val m = container.settingsStore.panelVoiceMode.first()
+        var waited = 0
+        while (isStreaming && waited < 10_000) {
+            kotlinx.coroutines.delay(250)
+            waited += 250
+        }
+        if (isStreaming) {
+            voiceError = "上一条还在回复中，请等回复完成再说话"
             return@LaunchedEffect
         }
-        if (!voice.available) {
-            voiceError = "本机没有可用的语音识别服务，已为你弹出键盘（可点键盘上的麦克风）"
-            inputFocus.requestFocus()
-            keyboard?.show()
-            return@LaunchedEffect
-        }
-        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
-            context, recordAudioPermission
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (granted) beginListening() else permLauncher.launch(recordAudioPermission)
+        startVoiceByMode(m)
     }
 
     // 错误提示几秒后自动消失（荣耀 logcat 不可见，提示必须落在界面上）
@@ -692,8 +774,9 @@ private fun FloatingPanelScreen(
                         Spacer(Modifier.height(12.dp))
                     }
 
-                    // ---- 语音听写状态（聆听中 / 错误提示，玻璃条样式）----
+                    // ---- 语音输入状态（聆听/录音中、识别中、错误提示，玻璃条样式）----
     if (listening) {
+        val isRemote = voiceMode == "remote"
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -707,7 +790,7 @@ private fun FloatingPanelScreen(
             Spacer(Modifier.size(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    "正在聆听…说完自动发送",
+                    if (isRemote) "录音中…说完停顿自动识别" else "正在聆听…说完自动发送",
                     fontSize = 13.sp,
                     color = Color.White.copy(alpha = 0.85f)
                 )
@@ -720,19 +803,47 @@ private fun FloatingPanelScreen(
                     )
                 }
             }
+            if (isRemote) {
+                Text(
+                    "完成",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFE4B863),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { remoteRecorder.finish() }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
             Text(
                 "取消",
                 fontSize = 13.sp,
-                color = Color(0xFFE4B863),
+                color = Color.White.copy(alpha = 0.6f),
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .clickable {
                         voice.stop()
+                        remoteRecorder.cancel()
                         listening = false
                         voicePartial = ""
                     }
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             )
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+    if (transcribing) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(bottom = 6.dp)
+        ) {
+            CircularProgressIndicator(
+                Modifier.size(14.dp),
+                strokeWidth = 2.dp,
+                color = Color(0xFFE4B863)
+            )
+            Spacer(Modifier.size(8.dp))
+            Text("正在识别…", fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
         }
         Spacer(Modifier.height(10.dp))
     }
@@ -755,6 +866,32 @@ private fun FloatingPanelScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
+                        // 语音输入按钮：与点悬浮球完全同一条链路；外观与右侧发送按钮同款（金色渐变圆）
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        listOf(Color(0xFFE4B863), Color(0xFFC8A25A))
+                                    )
+                                )
+                                .shadow(8.dp, CircleShape)
+                                .clickable(enabled = !listening && !transcribing) {
+                                    scope.launch {
+                                        startVoiceByMode(container.settingsStore.panelVoiceMode.first())
+                                    }
+                                }
+                        ) {
+                            Icon(
+                                Icons.Filled.Mic,
+                                contentDescription = "语音输入",
+                                tint = NightDeep,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(Modifier.size(10.dp))
                         OutlinedTextField(
                             value = input,
                             onValueChange = { input = it },

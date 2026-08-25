@@ -285,6 +285,8 @@ class Agent(
 
     /** 测试连接：对指定档案发一个最小请求验证配置是否正确（per-provider） */
     suspend fun testConnection(profile: ProviderProfile): Result<String> {
+        // 语音识别档案：对话接口必然 400（音频模型不收聊天请求），改走真实的语音接口探测
+        if (profile.supportsAudio) return testAudioConnection(profile)
         return try {
             val api = providerRegistry.apiFor(profile)
             val effort = providerRegistry.reasoningEffortFor(profile)
@@ -302,6 +304,45 @@ class Agent(
             Result.success(reply)
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    /**
+     * 语音识别档案的连接测试：上传 0.1 秒静音 WAV 打真实的转写接口。
+     * HTTP 通了就算成功（静音转不出文字是正常的）；失败给具体错误。
+     */
+    private suspend fun testAudioConnection(profile: ProviderProfile): Result<String> {
+        // 0.1 秒 16kHz 静音 WAV（内存生成，不落盘）
+        val data = ByteArray(1600 * 2 + 44)  // 1600 采样 × 2 字节 + 44 头
+        java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
+            put("RIFF".toByteArray()); putInt(36 + data.size - 44); put("WAVE".toByteArray())
+            put("fmt ".toByteArray()); putInt(16); putShort(1); putShort(1)
+            putInt(16000); putInt(32000); putShort(16); putShort(16)
+            put("data".toByteArray()); putInt(data.size - 44)
+        }
+        val tmp: java.io.File = kotlin.io.path.createTempFile(prefix = "asr_test", suffix = ".wav").toFile()
+        try {
+            tmp.writeBytes(data)
+            val client = com.example.assistant.core.network.AsrClient.create()
+            val r: com.example.assistant.core.network.AsrClient.Result = client.transcribe(
+                profile.normalizedBaseUrl(), profile.apiKey, profile.model, tmp
+            )
+            if (r is com.example.assistant.core.network.AsrClient.Result.Text) {
+                val suffix = if (r.text.isBlank()) "" else "：" + r.text.take(30)
+                return Result.success("语音接口连接成功" + suffix)
+            }
+            if (r is com.example.assistant.core.network.AsrClient.Result.Error) {
+                // 空结果 = 接口通了只是没转出文字（静音），也算连接成功
+                if (r.message.contains("空结果")) {
+                    return Result.success("语音接口连接成功（测试音为静音，无转写内容）")
+                }
+                return Result.failure(IllegalStateException(r.message))
+            }
+            return Result.failure(IllegalStateException("未知的识别响应"))
+        } catch (e: Exception) {
+            return Result.failure(e)
+        } finally {
+            try { tmp.delete() } catch (_: Exception) {}
         }
     }
 

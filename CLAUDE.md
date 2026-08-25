@@ -214,6 +214,12 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 - [x] **编辑重发 + 悬浮球图标自定义**（2026-08-25，真机验证通过，已推送未发版——随下个版本发布）
   - **编辑重发**：最后一条用户消息旁 ✏️ 图标（聊天页+浮动面板同款）——点击撤回该轮（UI 列表 take(idx) + Session.removeLastTurn 同步删历史），原文填回输入框，改完再发送即全新一轮（上下文与界面一致）。带图消息也支持：原图 base64 按 msgId 登记 `imageBase64ByMsgId`（LinkedHashMap removeEldestEntry 限 40 条，clearConversation 清空）；聊天页 withdrawForEdit(restoreImage=true) 自动把 PendingImage 还原进附件栏；面板无附件栏只还文字。流式中不可用；三个带图创建点（sendWithImage/quickSendVision）都登记 base64
   - **悬浮球图标自定义**：设置→悬浮球→「悬浮球图标」弹窗三选一：默认玻璃球 / emoji 网格（15 个）/ 相册导入图片（PickVisualMedia → 居中裁方 256px PNG 存 filesDir，悬浮球上 matchParentSize 铺满整球不留深色边）。存储两键互斥：`bubble_icon_emoji` / `bubble_icon_image_path`（图片优先，任一设置时清另一个）。渲染在 FloatingBallService content lambda（Composable 环境）collectAsState 实时生效，图片按路径 produceState 懒加载。⚠️ 坑：换图必须**换文件名**——同路径覆盖内容时 DataStore 值不变、StateFlow 不发射、produceState 不重载；改为时间戳文件名 + 导入后删旧图文件
+- [x] **远程语音识别 API + 能力化改造 + 一批打磨**（2026-08-25，真机验证通过，随 v1.6.0 发布）
+  - **远程识别（remote 模式）**：悬浮球语音输入第三种方式——`RemoteVoiceRecorder`（AudioRecord 16kHz 单声道 PCM→WAV；能量检测说完停顿 1.4s 自动结束/手动「完成」/上限 45s/0.6s 预录缓冲防首字截断）→ `AsrClient`（OpenAI 兼容 /audio/transcriptions，multipart 上传 + language=zh + 手工 JSON text 解析）→ 文字自动发送。面板录音条区分「录音中/识别中」两状态
+  - **能力化改造**（用户要求配置归位）：识别模型不再单独配置——Capability 新增 **ASR（语音识别）**、ProviderProfile 新增 `supportsAudio`；编辑提供商三开关互斥（语音 ↔ 图片/默认，语音链路与对话链路天然分离）；能力指派多一行「语音识别」；模型配置页加「语音识别模型」状态卡片；模型卡片加「语音」气泡；语音档案的「测试连接」改走真实转写接口探测（上传 0.1s 静音 WAV，HTTP 通即成功——对话测试对音频模型必然 400）。旧 asr_base_url/key/model 三键删除（用户实测硅基流动 XingChen Ultra 中文不准、换 Qwen3-ASR-1.7B 后正常）
+  - **触发稳定性修复**（点悬浮球偶尔不触发）：① 方式值改直接读设置 `panelVoiceMode.first()`（stateIn 初值 "ime" 与真实值有竞态）；② 上一条还在回复时不再静默跳过——等回复完成（最多 10s）再启动，超时明确提示
+  - **取消按钮修复**：RemoteVoiceRecorder 加 cancelled 标记——取消后丢弃录音不回调（原实现取消只是停采集，已录内容照样上传发送）
+  - **面板麦克风按钮**：输入框左侧金色渐变圆 🎙️（与发送按钮同款风格），与悬浮球完全同链路（按设置方式启动）
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

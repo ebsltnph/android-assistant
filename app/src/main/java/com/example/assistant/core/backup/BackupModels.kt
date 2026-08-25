@@ -69,6 +69,8 @@ data class BackupSettings(
     /** 日记标签词汇表（逗号分隔） */
     val diaryTagsCsv: String = "工作,生活,待办,经验",
     val secretLogEnabled: Boolean = false,
+    /** 悬浮球语音输入方式（ime/system/remote）；识别模型走能力指派 */
+    val panelVoiceMode: String = "ime",
     /** 定期自动备份开关与间隔（天） */
     val autoBackupEnabled: Boolean = false,
     val autoBackupIntervalDays: Int = 7
@@ -85,6 +87,7 @@ data class BackupProviderProfile(
     val baseUrl: String,
     val model: String,
     val supportsVision: Boolean = false,
+    val supportsAudio: Boolean = false,
     val isDefault: Boolean = false,
     val reasoningEffort: String = "default"
 )
@@ -92,15 +95,15 @@ data class BackupProviderProfile(
 /** 导出用：档案 → 备份 DTO（丢掉 apiKey；thinkingMode 字段已废弃不导出） */
 fun ProviderProfile.toBackup() = BackupProviderProfile(
     id = id, name = name, baseUrl = baseUrl, model = model,
-    supportsVision = supportsVision, isDefault = isDefault,
-    reasoningEffort = reasoningEffort
+    supportsVision = supportsVision, supportsAudio = supportsAudio,
+    isDefault = isDefault, reasoningEffort = reasoningEffort
 )
 
 /** 恢复用：备份 DTO → 档案（apiKey 置空，用户恢复后重填） */
 fun BackupProviderProfile.toProfile() = ProviderProfile(
     id = id, name = name, baseUrl = baseUrl, model = model,
-    supportsVision = supportsVision, isDefault = isDefault,
-    reasoningEffort = reasoningEffort
+    supportsVision = supportsVision, supportsAudio = supportsAudio,
+    isDefault = isDefault, reasoningEffort = reasoningEffort
 )
 
 /** SummaryStore 里带日期的小结/简报 */

@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -95,7 +96,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val assignments by vm.assignments.collectAsState()
     val testResult by vm.testResult.collectAsState()
     val floatingBallEnabled by vm.floatingBallEnabled.collectAsState()
-    val panelAutoVoiceEnabled by vm.panelAutoVoiceEnabled.collectAsState()
     val bubbleIconEmoji by vm.bubbleIconEmoji.collectAsState()
     // 悬浮球自定义图片：相册选图 → VM 裁剪存私有目录
     val bubbleImagePicker = rememberLauncherForActivityResult(
@@ -165,10 +165,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     vm.setFloatingBallEnabled(on)
                     if (on) FloatingBallService.start(context) else FloatingBallService.stop(context)
                 },
-                panelAutoVoiceEnabled = panelAutoVoiceEnabled,
-                onTogglePanelAutoVoice = { on -> vm.setPanelAutoVoiceEnabled(on) },
                 bubbleIconEmoji = bubbleIconEmoji,
                 onSetBubbleIcon = { vm.setBubbleIconEmoji(it) },
+                voiceSettingsVm = vm,
                 onPickBubbleImage = {
                     bubbleImagePicker.launch(
                         androidx.activity.result.PickVisualMediaRequest(
@@ -290,10 +289,9 @@ private fun SettingsMainList(
     onShowBallHelp: () -> Unit,
     onEditPrompt: (PromptStore.PromptKey) -> Unit,
     onToggleFloatingBall: (Boolean) -> Unit,
-    panelAutoVoiceEnabled: Boolean,
-    onTogglePanelAutoVoice: (Boolean) -> Unit,
     bubbleIconEmoji: String,
     onSetBubbleIcon: (String) -> Unit,
+    voiceSettingsVm: SettingsViewModel,
     onPickBubbleImage: () -> Unit,
     screenSenseRegionEnabled: Boolean,
     onToggleScreenSenseRegion: (Boolean) -> Unit
@@ -352,27 +350,8 @@ private fun SettingsMainList(
                         TextButton(onClick = onOpenOverlaySettings) { Text("去开启") }
                     }
                 }
-                // v1.5.x：悬浮球语音输入路线开关
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(top = 8.dp)
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("悬浮球语音输入", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            if (panelAutoVoiceEnabled) "打开面板后直接开始系统语音识别，说完自动发送" +
-                                "（部分机型不支持，不支持时会自动改弹键盘）"
-                            else "默认：打开面板后弹出键盘，点键盘上的麦克风即可语音输入"
-                            ,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = panelAutoVoiceEnabled,
-                        onCheckedChange = onTogglePanelAutoVoice
-                    )
-                }
+                // v1.5.x：悬浮球语音输入方式三选一
+                VoiceModeSection(vm = vm)
                 // 悬浮球图标：点开选择 emoji，实时生效
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -719,6 +698,39 @@ private fun ModelConfigPage(
                 }
             }
         }
+
+        // 语音识别模型状态说明（悬浮球语音输入 remote 模式用）
+        item { HorizontalDivider() }
+        item {
+            val asrProfile = remember(assignments, profiles) {
+                val assignedId = assignments[Capability.ASR]
+                profiles.firstOrNull { it.id == assignedId }
+                    ?: profiles.firstOrNull { it.isDefault }
+            }
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("语音识别模型", style = MaterialTheme.typography.titleSmall)
+                    when {
+                        asrProfile == null || !asrProfile.isConfigured() -> Text(
+                            "⚠️ 未配置语音识别模型。请在「能力指派」中把「语音识别」指派给支持音频转文字的模型" +
+                                "（如硅基流动的 Qwen3-ASR / SenseVoiceSmall / 星辰 ASR）；悬浮球语音输入的远程识别模式使用它。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        !asrProfile.supportsAudio -> Text(
+                            "⚠️ 语音识别模型：${asrProfile.name}（未勾选「支持语音识别」，编辑该提供商开启）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        else -> Text(
+                            "✓ 语音识别模型：${asrProfile.name}（${asrProfile.model}）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
     }
 
     // 添加 / 编辑提供商对话框
@@ -754,6 +766,7 @@ private fun ModelProviderCard(
                 Text(profile.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 if (profile.isDefault) AssistChip(onClick = {}, label = { Text("默认") })
                 if (profile.supportsVision) AssistChip(onClick = {}, label = { Text("视觉") })
+                if (profile.supportsAudio) AssistChip(onClick = {}, label = { Text("语音") })
                 IconButton(onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = "编辑") }
                 IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "删除") }
             }
@@ -1439,6 +1452,7 @@ private fun ProviderEditDialog(
     var apiKey by remember { mutableStateOf(initial?.apiKey ?: "") }
     var model by remember { mutableStateOf(initial?.model ?: "deepseek-chat") }
     var supportsVision by remember { mutableStateOf(initial?.supportsVision ?: false) }
+    var supportsAudio by remember { mutableStateOf(initial?.supportsAudio ?: false) }
     var isDefault by remember { mutableStateOf(initial?.isDefault ?: false) }
 
     AlertDialog(
@@ -1452,11 +1466,24 @@ private fun ProviderEditDialog(
                 OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("模型名（如 deepseek-chat）") }, singleLine = true)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("支持图片输入（识屏用）", modifier = Modifier.weight(1f))
-                    Switch(checked = supportsVision, onCheckedChange = { supportsVision = it })
+                    Switch(checked = supportsVision, onCheckedChange = {
+                        supportsVision = it
+                        if (it) supportsAudio = false   // 语音识别档案与对话/视觉链路互斥
+                    })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("支持语音识别（悬浮球语音用）", modifier = Modifier.weight(1f))
+                    Switch(checked = supportsAudio, onCheckedChange = {
+                        supportsAudio = it
+                        if (it) { supportsVision = false; isDefault = false }
+                    })
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("设为默认档案", modifier = Modifier.weight(1f))
-                    Switch(checked = isDefault, onCheckedChange = { isDefault = it })
+                    Switch(checked = isDefault, onCheckedChange = {
+                        isDefault = it
+                        if (it) supportsAudio = false
+                    })
                 }
             }
         },
@@ -1471,6 +1498,7 @@ private fun ProviderEditDialog(
                             apiKey = apiKey,
                             model = model,
                             supportsVision = supportsVision,
+                            supportsAudio = supportsAudio,
                             isDefault = isDefault
                         )
                     )
@@ -1569,4 +1597,47 @@ private fun PromptEditDialog(
             }
         }
     )
+}
+
+/** 
+ * 悬浮球语音输入方式选择（三选一）。远程识别的模型在「模型配置 → 能力指派 → 语音识别」指派。
+ * 独立组件：直接拿 SettingsViewModel，避免主列表函数参数继续膨胀。
+ */
+@Composable
+private fun VoiceModeSection(vm: SettingsViewModel) {
+    val voiceMode by vm.panelVoiceMode.collectAsState()
+
+    Column(modifier = Modifier.padding(top = 8.dp)) {
+        Text("悬浮球语音输入", style = MaterialTheme.typography.titleSmall)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(top = 6.dp)
+        ) {
+            FilterChip(
+                selected = voiceMode == "ime",
+                onClick = { vm.setPanelVoiceMode("ime") },
+                label = { Text("键盘语音") }
+            )
+            FilterChip(
+                selected = voiceMode == "system",
+                onClick = { vm.setPanelVoiceMode("system") },
+                label = { Text("系统听写") }
+            )
+            FilterChip(
+                selected = voiceMode == "remote",
+                onClick = { vm.setPanelVoiceMode("remote") },
+                label = { Text("远程识别") }
+            )
+        }
+        Text(
+            when (voiceMode) {
+                "system" -> "点悬浮球后直接开始系统听写（部分机型不支持，不支持时自动改弹键盘）"
+                "remote" -> "点悬浮球后录音并上传到「语音识别」指派的模型，识别文字自动发送"
+                else -> "默认：打开面板后弹出键盘，点键盘上的麦克风即可语音输入"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp)
+        )
+    }
 }

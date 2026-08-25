@@ -281,6 +281,7 @@ class BackupManager(
             conversationMaxTurns = settingsStore.conversationMaxTurns.first(),
             diaryTagsCsv = settingsStore.diaryTagsCsv.first(),
             secretLogEnabled = settingsStore.secretLogEnabled.first(),
+            panelVoiceMode = settingsStore.panelVoiceMode.first(),
             autoBackupEnabled = settingsStore.autoBackupEnabled.first(),
             autoBackupIntervalDays = settingsStore.autoBackupIntervalDays.first()
         )
@@ -413,6 +414,7 @@ class BackupManager(
         settingsStore.setConversationMaxTurns(s.conversationMaxTurns)
         settingsStore.setDiaryTagsCsv(s.diaryTagsCsv)
         settingsStore.setSecretLogEnabled(s.secretLogEnabled)
+        settingsStore.setPanelVoiceMode(s.panelVoiceMode)
         settingsStore.setAutoBackupEnabled(s.autoBackupEnabled)
         settingsStore.setAutoBackupIntervalDays(s.autoBackupIntervalDays)
     }

@@ -130,9 +130,9 @@ class ChatViewModel(
         }
     }
 
-    /** 浮动面板「点悬浮球自动开始听写」开关（面板订阅决定是否自动聆听） */
-    val panelAutoVoiceEnabled: StateFlow<Boolean> = settingsStore.panelAutoVoiceEnabled
-        .stateIn(scope, SharingStarted.WhileSubscribed(5000), true)
+    /** 浮动面板语音输入方式（ime/system/remote），面板据此决定点开后的动作 */
+    val panelVoiceMode: StateFlow<String> = settingsStore.panelVoiceMode
+        .stateIn(scope, SharingStarted.WhileSubscribed(5000), "ime")
 
     private val _inputText = MutableStateFlow("")
     val inputText: StateFlow<String> = _inputText
