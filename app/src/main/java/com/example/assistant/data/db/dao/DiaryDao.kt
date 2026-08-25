@@ -65,6 +65,10 @@ interface DiaryDao {
     @Query("DELETE FROM diary_entries WHERE id = :entryId")
     suspend fun deleteEntry(entryId: Long)
 
+    /** 工具读取用（read_diary）：某本最近 limit 条（新→旧），Kotlin 侧再做关键词/标签过滤 */
+    @Query("SELECT * FROM diary_entries WHERE bookId = :bookId ORDER BY createdAtEpochMillis DESC LIMIT :limit")
+    suspend fun latestEntries(bookId: Long, limit: Int): List<DiaryEntryEntity>
+
     /** 取某时间区间内的所有条目（按时间正序，供每日总结等使用） */
     @Query(
         "SELECT * FROM diary_entries WHERE createdAtEpochMillis >= :from AND createdAtEpochMillis < :to ORDER BY createdAtEpochMillis ASC"

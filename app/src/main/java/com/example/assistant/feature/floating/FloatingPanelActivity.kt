@@ -129,10 +129,17 @@ class FloatingPanelActivity : ComponentActivity() {
     private val container: AppContainer
         get() = (application as AssistantApplication).container
 
+    /** 系统「自动旋转」开关监听（onStart 注册 / onStop 注销）：面板开着时切控制中心立刻生效 */
+    private var rotateObserver: android.database.ContentObserver? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 系统自动旋转关闭时锁定当前方向（荣耀 ROM 的 sensor 不尊重旋转锁，见 OrientationUtils）
-        com.example.assistant.core.OrientationUtils.applyIfRotationLocked(this)
+        // 朝向总控：自动旋转开 = 跟随物理旋转；关 = 锁定「打开面板时刻前台应用的朝向」
+        // （启动方把当时的 rotation 塞进 EXTRA_ORIENTATION；荣耀 ROM 的 sensor 不尊重旋转锁，
+        //   必须手动锁，且 Activity 创建前系统就按 manifest 开始转，不能只读自己的 display）
+        val preferredRotation = intent.getIntExtra(EXTRA_ORIENTATION, Int.MIN_VALUE)
+            .takeIf { it != Int.MIN_VALUE }
+        com.example.assistant.core.OrientationUtils.applyPanelOrientation(this, preferredRotation)
         // 面板打开：悬浮球服务据此隐藏悬浮球（防截进截图 + 不遮挡面板）
         isPanelOpen = true
         container.panelState.value = AppContainer.PanelState.PANEL_OPEN
@@ -155,6 +162,13 @@ class FloatingPanelActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         isPanelOpen = true
+        // 实时跟随系统「自动旋转」开关（面板开着时拉控制中心切换，立刻生效）
+        rotateObserver = com.example.assistant.core.OrientationUtils.registerAutoRotateObserver(this) {
+            // 开关变化后重新应用朝向规则；锁定方向沿用启动时的记录
+            val preferred = intent.getIntExtra(EXTRA_ORIENTATION, Int.MIN_VALUE)
+                .takeIf { it != Int.MIN_VALUE }
+            com.example.assistant.core.OrientationUtils.applyPanelOrientation(this@FloatingPanelActivity, preferred)
+        }
     }
 
     override fun onStop() {
@@ -165,6 +179,8 @@ class FloatingPanelActivity : ComponentActivity() {
         if (container.panelState.value == AppContainer.PanelState.PANEL_OPEN) {
             container.panelState.value = AppContainer.PanelState.HIDDEN
         }
+        com.example.assistant.core.OrientationUtils.unregisterAutoRotateObserver(this, rotateObserver)
+        rotateObserver = null
         super.onStop()
     }
 
@@ -199,6 +215,8 @@ class FloatingPanelActivity : ComponentActivity() {
         if (container.panelState.value == AppContainer.PanelState.PANEL_OPEN) {
             container.panelState.value = AppContainer.PanelState.HIDDEN
         }
+        com.example.assistant.core.OrientationUtils.unregisterAutoRotateObserver(this, rotateObserver)
+        rotateObserver = null
         super.onDestroy()
     }
 
@@ -218,6 +236,8 @@ class FloatingPanelActivity : ComponentActivity() {
     companion object {
         private const val EXTRA_MODE = "panel_mode"
         private const val EXTRA_IMAGE_PATH = "image_path"
+        /** 启动面板那一刻的屏幕朝向（Surface.ROTATION_*）：自动旋转关闭时锁定到它 */
+        private const val EXTRA_ORIENTATION = "panel_orientation"
 
         /**
          * 面板是否真的在显示（onStart=true / onStop=false）。
@@ -227,11 +247,21 @@ class FloatingPanelActivity : ComponentActivity() {
         var isPanelOpen: Boolean = false
             private set
 
+        /**
+         * 打开浮动界面。自动旋转关闭时面板会锁定为「此刻的屏幕朝向」——
+         * 即前台应用的朝向（悬浮球/截屏服务从服务侧读 WindowManager 默认显示的 rotation）。
+         */
         fun intentFor(context: Context, mode: PanelMode, imagePath: String? = null): Intent =
             Intent(context, FloatingPanelActivity::class.java)
                 .putExtra(EXTRA_MODE, mode.name)
                 .apply {
                     if (imagePath != null) putExtra(EXTRA_IMAGE_PATH, imagePath)
+                    // 记录打开时刻的真实屏幕方向（服务上下文的 display 不受 Activity 影响）
+                    putExtra(
+                        EXTRA_ORIENTATION,
+                        (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager)
+                            .defaultDisplay.rotation
+                    )
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
     }

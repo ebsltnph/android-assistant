@@ -87,6 +87,10 @@ class DiaryRepository(private val dao: DiaryDao) {
     /** 数据库里引用的全部图片路径（启动清理孤儿文件用） */
     suspend fun allImagePaths(): List<String> = dao.allImagePaths()
 
+    /** 最近条目快照（read_diary 工具用）：新→旧，调用方在内存里过滤 */
+    suspend fun latestEntries(bookId: Long, limit: Int): List<DiaryEntryEntity> =
+        dao.latestEntries(bookId, limit)
+
     /** 取某时间区间条目（每日总结用） */
     suspend fun entriesBetween(fromMillis: Long, toMillis: Long): List<DiaryEntryEntity> =
         dao.entriesBetween(fromMillis, toMillis)

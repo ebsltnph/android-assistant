@@ -201,6 +201,9 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **兜底链**：①记录——像记录请求但模型没调 write_diary → 回复完成后静默存原文（looksLikeDiaryRequest 关键词检测，「记录不能丢」）；②图片消息记录（视觉路径无对话回路）→ 关键词检测+原文+图直接入日记（不再总结，质量略降可接受）；③浮动面板「提醒」气泡改走对话回路（createReminderNow=sendText 归一化前缀），与聊天同质量；④识屏面板通知改为 ChatViewModel 统一监听 controller.requests 转发（关键词路径与工具路径同源，executeCommand 不再手动发事件）
   - **UI**：ToolsRunning 事件驱动「🔧 动作1、动作2 …」状态文本；Final 附「🔧 已执行：…」页脚；chatStream maxTokens 2048→4096（多轮工具+推理思考配额）
 - [x] **v1.5.0 发布**（2026-08-24）：版本号 1.4.0 → **1.5.0 / code 10**；打包发布内容 = 识屏框选 + 主模型统一工具调度（含 read_webpage 网页阅读、五档思考深度与生效状态提示、分段时间线气泡、带图记录静默整理回路）+ 主界面视觉焕新（环境光背景/玻璃导航栏/时段问候/不对称圆角气泡/金色发送键）；助手系统提示词默认值更新（自定义过的用户需恢复默认获取新版）；数据与备份双向兼容。GitHub Release v1.5.0 附 APK
+- [x] **read_diary 读日记工具 + 浮动界面朝向修复**（2026-08-25，真机验证通过，已推送未发版——与语音两功能一起随下个版本发布）
+  - **read_diary 工具**：主模型可检索用户历史日记（`core/agent/tools/ReadDiaryTool.kt`，AppContainer 注册第 8 个工具）。参数全可选自由组合：query 关键词正文包含匹配 / tags 标签数组（多个须同时满足，忽略大小写）/ days 最近 N 天 / limit 默认 8 最大 20；全不传=最近日记。实现「简单优先」：DAO 加 `latestEntries(bookId, limit)` 取最近 500 条，Kotlin 内存过滤（个人日记量级足够），单条回传截断 200 字防挤占上下文；无结果时反馈条件并建议放宽。模型可自主决定调用与否与组合方式，找不到会如实说
+  - **浮动界面朝向修复**（用户报告两个问题）：① 锁定点击时刻系统状态、后续切控制中心不生效；② 自动旋转关闭时打开面板朝向=手机物理朝向而非前台应用朝向。根因：a) 荣耀 ROM 的 sensor 不尊重旋转锁（已知坑），onCreate 只在创建时判断一次；b) Activity 创建前系统就按 manifest 开始旋转，onCreate 里读自己的 display 已是面板自身朝向。修复：启动方（悬浮球服务/截屏服务/框选层共用 `intentFor`）把**此刻真实屏幕 rotation** 塞进 Intent extra（服务上下文的 defaultDisplay 不受待启 Activity 影响）→ `OrientationUtils.applyPanelOrientation(activity, preferredRotation)` 统一决策：自动旋转开 = SENSOR 跟随物理旋转；关 = 锁定 preferredRotation（= 打开时刻前台应用朝向）。**实时跟随开关**：`registerAutoRotateObserver` 监听 `Settings.System.ACCELEROMETER_ROTATION`（ContentObserver 主线程回调），FloatingPanelActivity onStart 注册 / onStop+onDestroy 双注销；开着面板拉控制中心切换开关立即生效。OrientationUtils 同步抽出 `orientationForRotation(rotation)` 复用映射
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

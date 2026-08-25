@@ -11,6 +11,7 @@ import com.example.assistant.core.agent.PeriodSummaryGenerator
 import com.example.assistant.core.agent.PromptBuilder
 import com.example.assistant.core.agent.ReminderTimeParser
 import com.example.assistant.core.agent.tools.MonitorEventTool
+import com.example.assistant.core.agent.tools.ReadDiaryTool
 import com.example.assistant.core.agent.tools.ReadWebpageTool
 import com.example.assistant.core.agent.tools.ScreenSenseTool
 import com.example.assistant.core.agent.tools.SetReminderTool
@@ -130,6 +131,8 @@ class AppContainer(context: Context) {
             listOf(
                 WebSearchTool(searchClient),
                 ReadWebpageTool(pageReader),
+                // 读日记：主模型可检索用户历史日记
+                ReadDiaryTool(diaryRepository),
                 SetReminderTool(reminderRepository, reminderScheduler, reminderTimeParser),
                 WriteMemoryTool(memoryRepository),
                 // 可用标签随设置变化，用惰性提供者每次执行时现读
