@@ -14,6 +14,8 @@ import com.example.assistant.core.agent.tools.MonitorEventTool
 import com.example.assistant.core.agent.tools.ReadDiaryTool
 import com.example.assistant.core.agent.tools.ReadWebpageTool
 import com.example.assistant.core.agent.tools.ScreenSenseTool
+import com.example.assistant.core.agent.tools.SpeakTool
+import com.example.assistant.core.speech.TtsManager
 import com.example.assistant.core.agent.tools.SetReminderTool
 import com.example.assistant.core.agent.tools.ToolRegistry
 import com.example.assistant.core.agent.tools.WebSearchTool
@@ -133,6 +135,8 @@ class AppContainer(context: Context) {
                 ReadWebpageTool(pageReader),
                 // 读日记：主模型可检索用户历史日记
                 ReadDiaryTool(diaryRepository),
+                // 朗读：模型自主决定何时读、读什么（精简口语版）
+                SpeakTool(ttsManager),
                 SetReminderTool(reminderRepository, reminderScheduler, reminderTimeParser),
                 WriteMemoryTool(memoryRepository),
                 // 可用标签随设置变化，用惰性提供者每次执行时现读
@@ -184,6 +188,9 @@ class AppContainer(context: Context) {
 
     // ---- P5：识屏 / 分享 ----
     val screenSenseController: ScreenSenseController by lazy { ScreenSenseController() }
+
+    // ---- v1.5.x：语音输出（TTS 朗读，进程级单例） ----
+    val ttsManager: TtsManager by lazy { TtsManager(appContext) }
     val visionAnalyzer: VisionAnalyzer by lazy { VisionAnalyzer(providerRegistry, promptStore) }
 
     // ---- P6：聊天核心（进程级共享单例：聊天页与浮动界面共用同一会话） ----
@@ -197,7 +204,8 @@ class AppContainer(context: Context) {
             memoryRepository = memoryRepository,
             visionAnalyzer = visionAnalyzer,
             screenSenseController = screenSenseController,
-            conversationLog = conversationLog
+            conversationLog = conversationLog,
+            ttsManager = ttsManager
         )
     }
 }

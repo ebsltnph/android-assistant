@@ -204,6 +204,13 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 - [x] **read_diary 读日记工具 + 浮动界面朝向修复**（2026-08-25，真机验证通过，已推送未发版——与语音两功能一起随下个版本发布）
   - **read_diary 工具**：主模型可检索用户历史日记（`core/agent/tools/ReadDiaryTool.kt`，AppContainer 注册第 8 个工具）。参数全可选自由组合：query 关键词正文包含匹配 / tags 标签数组（多个须同时满足，忽略大小写）/ days 最近 N 天 / limit 默认 8 最大 20；全不传=最近日记。实现「简单优先」：DAO 加 `latestEntries(bookId, limit)` 取最近 500 条，Kotlin 内存过滤（个人日记量级足够），单条回传截断 200 字防挤占上下文；无结果时反馈条件并建议放宽。模型可自主决定调用与否与组合方式，找不到会如实说
   - **浮动界面朝向修复**（用户报告两个问题）：① 锁定点击时刻系统状态、后续切控制中心不生效；② 自动旋转关闭时打开面板朝向=手机物理朝向而非前台应用朝向。根因：a) 荣耀 ROM 的 sensor 不尊重旋转锁（已知坑），onCreate 只在创建时判断一次；b) Activity 创建前系统就按 manifest 开始旋转，onCreate 里读自己的 display 已是面板自身朝向。修复：启动方（悬浮球服务/截屏服务/框选层共用 `intentFor`）把**此刻真实屏幕 rotation** 塞进 Intent extra（服务上下文的 defaultDisplay 不受待启 Activity 影响）→ `OrientationUtils.applyPanelOrientation(activity, preferredRotation)` 统一决策：自动旋转开 = SENSOR 跟随物理旋转；关 = 锁定 preferredRotation（= 打开时刻前台应用朝向）。**实时跟随开关**：`registerAutoRotateObserver` 监听 `Settings.System.ACCELEROMETER_ROTATION`（ContentObserver 主线程回调），FloatingPanelActivity onStart 注册 / onStop+onDestroy 双注销；开着面板拉控制中心切换开关立即生效。OrientationUtils 同步抽出 `orientationForRotation(rotation)` 复用映射
+- [x] **悬浮球语音输入 + TTS 朗读回复**（2026-08-25，真机验证通过，已推送未发版——与 read_diary/朝向修复一起随下个版本发布）
+  - **悬浮球语音输入（双路线设计）**：点悬浮球打开浮动面板后的语音入口，设置页「悬浮球语音输入」开关二选一：
+    - **默认·键盘引导**：面板打开自动聚焦输入框并弹软键盘，用户点键盘上的麦克风走输入法语音（项目原则「优先复用输入法语音」；FocusRequester + LocalSoftwareKeyboardController）
+    - **可选·系统听写**：开 `panel_auto_voice_enabled` 后直接开始 SpeechRecognizer 听写（RECORD_AUDIO 运行时权限），金色聆听条实时显示部分识别文字，说完停顿 1.2s 判定结束**自动发送**；聆听中滑返回手势 = 只停止聆听留在面板（BackHandler enabled=listening）；有「取消」按钮
+    - ⚠️ **荣耀 X50 GT 实测死路（adb 诊断实锤）**：全机唯一 RecognitionService 是荣耀自家的 MagicVoiceRecognitionService——注册了但第三方绑定后**零回调静默失效**；且全机无任何 Activity 处理 RecognizerIntent（系统语音窗不存在）。对策：① 不设 EXTRA_SPEECH_INPUT_*_SILENCE_* 参数（部分引擎设了永不结束的著名坑）；② PanelVoiceController 内置看门狗——8 秒无任何引擎回调（含 onRmsChanged 声浪喂狗）判死；③ 死后先试系统语音窗兜底，也没有则**平滑降级弹键盘**并提示，绝不干等。其他安卓机开开关即可用完整听写
+    - 核心文件：`core/speech/PanelVoiceController.kt`（看门狗+部分结果回调）、manifest 加 RECORD_AUDIO、FloatingBallService.onBallTap 带 autoVoice=true、intentFor 加 EXTRA_AUTO_VOICE
+  - **TTS 朗读回复**：`core/speech/TtsManager.kt` 封装系统 TextToSpeech（荣耀自带引擎中文可用；懒初始化、QUEUE_FLUSH 新朗读打断旧朗读、speaking StateFlow）。两个触发面：① **speak 工具**（第 9 个工具，模型自主判断何时朗读）——description 强约束 text 必须是提炼后的口语短文（去 markdown/公式，压缩成一两句），用户确认的设计「读哪些、读多长都由模型决定」；② **气泡旁喇叭按钮**（聊天页+浮动面板都有）——ChatViewModel.speakMessage 记 `_speakingMsgId`：点正在读的这条=停止、点别的=无缝切换；正在读的那条喇叭金色高亮（自然播完由 init 里 collect speaking 清标记）。`ChatUiMessage.spokenBody()` 提取可朗读正文（分段消息只拼正文段，跳过思考块/工具行）
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

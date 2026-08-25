@@ -9,6 +9,7 @@ import com.example.assistant.core.agent.AssistantIntent
 import com.example.assistant.core.agent.IntentRouter
 import com.example.assistant.core.agent.Session
 import com.example.assistant.core.network.dto.ChatMessage
+import com.example.assistant.core.speech.TtsManager
 import com.example.assistant.core.storage.ConversationLog
 import com.example.assistant.core.storage.SettingsStore
 import com.example.assistant.core.vision.ImageUtils
@@ -23,7 +24,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -58,6 +61,16 @@ sealed interface MsgSegment {
     data class Tools(val labels: List<String>) : MsgSegment
 }
 
+/**
+ * 消息的可朗读正文：分段消息只取正文段（跳过思考块/工具行）；
+ * 普通消息直接用 text。TTS 朗读与 speak 工具共用此提取。
+ */
+fun ChatUiMessage.spokenBody(): String =
+    if (segments.isEmpty()) text
+    else segments.filterIsInstance<MsgSegment.Text>()
+        .joinToString("\n") { it.text }
+        .ifBlank { text }
+
 /** 待发送附件：缩略图（附件栏显示）+ base64（发送时给视觉模型） */
 data class PendingImage(
     val thumbnail: Bitmap,
@@ -88,7 +101,8 @@ class ChatViewModel(
     private val memoryRepository: MemoryRepository,
     private val visionAnalyzer: VisionAnalyzer,
     private val screenSenseController: ScreenSenseController,
-    private val conversationLog: ConversationLog
+    private val conversationLog: ConversationLog,
+    private val ttsManager: TtsManager
 ) {
 
     /** 协程域：进程级共享，用 SupervisorJob 防止单个任务失败影响其他任务 */
@@ -99,6 +113,26 @@ class ChatViewModel(
 
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming
+
+    /** 是否正在 TTS 朗读（气泡喇叭按钮高亮/停止用） */
+    val ttsSpeaking: StateFlow<Boolean> get() = ttsManager.speaking
+
+    /** 当前正在朗读的消息 id（null = 没在读）：点同一条停止、点别的切换的依据 */
+    private val _speakingMsgId = MutableStateFlow<Long?>(null)
+    val speakingMsgId: StateFlow<Long?> = _speakingMsgId
+
+    init {
+        // 朗读自然结束/被打断时清掉「正在读」标记，喇叭按钮回到待朗读样式
+        scope.launch {
+            ttsManager.speaking.collect { speaking ->
+                if (!speaking) _speakingMsgId.value = null
+            }
+        }
+    }
+
+    /** 浮动面板「点悬浮球自动开始听写」开关（面板订阅决定是否自动聆听） */
+    val panelAutoVoiceEnabled: StateFlow<Boolean> = settingsStore.panelAutoVoiceEnabled
+        .stateIn(scope, SharingStarted.WhileSubscribed(5000), true)
 
     private val _inputText = MutableStateFlow("")
     val inputText: StateFlow<String> = _inputText
@@ -224,6 +258,21 @@ class ChatViewModel(
             }
             _isStreaming.value = false
         }
+    }
+
+    /**
+     * 朗读一条消息（气泡喇叭按钮）：点「正在读的这条」= 停止；点别的 = 切换朗读新内容。
+     * 内容取正文字段（分段消息只拼正文段，跳过思考块与工具状态行）。
+     */
+    fun speakMessage(msg: ChatUiMessage) {
+        if (_speakingMsgId.value == msg.id && ttsManager.speaking.value) {
+            // 点的是正在读的这条 → 停止
+            ttsManager.stop()
+            _speakingMsgId.value = null
+            return
+        }
+        _speakingMsgId.value = msg.id
+        ttsManager.speak(msg.spokenBody())
     }
 
     /**

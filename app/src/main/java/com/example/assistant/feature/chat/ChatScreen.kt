@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -86,6 +87,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
     val input by vm.inputText.collectAsState()
     val isStreaming by vm.isStreaming.collectAsState()
     val error by vm.error.collectAsState()
+    val speakingMsgId by vm.speakingMsgId.collectAsState()
     val pendingImage by vm.pendingImage.collectAsState()
 
     // 相册选图（Photo Picker，免存储权限）
@@ -157,6 +159,8 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                     MessageBubble(
                         msg = msg,
                         isLastAssistant = msg.role == "assistant" && msg.id == messages.lastOrNull()?.id,
+                        speakingThis = speakingMsgId == msg.id,
+                        onSpeak = { vm.speakMessage(msg) },
                         onCopy = {
                             clipboard.setText(AnnotatedString(msg.text))
                             Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
@@ -268,6 +272,8 @@ fun ChatScreen(modifier: Modifier = Modifier) {
 private fun MessageBubble(
     msg: ChatUiMessage,
     isLastAssistant: Boolean,
+    speakingThis: Boolean,
+    onSpeak: () -> Unit,
     onCopy: () -> Unit,
     onRegenerate: () -> Unit
 ) {
@@ -360,7 +366,7 @@ private fun MessageBubble(
                     }
                 }
             }
-            // 气泡外操作按钮（图标）：复制（全部消息）；重做（仅最后一条助手回复）
+            // 气泡外操作按钮（图标）：复制（全部消息）；朗读（助手消息）；重做（仅最后一条助手回复）
             if (!msg.streaming && (msg.text.isNotEmpty() || msg.thinking.isNotEmpty())) {
                 Row(
                     horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
@@ -373,6 +379,18 @@ private fun MessageBubble(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(14.dp)
                         )
+                    }
+                    // 朗读按钮（仅助手消息）：金色高亮 = 正在朗读这条，再点停止
+                    if (!isUser) {
+                        IconButton(onClick = onSpeak, modifier = Modifier.size(30.dp)) {
+                            Icon(
+                                Icons.Filled.VolumeUp,
+                                contentDescription = if (speakingThis) "停止朗读" else "朗读",
+                                tint = if (speakingThis) MaterialTheme.colorScheme.primary
+                                       else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
                     if (isLastAssistant) {
                         IconButton(onClick = onRegenerate, modifier = Modifier.size(30.dp)) {

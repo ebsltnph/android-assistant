@@ -22,6 +22,8 @@
         android:maxSdkVersion="28" />
     <!-- 悬浮球前台服务（API 34+ 的 specialUse 类型需要） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 浮动面板语音输入：系统 SpeechRecognizer 听写（运行时申请） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".AssistantApplication"

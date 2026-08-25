@@ -7,8 +7,11 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
@@ -55,6 +58,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Screenshot
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -64,6 +68,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -74,6 +79,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -89,6 +95,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.assistant.AssistantApplication
 import com.example.assistant.R
+import com.example.assistant.core.speech.PanelVoiceController
 import com.example.assistant.core.ui.RichMessageText
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.core.vision.ScreenSenseStarter
@@ -146,12 +153,15 @@ class FloatingPanelActivity : ComponentActivity() {
         enableEdgeToEdge()
         val mode = PanelMode.valueOf(intent.getStringExtra(EXTRA_MODE) ?: PanelMode.MAIN.name)
         val imagePath = intent.getStringExtra(EXTRA_IMAGE_PATH)
+        // 悬浮球点击路径会带上 true；是否真的自动聆听还看设置开关（面板内判断）
+        val autoVoiceRequested = intent.getBooleanExtra(EXTRA_AUTO_VOICE, false)
         setContent {
             AssistantTheme {
                 FloatingPanelScreen(
                     vm = container.chatViewModel,
                     mode = mode,
                     imagePath = imagePath,
+                    autoVoiceRequested = autoVoiceRequested,
                     onClose = { finishWithSlideOut() },
                     onScreenSense = { startScreenSenseCapture() }
                 )
@@ -238,6 +248,8 @@ class FloatingPanelActivity : ComponentActivity() {
         private const val EXTRA_IMAGE_PATH = "image_path"
         /** 启动面板那一刻的屏幕朝向（Surface.ROTATION_*）：自动旋转关闭时锁定到它 */
         private const val EXTRA_ORIENTATION = "panel_orientation"
+        /** 本次打开是否请求自动开始语音听写（悬浮球点击 = true；实际还受设置开关控制） */
+        private const val EXTRA_AUTO_VOICE = "panel_auto_voice"
 
         /**
          * 面板是否真的在显示（onStart=true / onStop=false）。
@@ -251,9 +263,15 @@ class FloatingPanelActivity : ComponentActivity() {
          * 打开浮动界面。自动旋转关闭时面板会锁定为「此刻的屏幕朝向」——
          * 即前台应用的朝向（悬浮球/截屏服务从服务侧读 WindowManager 默认显示的 rotation）。
          */
-        fun intentFor(context: Context, mode: PanelMode, imagePath: String? = null): Intent =
+        fun intentFor(
+            context: Context,
+            mode: PanelMode,
+            imagePath: String? = null,
+            autoVoice: Boolean = false
+        ): Intent =
             Intent(context, FloatingPanelActivity::class.java)
                 .putExtra(EXTRA_MODE, mode.name)
+                .putExtra(EXTRA_AUTO_VOICE, autoVoice)
                 .apply {
                     if (imagePath != null) putExtra(EXTRA_IMAGE_PATH, imagePath)
                     // 记录打开时刻的真实屏幕方向（服务上下文的 display 不受 Activity 影响）
@@ -285,6 +303,7 @@ private fun FloatingPanelScreen(
     vm: ChatViewModel,
     mode: FloatingPanelActivity.PanelMode,
     imagePath: String?,
+    autoVoiceRequested: Boolean,
     onClose: () -> Unit,
     onScreenSense: () -> Unit
 ) {
@@ -295,9 +314,13 @@ private fun FloatingPanelScreen(
 
     val messages by vm.messages.collectAsState()
     val isStreaming by vm.isStreaming.collectAsState()
+    val speakingMsgId by vm.speakingMsgId.collectAsState()
 
     // 面板输入状态（面板自己的输入框，不碰聊天页输入框）
     var input by remember { mutableStateOf("") }
+    // 方案B：悬浮球打开后自动聚焦输入框并弹键盘（引导用键盘上的麦克风语音输入）
+    val inputFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     // 选中功能气泡（null = 对话模式；再点同一气泡回对话）
     var selectedMode by remember { mutableStateOf<QuickAction?>(null) }
 
@@ -315,6 +338,115 @@ private fun FloatingPanelScreen(
     LaunchedEffect(Unit) {
         vm.screenSenseRequested.collect {
             onScreenSense()
+        }
+    }
+
+    // ---- v1.5.x：语音听写（点悬浮球自动开始；识别完自动发送进面板对话） ----
+    var listening by remember { mutableStateOf(false) }   // 正在聆听（麦克风开）
+    var voicePartial by remember { mutableStateOf("") }   // 实时识别文字预览
+    var voiceError by remember { mutableStateOf<String?>(null) } // 听写错误提示（几秒自动消失）
+    val panelAutoVoice by vm.panelAutoVoiceEnabled.collectAsState()
+    val voice = remember { PanelVoiceController(context) }
+    DisposableEffect(Unit) { onDispose { voice.destroy() } }
+
+    // 麦克风权限（RECORD_AUDIO，运行时申请一次）
+    val recordAudioPermission = android.Manifest.permission.RECORD_AUDIO
+
+    fun beginListening() {
+        if (listening || isStreaming) return
+        listening = true
+        voicePartial = ""
+        voice.start(
+            onPartial = { voicePartial = it },
+            onFinish = { result, error ->
+                listening = false
+                when {
+                    // 说完 → 直接作为消息发进面板对话（用户确认的交互）
+                    !result.isNullOrBlank() -> vm.quickSend(result)
+                    error != null -> voiceError = error
+                }
+            }
+        )
+    }
+
+    // 注意：局部函数须先声明后引用，permLauncher 放在 beginListening 之后
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) beginListening() else voiceError = "麦克风权限被拒绝，无法语音输入"
+    }
+
+    // 系统语音识别窗（兜底）：内联 SpeechRecognizer 无响应时自动切这个——
+    // 荣耀自带语音服务的完整界面，可靠性高；结果回来照样自动发送
+    val systemVoiceLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        listening = false
+        val text = res.data
+            ?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull { !it.isNullOrBlank() }
+        if (!text.isNullOrBlank()) vm.quickSend(text.trim())
+        else voiceError = "没有识别到内容，可再试或改用打字"
+    }
+    voice.onStalled = {
+        listening = false
+        try {
+            val i = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(
+                    android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                )
+                putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+                putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "请说出你的问题")
+            }
+            systemVoiceLauncher.launch(i)
+        } catch (_: Exception) {
+            // 本机连系统语音窗都没有（荣耀实测）：平滑降级到键盘语音
+            voiceError = "本机不支持系统语音识别，已为你弹出键盘（可点键盘上的麦克风）"
+            inputFocus.requestFocus()
+            keyboard?.show()
+        }
+    }
+
+    // 聆听中滑系统返回手势/按返回键 = 只停止聆听、留在面板（用户确认的交互）；
+    // 非聆听时返回仍走原逻辑关面板（onBackPressed）
+    BackHandler(enabled = listening) {
+        voice.stop()
+        listening = false
+        voicePartial = ""
+    }
+
+    // 自动触发：悬浮球路径打开 → 等入场动画后：
+    //   开关开 = 直接开始系统语音识别（适合支持的机型）；
+    //   开关关（默认）= 方案B：自动聚焦输入框并弹出键盘，引导点键盘上的麦克风（输入法语音）
+    LaunchedEffect(autoVoiceRequested) {
+        if (!autoVoiceRequested) return@LaunchedEffect
+        kotlinx.coroutines.delay(450) // 让面板先完成入场动画再动键盘/麦克风
+        if (!panelAutoVoice) {
+            // 方案B：弹键盘（仅主模式；识屏结果页不打扰）
+            if (mode == FloatingPanelActivity.PanelMode.MAIN) {
+                inputFocus.requestFocus()
+                keyboard?.show()
+            }
+            return@LaunchedEffect
+        }
+        if (!voice.available) {
+            voiceError = "本机没有可用的语音识别服务，已为你弹出键盘（可点键盘上的麦克风）"
+            inputFocus.requestFocus()
+            keyboard?.show()
+            return@LaunchedEffect
+        }
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+            context, recordAudioPermission
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) beginListening() else permLauncher.launch(recordAudioPermission)
+    }
+
+    // 错误提示几秒后自动消失（荣耀 logcat 不可见，提示必须落在界面上）
+    LaunchedEffect(voiceError) {
+        if (voiceError != null) {
+            kotlinx.coroutines.delay(4500)
+            voiceError = null
         }
     }
 
@@ -412,6 +544,8 @@ private fun FloatingPanelScreen(
                 OutputArea(
                     messages = messages,
                     isStreaming = isStreaming,
+                    speakingMsgId = speakingMsgId,
+                    onSpeak = { vm.speakMessage(it) },
                     onCopy = { msg ->
                         clipboard?.setText(android.text.SpannableString(msg.text))
                     },
@@ -556,6 +690,59 @@ private fun FloatingPanelScreen(
                         Spacer(Modifier.height(12.dp))
                     }
 
+                    // ---- 语音听写状态（聆听中 / 错误提示，玻璃条样式）----
+    if (listening) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xFFE4B863).copy(alpha = 0.14f))
+                .border(1.dp, Color(0xFFE4B863).copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Text("🎤", fontSize = 16.sp)
+            Spacer(Modifier.size(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "正在聆听…说完自动发送",
+                    fontSize = 13.sp,
+                    color = Color.White.copy(alpha = 0.85f)
+                )
+                if (voicePartial.isNotBlank()) {
+                    Text(
+                        voicePartial,
+                        fontSize = 12.sp,
+                        color = Color.White.copy(alpha = 0.55f),
+                        maxLines = 2
+                    )
+                }
+            }
+            Text(
+                "取消",
+                fontSize = 13.sp,
+                color = Color(0xFFE4B863),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                        voice.stop()
+                        listening = false
+                        voicePartial = ""
+                    }
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+    if (voiceError != null) {
+        Text(
+            "⚠️ $voiceError",
+            fontSize = 12.sp,
+            color = Color(0xFFEF9A9A),
+            modifier = Modifier.padding(bottom = 6.dp)
+        )
+    }
+
                     // ---- 玻璃输入行 ----
                     val placeholder = when (selectedMode) {
                         QuickAction.REMINDER -> "输入提醒内容，如：明天下午3点开会"
@@ -585,7 +772,7 @@ private fun FloatingPanelScreen(
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = Color.White
                             ),
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f).focusRequester(inputFocus)
                         )
                         Spacer(Modifier.size(10.dp))
                         // 发送按钮：香槟金强调色（风格唯一强调色）
@@ -621,6 +808,8 @@ private fun FloatingPanelScreen(
 private fun OutputArea(
     messages: List<ChatUiMessage>,
     isStreaming: Boolean,
+    speakingMsgId: Long?,
+    onSpeak: (ChatUiMessage) -> Unit,
     onCopy: (ChatUiMessage) -> Unit,
     onRegenerate: (Long) -> Unit
 ) {
@@ -644,6 +833,8 @@ private fun OutputArea(
                     MessageBubble(
                         msg = msg,
                         isLastAssistant = msg.role == "assistant" && msg.id == lastId,
+                        speakingThis = speakingMsgId == msg.id,
+                        onSpeak = { onSpeak(msg) },
                         onCopy = { onCopy(msg) },
                         onRegenerate = { onRegenerate(msg.id) }
                     )
@@ -658,6 +849,8 @@ private fun OutputArea(
 private fun MessageBubble(
     msg: ChatUiMessage,
     isLastAssistant: Boolean,
+    speakingThis: Boolean,
+    onSpeak: () -> Unit,
     onCopy: () -> Unit,
     onRegenerate: () -> Unit
 ) {
@@ -686,6 +879,9 @@ private fun MessageBubble(
             BubbleActions(
                 isUser = true,
                 showRegenerate = false,
+                showSpeak = false,
+                speakingThis = speakingThis,
+                onSpeak = onSpeak,
                 onCopy = onCopy,
                 onRegenerate = onRegenerate
             )
@@ -754,6 +950,10 @@ private fun MessageBubble(
             BubbleActions(
                 isUser = false,
                 showRegenerate = isLastAssistant,
+                // 助手消息都有朗读按钮（点正在读的停止，点别的切换朗读）
+                showSpeak = true,
+                speakingThis = speakingThis,
+                onSpeak = onSpeak,
                 onCopy = onCopy,
                 onRegenerate = onRegenerate
             )
@@ -798,11 +998,14 @@ private fun ToolsStatusLine(labels: List<String>) {
     )
 }
 
-/** 气泡侧边的操作按钮列（贴底部）：复制；重做（仅最后一条助手回复） */
+/** 气泡侧边的操作按钮列（贴底部）：复制；朗读（助手消息）；重做（仅最后一条助手回复） */
 @Composable
 private fun BubbleActions(
     isUser: Boolean,
     showRegenerate: Boolean,
+    showSpeak: Boolean,
+    speakingThis: Boolean,
+    onSpeak: () -> Unit,
     onCopy: () -> Unit,
     onRegenerate: () -> Unit
 ) {
@@ -814,6 +1017,17 @@ private fun BubbleActions(
                 tint = Color.White.copy(alpha = 0.55f),
                 modifier = Modifier.size(13.dp)
             )
+        }
+        // 朗读按钮：金色高亮 = 正在朗读这条（再点停止）；灰色 = 待朗读
+        if (showSpeak) {
+            IconButton(onClick = onSpeak, modifier = Modifier.size(26.dp)) {
+                Icon(
+                    Icons.Filled.VolumeUp,
+                    contentDescription = if (speakingThis) "停止朗读" else "朗读",
+                    tint = if (speakingThis) Color(0xFFE4B863) else Color.White.copy(alpha = 0.55f),
+                    modifier = Modifier.size(14.dp)
+                )
+            }
         }
         if (showRegenerate) {
             IconButton(onClick = onRegenerate, modifier = Modifier.size(26.dp)) {

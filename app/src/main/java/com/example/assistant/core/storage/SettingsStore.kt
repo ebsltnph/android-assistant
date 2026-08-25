@@ -89,6 +89,15 @@ class SettingsStore(context: Context) {
     val floatingBallEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_FLOATING_BALL] ?: false }
     suspend fun setFloatingBallEnabled(v: Boolean) = dataStore.edit { it[KEY_FLOATING_BALL] = v }
 
+    // ---- v1.5.x：点悬浮球自动开始语音输入 ----
+    /** 打开浮动面板后自动开始「系统语音识别」听写。
+     *  默认关：荣耀 X50 GT 的厂商识别服务对第三方 App 静默失效（实测），
+     *  默认行为改为「自动弹出键盘」引导输入法语音；其他安卓机可手动开启本开关。 */
+    val panelAutoVoiceEnabled: Flow<Boolean> =
+        dataStore.data.map { it[KEY_PANEL_AUTO_VOICE] ?: false }
+    suspend fun setPanelAutoVoiceEnabled(v: Boolean) =
+        dataStore.edit { it[KEY_PANEL_AUTO_VOICE] = v }
+
     // ---- 对话 ----
     /** 聊天上下文长度（对话轮数，默认 10；范围 5-50 由设置页 UI 约束） */
     val conversationMaxTurns: Flow<Int> = dataStore.data.map { it[KEY_MAX_TURNS] ?: 10 }
@@ -137,6 +146,7 @@ class SettingsStore(context: Context) {
         private val KEY_QUIET_END = intPreferencesKey("quiet_end_minute")
         private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
+        private val KEY_PANEL_AUTO_VOICE = booleanPreferencesKey("panel_auto_voice_enabled")
         private val KEY_SCREEN_SENSE_REGION = booleanPreferencesKey("screen_sense_region_enabled")
         private val KEY_MAX_TURNS = intPreferencesKey("conversation_max_turns")
         private val KEY_DIARY_TAGS = stringPreferencesKey("diary_tags_csv")

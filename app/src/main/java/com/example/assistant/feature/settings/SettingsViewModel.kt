@@ -93,6 +93,14 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setFloatingBallEnabled(v) }
     }
 
+    // ---- v1.5.x：点悬浮球自动开始语音听写 ----
+    val panelAutoVoiceEnabled: StateFlow<Boolean> = settingsStore.panelAutoVoiceEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setPanelAutoVoiceEnabled(v: Boolean) {
+        viewModelScope.launch { settingsStore.setPanelAutoVoiceEnabled(v) }
+    }
+
     // ---- v1.4.1：识屏框选 ----
     /** 识屏后先弹选区层手动框选（**默认开** = 截屏后先框选再识别） */
     val screenSenseRegionEnabled: StateFlow<Boolean> = settingsStore.screenSenseRegionEnabled

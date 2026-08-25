@@ -90,6 +90,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val assignments by vm.assignments.collectAsState()
     val testResult by vm.testResult.collectAsState()
     val floatingBallEnabled by vm.floatingBallEnabled.collectAsState()
+    val panelAutoVoiceEnabled by vm.panelAutoVoiceEnabled.collectAsState()
     val screenSenseRegionEnabled by vm.screenSenseRegionEnabled.collectAsState()
     val searchApiKey by vm.searchApiKey.collectAsState()
     val summaryMinute by vm.summaryMinute.collectAsState()
@@ -152,6 +153,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     vm.setFloatingBallEnabled(on)
                     if (on) FloatingBallService.start(context) else FloatingBallService.stop(context)
                 },
+                panelAutoVoiceEnabled = panelAutoVoiceEnabled,
+                onTogglePanelAutoVoice = { on -> vm.setPanelAutoVoiceEnabled(on) },
                 screenSenseRegionEnabled = screenSenseRegionEnabled,
                 onToggleScreenSenseRegion = { on ->
                     vm.setScreenSenseRegionEnabled(on)
@@ -266,6 +269,8 @@ private fun SettingsMainList(
     onShowBallHelp: () -> Unit,
     onEditPrompt: (PromptStore.PromptKey) -> Unit,
     onToggleFloatingBall: (Boolean) -> Unit,
+    panelAutoVoiceEnabled: Boolean,
+    onTogglePanelAutoVoice: (Boolean) -> Unit,
     screenSenseRegionEnabled: Boolean,
     onToggleScreenSenseRegion: (Boolean) -> Unit
 ) {
@@ -320,6 +325,27 @@ private fun SettingsMainList(
                         Text("悬浮窗权限：未开启", color = MaterialTheme.colorScheme.error)
                         TextButton(onClick = onOpenOverlaySettings) { Text("去开启") }
                     }
+                }
+                // v1.5.x：悬浮球语音输入路线开关
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 8.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("悬浮球语音输入", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            if (panelAutoVoiceEnabled) "打开面板后直接开始系统语音识别，说完自动发送" +
+                                "（部分机型不支持，不支持时会自动改弹键盘）"
+                            else "默认：打开面板后弹出键盘，点键盘上的麦克风即可语音输入"
+                            ,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = panelAutoVoiceEnabled,
+                        onCheckedChange = onTogglePanelAutoVoice
+                    )
                 }
             }
         }

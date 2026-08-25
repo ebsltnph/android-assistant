@@ -160,9 +160,16 @@ class FloatingBallService : Service() {
         window.hide()
     }
 
-    /** 点击悬浮球：展开浮动界面（主模式）。SYSTEM_ALERT_WINDOW 权限豁免后台启动限制 */
+    /** 点击悬浮球：展开浮动界面（主模式，自动开始语音听写——受设置开关控制）。
+     *  SYSTEM_ALERT_WINDOW 权限豁免后台启动限制 */
     private fun onBallTap() {
-        startActivity(FloatingPanelActivity.intentFor(this, FloatingPanelActivity.PanelMode.MAIN))
+        startActivity(
+            FloatingPanelActivity.intentFor(
+                this,
+                FloatingPanelActivity.PanelMode.MAIN,
+                autoVoice = true
+            )
+        )
     }
 
     /** 拖动结束：就近吸附到屏幕左/右边缘，半隐藏（只露出一点可点击的边） */
