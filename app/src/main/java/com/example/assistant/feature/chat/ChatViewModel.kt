@@ -11,7 +11,12 @@ import com.example.assistant.core.agent.Session
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.speech.TtsManager
 import com.example.assistant.core.storage.ConversationLog
+import com.example.assistant.core.storage.ChatSessionStore
 import com.example.assistant.core.storage.SettingsStore
+import com.example.assistant.core.storage.StoredChat
+import com.example.assistant.core.storage.StoredSegment
+import com.example.assistant.core.storage.StoredTurn
+import com.example.assistant.core.storage.StoredUiMessage
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.core.vision.ScreenSenseController
 import com.example.assistant.core.vision.VisionAnalyzer
@@ -135,7 +140,8 @@ class ChatViewModel(
     private val visionAnalyzer: VisionAnalyzer,
     private val screenSenseController: ScreenSenseController,
     private val conversationLog: ConversationLog,
-    private val ttsManager: TtsManager
+    private val ttsManager: TtsManager,
+    private val sessionStore: ChatSessionStore
 ) {
 
     /** 协程域：进程级共享，用 SupervisorJob 防止单个任务失败影响其他任务 */
@@ -189,6 +195,9 @@ class ChatViewModel(
     private var maxTurns = 20
     private var charLimit = SettingsStore.DEFAULT_CONTEXT_CHAR_LIMIT
 
+    /** 会话快照保留天数（0 = 不留存） */
+    private var retentionDays = SettingsStore.DEFAULT_CHAT_RETENTION_DAYS
+
     /** 带图用户消息的原图 base64（编辑重发时恢复进附件栏用）；超 40 条丢最旧 */
     private val imageBase64ByMsgId = object : LinkedHashMap<Long, String>(16, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>): Boolean = size > 40
@@ -212,6 +221,7 @@ class ChatViewModel(
                 if (result.resultText.isNotBlank()) {
                     val turnId = session.addAssistantOnly(result.resultText)
                     append(assistantMsg(counter++, turnId, result.resultText))
+                    persistSession()
                 }
             }
         }
@@ -250,6 +260,15 @@ class ChatViewModel(
                 refreshContextStatus()
             }
         }
+        // 会话快照保留天数：改为 0（不留存）时立刻清掉已存快照
+        scope.launch {
+            settingsStore.chatSessionRetentionDays.collect {
+                retentionDays = it
+                if (it <= 0) sessionStore.clear()
+            }
+        }
+        // 启动恢复（轻量持久化；超过保留天数视为过期直接丢掉）
+        scope.launch { restoreSession() }
     }
 
     fun setInput(text: String) {
@@ -396,6 +415,7 @@ class ChatViewModel(
                 handleVisionRecordInBackground(t, answer, imageBase64)
             }
             _isStreaming.value = false
+            persistSession()
         }
     }
 
@@ -419,6 +439,7 @@ class ChatViewModel(
             _messages.update { it + userMsg(counter++, turnId, instruction, thumbnail) }
             session.appendAssistant(turnId, ChatMessage("assistant", resultText))
             append(assistantMsg(counter++, turnId, resultText))
+            persistSession()
         }
     }
 
@@ -432,6 +453,7 @@ class ChatViewModel(
             val hint = "📔 已记入日记本"
             val turnId = session.addAssistantOnly(hint)
             append(assistantMsg(counter++, turnId, hint))
+            persistSession()
         }
     }
 
@@ -484,6 +506,7 @@ class ChatViewModel(
             }
         }
         refreshContextStatus()
+        persistSession()
     }
 
     /**
@@ -718,6 +741,7 @@ class ChatViewModel(
         removed.map { it.turnId }.distinct().forEach { session.deleteTurn(it) }
         removed.forEach { imageBase64ByMsgId.remove(it.id) }
         refreshContextStatus()
+        persistSession()
         if (lastUser.image != null) {
             val b64 = imageBase64ByMsgId.remove(lastUser.id)
             if (restoreImage && b64 != null) {
@@ -740,6 +764,7 @@ class ChatViewModel(
         affected.forEach { imageBase64ByMsgId.remove(it.id) }
         session.deleteTurn(turnId)
         refreshContextStatus()
+        persistSession()
         return true
     }
 
@@ -750,6 +775,91 @@ class ChatViewModel(
         _contextStatus.value = ContextStatus(
             minTurns = minTurns, maxTurns = maxTurns, charLimit = charLimit
         )
+        scope.launch { sessionStore.clear() }
+    }
+
+    // ---- 会话轻量持久化（随时可丢的内容：只存一个 JSON，不进备份） ----
+
+    /**
+     * 启动恢复：按保留天数判断快照是否过期；恢复界面消息与会话轮。
+     * 恢复的历史如果前缀一致，服务端提示词缓存可能仍在有效期内（也可能顺带命中）。
+     */
+    private suspend fun restoreSession() {
+        val days = settingsStore.chatSessionRetentionDays.first()
+        retentionDays = days
+        if (days <= 0) {
+            sessionStore.clear()
+            return
+        }
+        if (sessionStore.pruneIfExpired(days)) return
+        val snap = sessionStore.load() ?: return
+        if (snap.turns.isEmpty() && snap.messages.isEmpty()) return
+
+        session.restoreTurns(
+            snap.turns.map { t ->
+                session.turnFromStored(t.id, t.userText, t.imagePath, t.assistant)
+            }
+        )
+        _messages.value = snap.messages.map { m ->
+            ChatUiMessage(
+                id = m.id,
+                turnId = m.turnId,
+                role = m.role,
+                text = m.text,
+                thinking = m.thinking,
+                streaming = false,
+                image = null,      // 缩略图不持久化；带图轮的原图路径在会话侧（P4 起）
+                segments = m.segments.map { s ->
+                    when (s.kind) {
+                        "think" -> MsgSegment.Think(s.text)
+                        "tools" -> MsgSegment.Tools(s.labels)
+                        else -> MsgSegment.Text(s.text)
+                    }
+                },
+                regenerable = m.regenerable
+            )
+        }
+        counter = (_messages.value.maxOfOrNull { it.id } ?: -1L) + 1
+        refreshContextStatus()
+    }
+
+    /** 保存会话快照（界面消息 + 会话轮；条数上限防文件无限增长） */
+    private fun persistSession() {
+        if (retentionDays <= 0) return
+        val ui = _messages.value.takeLast(ChatSessionStore.MAX_UI_MESSAGES)
+        val uiTurnIds = ui.map { it.turnId }.toSet()
+        val turns = session.allTurns()
+            .filter { it.id in uiTurnIds }
+            .takeLast(ChatSessionStore.MAX_TURNS)
+        val snapshot = StoredChat(
+            savedAt = System.currentTimeMillis(),
+            turns = turns.map { t ->
+                StoredTurn(
+                    id = t.id,
+                    userText = t.user?.textContent,
+                    imagePath = t.imagePath,
+                    assistant = t.assistant.map { it.textContent }
+                )
+            },
+            messages = ui.map { m ->
+                StoredUiMessage(
+                    id = m.id,
+                    turnId = m.turnId,
+                    role = m.role,
+                    text = m.text,
+                    thinking = m.thinking,
+                    regenerable = m.regenerable,
+                    segments = m.segments.map { s ->
+                        when (s) {
+                            is MsgSegment.Think -> StoredSegment("think", s.text)
+                            is MsgSegment.Text -> StoredSegment("text", s.text)
+                            is MsgSegment.Tools -> StoredSegment("tools", labels = s.labels)
+                        }
+                    }
+                )
+            }
+        )
+        scope.launch { sessionStore.save(snapshot) }
     }
 
     // ---- 内部工具 ----

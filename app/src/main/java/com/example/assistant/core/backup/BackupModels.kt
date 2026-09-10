@@ -71,6 +71,8 @@ data class BackupSettings(
     val conversationMinTurns: Int = 5,
     /** 上下文字符软上限（0 = 关闭） */
     val conversationCharLimit: Int = 24000,
+    /** 会话快照保留天数（0 = 不留存；不进备份内容，只同步设置） */
+    val chatSessionRetentionDays: Int = 7,
     /** 日记标签词汇表（逗号分隔） */
     val diaryTagsCsv: String = "工作,生活,待办,经验",
     val secretLogEnabled: Boolean = false,

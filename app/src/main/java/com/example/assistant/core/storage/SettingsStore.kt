@@ -157,6 +157,16 @@ class SettingsStore(context: Context) {
         dataStore.data.map { it[KEY_CONTEXT_CHAR_LIMIT] ?: DEFAULT_CONTEXT_CHAR_LIMIT }
     suspend fun setConversationCharLimit(v: Int) = dataStore.edit { it[KEY_CONTEXT_CHAR_LIMIT] = v }
 
+    /**
+     * 会话快照保留天数（默认 7，0 = 不留存即每次启动清空）。
+     * 会话是随时可丢的内容：只做轻量持久化（一个 JSON 文件，不进备份），
+     * 并按天数定时清理，没必要一直记录。
+     */
+    val chatSessionRetentionDays: Flow<Int> =
+        dataStore.data.map { it[KEY_CHAT_RETENTION_DAYS] ?: DEFAULT_CHAT_RETENTION_DAYS }
+    suspend fun setChatSessionRetentionDays(v: Int) =
+        dataStore.edit { it[KEY_CHAT_RETENTION_DAYS] = v }
+
     // ---- 日记标签词汇表（用户自定义；AI 只能从这份列表里选 0-3 个） ----
     /** 标签列表，逗号分隔。默认：工作、生活、待办、经验 */
     val diaryTagsCsv: Flow<String> = dataStore.data.map { it[KEY_DIARY_TAGS] ?: DEFAULT_DIARY_TAGS_CSV }
@@ -209,6 +219,7 @@ class SettingsStore(context: Context) {
         private val KEY_MAX_TURNS = intPreferencesKey("conversation_max_turns")
         private val KEY_MIN_TURNS = intPreferencesKey("conversation_min_turns")
         private val KEY_CONTEXT_CHAR_LIMIT = intPreferencesKey("conversation_context_char_limit")
+        private val KEY_CHAT_RETENTION_DAYS = intPreferencesKey("chat_session_retention_days")
         private val KEY_DIARY_TAGS = stringPreferencesKey("diary_tags_csv")
         private val KEY_SECRET_LOG = booleanPreferencesKey("secret_log_enabled")
         private val KEY_AUTO_BACKUP = booleanPreferencesKey("auto_backup_enabled")
@@ -227,5 +238,8 @@ class SettingsStore(context: Context) {
 
         /** 上下文字符软上限默认值（约 12k token 量级；0 = 关闭该保护） */
         const val DEFAULT_CONTEXT_CHAR_LIMIT = 24_000
+
+        /** 会话快照保留天数默认值（0 = 不留存） */
+        const val DEFAULT_CHAT_RETENTION_DAYS = 7
     }
 }

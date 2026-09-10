@@ -32,6 +32,7 @@ import com.example.assistant.core.network.TavilySearchClient
 import com.example.assistant.data.db.entity.parseDiaryTags
 import com.example.assistant.core.quiet.QuietHours
 import com.example.assistant.core.storage.ConversationLog
+import com.example.assistant.core.storage.ChatSessionStore
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
@@ -94,6 +95,9 @@ class AppContainer(context: Context) {
     val settingsStore: SettingsStore by lazy { SettingsStore(appContext) }
     val promptStore: PromptStore by lazy { PromptStore(appContext) }
     val summaryStore: SummaryStore by lazy { SummaryStore(appContext) }
+
+    /** 会话快照（轻量持久化：一个 JSON 文件，不进备份；按保留天数定时清理） */
+    val chatSessionStore: ChatSessionStore by lazy { ChatSessionStore(appContext) }
 
     // ---- 秘密功能：对话历史记录（数字分身素材） ----
     val conversationLog: ConversationLog by lazy { ConversationLog(appContext, settingsStore) }
@@ -209,7 +213,8 @@ class AppContainer(context: Context) {
             visionAnalyzer = visionAnalyzer,
             screenSenseController = screenSenseController,
             conversationLog = conversationLog,
-            ttsManager = ttsManager
+            ttsManager = ttsManager,
+            sessionStore = chatSessionStore
         )
     }
 }

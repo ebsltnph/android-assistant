@@ -1265,16 +1265,20 @@ private fun ConversationLengthCard(vm: SettingsViewModel) {
     val minTurns by vm.conversationMinTurns.collectAsState()
     val maxTurns by vm.conversationMaxTurns.collectAsState()
     val charLimit by vm.conversationCharLimit.collectAsState()
+    val retentionDays by vm.chatSessionRetentionDays.collectAsState()
 
     var minText by remember(minTurns) { mutableStateOf(minTurns.toString()) }
     var maxText by remember(maxTurns) { mutableStateOf(maxTurns.toString()) }
     var charText by remember(charLimit) { mutableStateOf(charLimit.toString()) }
+    var retentionText by remember(retentionDays) { mutableStateOf(retentionDays.toString()) }
 
     val minV = minText.toIntOrNull()
     val maxV = maxText.toIntOrNull()
     val charV = charText.toIntOrNull()
-    val valid = minV != null && maxV != null && charV != null &&
-        minV in 1..100 && maxV in 1..100 && minV <= maxV && charV in 0..400_000
+    val retentionV = retentionText.toIntOrNull()
+    val valid = minV != null && maxV != null && charV != null && retentionV != null &&
+        minV in 1..100 && maxV in 1..100 && minV <= maxV && charV in 0..400_000 &&
+        retentionV in 0..90
 
     GlassCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1318,6 +1322,20 @@ private fun ConversationLengthCard(vm: SettingsViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            OutlinedTextField(
+                value = retentionText,
+                onValueChange = { retentionText = it.filter(Char::isDigit).take(2) },
+                label = { Text("会话记录保留天数（0 = 不留存，默认 7）") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "对话内容只存在本机一个文件里（不进备份、不上传），超过保留天数会在下次启动时清空。" +
+                    "会话是随时可丢的内容，没必要一直记录。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(
                     enabled = valid,
@@ -1325,11 +1343,12 @@ private fun ConversationLengthCard(vm: SettingsViewModel) {
                         minV?.let { vm.setConversationMinTurns(it) }
                         maxV?.let { vm.setConversationMaxTurns(it) }
                         charV?.let { vm.setConversationCharLimit(it) }
+                        retentionV?.let { vm.setChatSessionRetentionDays(it) }
                     }
                 ) { Text("保存") }
                 Text(
-                    if (valid) "下限 $minV · 上限 $maxV · 字符 $charV"
-                    else "下限须 ≤ 上限，范围 1-100；字符 0-400000",
+                    if (valid) "下限 $minV · 上限 $maxV · 字符 $charV · 保留 $retentionV 天"
+                    else "下限须 ≤ 上限，范围 1-100；字符 0-400000；保留 0-90 天",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 8.dp)

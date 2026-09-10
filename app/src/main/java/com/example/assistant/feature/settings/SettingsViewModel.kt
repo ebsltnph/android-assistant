@@ -218,6 +218,17 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setConversationCharLimit(v) }
     }
 
+    /** 会话快照保留天数（0 = 不留存；默认 7） */
+    val chatSessionRetentionDays: StateFlow<Int> = settingsStore.chatSessionRetentionDays
+        .stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000),
+            SettingsStore.DEFAULT_CHAT_RETENTION_DAYS
+        )
+
+    fun setChatSessionRetentionDays(v: Int) {
+        viewModelScope.launch { settingsStore.setChatSessionRetentionDays(v) }
+    }
+
     // ---- 秘密功能：对话历史记录开关 ----
     val secretLogEnabled: StateFlow<Boolean> = settingsStore.secretLogEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
