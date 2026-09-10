@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Mic
@@ -62,6 +63,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -69,6 +71,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -327,6 +330,8 @@ private fun FloatingPanelScreen(
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     // 选中功能气泡（null = 对话模式；再点同一气泡回对话）
     var selectedMode by remember { mutableStateOf<QuickAction?>(null) }
+    // 删除单条对话（需求 3）：待确认的轮 id（null = 无弹窗）
+    var pendingDeleteTurnId by remember { mutableStateOf<Long?>(null) }
 
     // 识图模式：截图缩略图 + 分析状态
     var analyzing by remember { mutableStateOf(false) }
@@ -638,11 +643,12 @@ private fun FloatingPanelScreen(
                     isStreaming = isStreaming,
                     speakingMsgId = speakingMsgId,
                     onSpeak = { vm.speakMessage(it) },
-                    onEditResend = { msg -> vm.withdrawForEdit(msg.id)?.let { input = it } },
+                    onEditResend = { msg -> vm.withdrawForEdit(msg.id, restoreImage = true)?.let { input = it } },
                     onCopy = { msg ->
                         clipboard?.setText(android.text.SpannableString(msg.text))
                     },
-                    onRegenerate = { vm.regenerate(it) }
+                    onRegenerate = { vm.regenerate(it) },
+                    onDeleteTurn = { pendingDeleteTurnId = it.turnId }
                 )
             }
 
@@ -948,6 +954,32 @@ private fun FloatingPanelScreen(
                 }
             }
         }
+
+        // 删除单条对话的二次确认（与聊天页同款交互；面板是深色玻璃，弹窗沿用主题配色）
+        val deleteTurnId = pendingDeleteTurnId
+        if (deleteTurnId != null) {
+            AlertDialog(
+                onDismissRequest = { pendingDeleteTurnId = null },
+                title = { Text("删除这轮对话？") },
+                text = {
+                    Text(
+                        "这一轮的提问和回答（含中间的工具调用记录）都会从对话历史里移除，" +
+                            "之后不再进入模型上下文。\n\n" +
+                            "注意：只是不再出现在上下文里——已经创建的提醒、已写入的日记或记忆不会回滚。"
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val ok = vm.deleteTurn(deleteTurnId)
+                        voiceError = if (ok) null else "正在回复中，请稍后再删"
+                        pendingDeleteTurnId = null
+                    }) { Text("删除") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDeleteTurnId = null }) { Text("取消") }
+                }
+            )
+        }
     }
 }
 
@@ -960,7 +992,8 @@ private fun OutputArea(
     onSpeak: (ChatUiMessage) -> Unit,
     onEditResend: (ChatUiMessage) -> Unit,
     onCopy: (ChatUiMessage) -> Unit,
-    onRegenerate: (Long) -> Unit
+    onRegenerate: (Long) -> Unit,
+    onDeleteTurn: (ChatUiMessage) -> Unit
 ) {
     val listState = rememberLazyListState()
     // 新消息/流式更新自动滚到底
@@ -988,7 +1021,8 @@ private fun OutputArea(
                             msg.id == messages.lastOrNull { it.role == "user" }?.id,
                         onEditResend = { onEditResend(msg) },
                         onCopy = { onCopy(msg) },
-                        onRegenerate = { onRegenerate(msg.id) }
+                        onRegenerate = { onRegenerate(msg.id) },
+                        onDeleteTurn = { onDeleteTurn(msg) }
                     )
                 }
             }
@@ -1006,7 +1040,8 @@ private fun MessageBubble(
     showEditResend: Boolean,
     onEditResend: () -> Unit,
     onCopy: () -> Unit,
-    onRegenerate: () -> Unit
+    onRegenerate: () -> Unit,
+    onDeleteTurn: () -> Unit
 ) {
     // （onRegenerate 参数为 () -> Unit，外层已绑定 msg.id）
     val isUser = msg.role == "user"
@@ -1020,7 +1055,7 @@ private fun MessageBubble(
         )
     }
     val shape = RoundedCornerShape(14.dp)
-    val showActions = !msg.streaming && (msg.text.isNotEmpty() || msg.thinking.isNotEmpty())
+    val showActions = !msg.streaming
     // 气泡 + 同一行的侧边操作按钮（不单独占一行）：
     // 用户消息图标在气泡左侧（行内最左），助手消息图标在气泡右侧（行内最右）；
     // 图标都靠屏幕中心侧，两边对称；气泡间距保持紧凑
@@ -1039,7 +1074,8 @@ private fun MessageBubble(
                 showEditResend = showEditResend,
                 onEditResend = onEditResend,
                 onCopy = onCopy,
-                onRegenerate = onRegenerate
+                onRegenerate = onRegenerate,
+                onDeleteTurn = onDeleteTurn
             )
         }
         Box(
@@ -1113,7 +1149,8 @@ private fun MessageBubble(
                 showEditResend = false,
                 onEditResend = onEditResend,
                 onCopy = onCopy,
-                onRegenerate = onRegenerate
+                onRegenerate = onRegenerate,
+                onDeleteTurn = onDeleteTurn
             )
         }
     }
@@ -1156,7 +1193,7 @@ private fun ToolsStatusLine(labels: List<String>) {
     )
 }
 
-/** 气泡侧边的操作按钮列（贴底部）：复制；编辑重发（最后一条用户消息）；朗读；重做 */
+/** 气泡侧边的操作按钮列（贴底部）：复制；编辑重发（最后一条用户消息）；朗读；重做；删除这一轮 */
 @Composable
 private fun BubbleActions(
     isUser: Boolean,
@@ -1167,7 +1204,8 @@ private fun BubbleActions(
     showEditResend: Boolean,
     onEditResend: () -> Unit,
     onCopy: () -> Unit,
-    onRegenerate: () -> Unit
+    onRegenerate: () -> Unit,
+    onDeleteTurn: () -> Unit
 ) {
     Column(horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
         IconButton(onClick = onCopy, modifier = Modifier.size(26.dp)) {
@@ -1209,6 +1247,15 @@ private fun BubbleActions(
                     modifier = Modifier.size(14.dp)
                 )
             }
+        }
+        // 删除这一轮（需求 3：一次删掉输入+输出，只让它不再进上下文，不回退工具副作用）
+        IconButton(onClick = onDeleteTurn, modifier = Modifier.size(26.dp)) {
+            Icon(
+                Icons.Filled.DeleteOutline,
+                contentDescription = "删除这轮对话",
+                tint = Color.White.copy(alpha = 0.55f),
+                modifier = Modifier.size(15.dp)
+            )
         }
     }
 }

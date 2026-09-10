@@ -34,9 +34,11 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -91,6 +93,9 @@ fun ChatScreen(modifier: Modifier = Modifier) {
     val speakingMsgId by vm.speakingMsgId.collectAsState()
     val pendingImage by vm.pendingImage.collectAsState()
     val contextStatus by vm.contextStatus.collectAsState()
+
+    // 删除单条对话（需求 3）：待确认的轮 id（null = 无弹窗）
+    var pendingDeleteTurnId by remember { mutableStateOf<Long?>(null) }
 
     // 相册选图（Photo Picker，免存储权限）
     val pickImageLauncher = rememberLauncherForActivityResult(
@@ -171,7 +176,8 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                             clipboard.setText(AnnotatedString(msg.text))
                             Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
                         },
-                        onRegenerate = { vm.regenerate(msg.id) }
+                        onRegenerate = { vm.regenerate(msg.id) },
+                        onDeleteTurn = { pendingDeleteTurnId = msg.turnId }
                     )
                 }
             }
@@ -272,6 +278,36 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
         )
     }
+
+    // 删除单条对话的二次确认：删除只影响本机上下文与界面，不回退已执行的工具副作用
+    val deleteTurnId = pendingDeleteTurnId
+    if (deleteTurnId != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDeleteTurnId = null },
+            title = { Text("删除这轮对话？") },
+            text = {
+                Text(
+                    "这一轮的提问和回答（含中间的工具调用记录）都会从对话历史里移除，" +
+                        "之后不再进入模型上下文。\n\n" +
+                        "注意：只是不再出现在上下文里——已经创建的提醒、已写入的日记或记忆不会回滚。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val ok = vm.deleteTurn(deleteTurnId)
+                    Toast.makeText(
+                        context,
+                        if (ok) "已从上下文移除" else "正在回复中，请稍后再删",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    pendingDeleteTurnId = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteTurnId = null }) { Text("取消") }
+            }
+        )
+    }
 }
 
 /**
@@ -340,7 +376,8 @@ private fun MessageBubble(
     showEditResend: Boolean,
     onEditResend: () -> Unit,
     onCopy: () -> Unit,
-    onRegenerate: () -> Unit
+    onRegenerate: () -> Unit,
+    onDeleteTurn: () -> Unit
 ) {
     val isUser = msg.role == "user"
     Row(
@@ -431,19 +468,22 @@ private fun MessageBubble(
                     }
                 }
             }
-            // 气泡外操作按钮（图标）：复制（全部消息）；朗读（助手消息）；重做（仅最后一条助手回复）
-            if (!msg.streaming && (msg.text.isNotEmpty() || msg.thinking.isNotEmpty())) {
+            // 气泡外操作按钮（图标）：复制（全部消息）；朗读（助手消息）；重做（仅最后一条助手回复）；
+            // 删除这一轮（需求 3：一次删掉输入+输出，只让它不再出现在上下文里，不回退工具副作用）
+            if (!msg.streaming) {
                 Row(
                     horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
                     modifier = Modifier.padding(top = 2.dp)
                 ) {
-                    IconButton(onClick = onCopy, modifier = Modifier.size(30.dp)) {
-                        Icon(
-                            Icons.Filled.ContentCopy,
-                            contentDescription = "复制",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(14.dp)
-                        )
+                    if (msg.text.isNotEmpty() || msg.thinking.isNotEmpty()) {
+                        IconButton(onClick = onCopy, modifier = Modifier.size(30.dp)) {
+                            Icon(
+                                Icons.Filled.ContentCopy,
+                                contentDescription = "复制",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
                     // 编辑重发（仅最后一条用户消息）：撤回该轮并把文字填回输入框，改完再发
                     if (isUser && showEditResend) {
@@ -477,6 +517,15 @@ private fun MessageBubble(
                                 modifier = Modifier.size(16.dp)
                             )
                         }
+                    }
+                    // 删除这一轮（用户气泡与助手气泡都能点，效果相同）
+                    IconButton(onClick = onDeleteTurn, modifier = Modifier.size(30.dp)) {
+                        Icon(
+                            Icons.Filled.DeleteOutline,
+                            contentDescription = "删除这轮对话",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(15.dp)
+                        )
                     }
                 }
             }
