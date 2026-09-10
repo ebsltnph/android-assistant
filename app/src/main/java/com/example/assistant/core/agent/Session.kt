@@ -29,21 +29,33 @@ import java.util.Locale
  */
 class Session {
 
-    /** 一轮：user 为 null 表示只产生了助手消息（浮动面板「记录」提示、识屏结果回填等） */
+    /**
+     * 一轮：userText 为 null 表示只产生了助手消息（浮动面板「记录」提示、识屏结果回填等）。
+     * 用户消息实体在 [messages] 里**按需构造**——图片只留文件路径（imagePath），
+     * 组装请求时才读成 base64。这样"历史图片保留几张"只需把老轮的 imagePath 置空即可，
+     * 不用改写历史消息内容。
+     */
     data class Turn(
         val id: Long,
-        val user: ChatMessage?,
+        /** 用户消息文本（已含创建时刻的时间戳前缀） */
+        val userText: String?,
         val assistant: MutableList<ChatMessage> = mutableListOf(),
-        /**
-         * 该轮用户消息附带的图片在本机的文件路径（识屏截图/上传图片）。
-         * 会话里只存路径不存 base64：省内存、可直接持久化；
-         * 组装请求时才读文件转 base64（见 [imagePartOf]）。
-         */
+        /** 该轮附带图片的本机文件路径（null = 无图或已被保留策略丢弃） */
         val imagePath: String? = null
     ) {
         /** 该轮的全部消息（按发送顺序） */
         fun messages(): List<ChatMessage> = buildList {
-            user?.let { add(it) }
+            userText?.let { t ->
+                val parts = ArrayList<ContentPart>(3)
+                parts += ContentPart.text(t)
+                val img = imagePath?.let { imagePartOf(it) }
+                if (img != null) {
+                    parts += img
+                    // 告知本机路径：模型据此调用 write_diary(image_paths=[…])，无需额外静默调用
+                    parts += ContentPart.text("[图片已保存到本机：$imagePath]")
+                }
+                add(ChatMessage("user", parts))
+            }
             addAll(assistant)
         }
 
@@ -87,26 +99,11 @@ class Session {
     /**
      * 开始一轮对话。用户消息在这里**打时间戳**（创建时刻固定，之后不再变化）。
      * @param userText 用户输入原文（null = 该轮没有用户消息）
-     * @param imageBase64 附带的图片（base64，无前缀）——与 imagePath 二选一
-     * @param imagePath 图片在本机的文件路径（推荐：会话只留路径，请求时才读文件）
+     * @param imagePath 附带图片的本机文件路径（识屏截图/上传图片）
      */
-    fun beginTurn(
-        userText: String?,
-        imageBase64: String? = null,
-        imagePath: String? = null
-    ): Long {
+    fun beginTurn(userText: String?, imagePath: String? = null): Long {
         val id = seq++
-        val user = userText?.let {
-            val parts = buildList {
-                add(ContentPart.text(stamp(it)))
-                when {
-                    !imagePath.isNullOrEmpty() -> imagePartOf(imagePath)?.let { add(it) }
-                    !imageBase64.isNullOrEmpty() -> add(ContentPart.image(imageBase64))
-                }
-            }
-            ChatMessage("user", parts)
-        }
-        turns.addLast(Turn(id, user, mutableListOf(), imagePath))
+        turns.addLast(Turn(id, userText?.let { stamp(it) }, mutableListOf(), imagePath))
         return id
     }
 
@@ -123,20 +120,26 @@ class Session {
         userText: String?,
         imagePath: String?,
         assistantTexts: List<String>
-    ): Turn {
-        val user = userText?.let {
-            val parts = buildList {
-                add(ContentPart.text(it))
-                if (!imagePath.isNullOrEmpty()) imagePartOf(imagePath)?.let { p -> add(p) }
-            }
-            ChatMessage("user", parts)
+    ): Turn = Turn(
+        id = id,
+        userText = userText,
+        assistant = assistantTexts.map { ChatMessage("assistant", it) }.toMutableList(),
+        imagePath = imagePath
+    )
+
+    /**
+     * 历史图片保留策略（设置页可调）：
+     * 只保留最近 [keep] 张带图轮的图片，更早的把 imagePath 置空（请求里就只剩文字占位）。
+     * keep < 0 = 全部保留（命中率最高、最贵）；0 = 只保留当前轮（最省）。
+     */
+    fun enforceImageRetention(keep: Int) {
+        if (keep < 0) return
+        val withImage = turns.filter { it.imagePath != null }
+        if (withImage.size <= keep) return
+        withImage.dropLast(keep).forEach { old ->
+            val idx = turns.indexOfFirst { it.id == old.id }
+            if (idx >= 0) turns[idx] = turns[idx].copy(imagePath = null)
         }
-        return Turn(
-            id = id,
-            user = user,
-            assistant = assistantTexts.map { ChatMessage("assistant", it) }.toMutableList(),
-            imagePath = imagePath
-        )
     }
 
     /** 把助手侧消息追加到指定轮（工具中间轮与最终回答都走这里） */
@@ -217,23 +220,23 @@ class Session {
     /** 给用户消息打时间戳前缀（创建时刻固定，历史消息永不改写） */
     private fun stamp(text: String): String = "[${timeFormat.format(Date())}] $text"
 
-    /**
-     * 把本机图片文件转成请求用的 image part（base64）。
-     * 文件不存在/读失败返回 null（历史图片已过期时该轮退化为纯文本，不影响其余上下文）。
-     */
-    private fun imagePartOf(path: String): ContentPart? = try {
-        val f = java.io.File(path)
-        if (!f.exists()) null
-        else ContentPart.image(
-            android.util.Base64.encodeToString(f.readBytes(), android.util.Base64.NO_WRAP),
-            mimeType = if (path.endsWith(".png", true)) "image/png" else "image/jpeg"
-        )
-    } catch (_: Exception) {
-        null
-    }
-
     companion object {
         /** 图片的字符当量（字符软上限的粗略折算：图片 token 与分辨率有关，这里只做量级估计） */
         const val IMAGE_CHAR_EQUIVALENT = 1_500
+
+        /**
+         * 把本机图片文件转成请求用的 image part（base64）。
+         * 文件不存在/读失败返回 null（历史图片已过期时该轮退化为纯文本，不影响其余上下文）。
+         */
+        fun imagePartOf(path: String): ContentPart? = try {
+            val f = java.io.File(path)
+            if (!f.exists()) null
+            else ContentPart.image(
+                android.util.Base64.encodeToString(f.readBytes(), android.util.Base64.NO_WRAP),
+                mimeType = if (path.endsWith(".png", true)) "image/png" else "image/jpeg"
+            )
+        } catch (_: Exception) {
+            null
+        }
     }
 }

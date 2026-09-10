@@ -282,6 +282,7 @@ class BackupManager(
             conversationMinTurns = settingsStore.conversationMinTurns.first(),
             conversationCharLimit = settingsStore.conversationCharLimit.first(),
             chatSessionRetentionDays = settingsStore.chatSessionRetentionDays.first(),
+            chatImageKeep = settingsStore.chatImageKeep.first(),
             diaryTagsCsv = settingsStore.diaryTagsCsv.first(),
             secretLogEnabled = settingsStore.secretLogEnabled.first(),
             panelVoiceMode = settingsStore.panelVoiceMode.first(),
@@ -420,6 +421,7 @@ class BackupManager(
         settingsStore.setConversationMinTurns(s.conversationMinTurns)
         settingsStore.setConversationCharLimit(s.conversationCharLimit)
         settingsStore.setChatSessionRetentionDays(s.chatSessionRetentionDays)
+        settingsStore.setChatImageKeep(s.chatImageKeep)
         settingsStore.setDiaryTagsCsv(s.diaryTagsCsv)
         settingsStore.setSecretLogEnabled(s.secretLogEnabled)
         settingsStore.setPanelVoiceMode(s.panelVoiceMode)

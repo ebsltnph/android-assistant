@@ -333,8 +333,7 @@ private fun FloatingPanelScreen(
     // 删除单条对话（需求 3）：待确认的轮 id（null = 无弹窗）
     var pendingDeleteTurnId by remember { mutableStateOf<Long?>(null) }
 
-    // 识图模式：截图缩略图 + 分析状态
-    var analyzing by remember { mutableStateOf(false) }
+    // 识图模式：截图缩略图（分析状态直接用共享的 isStreaming，识图已并入聊天通道）
     var thumbnail by remember(imagePath) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(imagePath) {
         thumbnail = withContext(Dispatchers.IO) {
@@ -357,6 +356,7 @@ private fun FloatingPanelScreen(
     var voicePartial by remember { mutableStateOf("") }   // 实时识别文字预览
     var voiceError by remember { mutableStateOf<String?>(null) } // 听写错误提示（几秒自动消失）
     val voiceMode by vm.panelVoiceMode.collectAsState()
+    val pendingImage by vm.pendingImage.collectAsState()
     val voice = remember { PanelVoiceController(context) }
     val remoteRecorder = remember { RemoteVoiceRecorder(context) }
     DisposableEffect(Unit) { onDispose { voice.destroy(); remoteRecorder.cancel() } }
@@ -552,13 +552,12 @@ private fun FloatingPanelScreen(
         val text = input.trim()
         if (text.isEmpty() || isStreaming) return
 
-        // 识图模式：文字要求 + 截图**一起**发给视觉模型（与聊天页附件行为一致）
+        // 识图模式：文字要求 + 截图**一起**作为一轮普通对话发送（图片走聊天通道，见 analyze 注释）
         if (mode == FloatingPanelActivity.PanelMode.SCREEN_SENSE && imagePath != null) {
             input = ""
             scope.launch {
                 val bmp = withContext(Dispatchers.IO) { ImageUtils.decodeThumbnail(imagePath!!) }
-                val base64 = withContext(Dispatchers.IO) { ImageUtils.fileToBase64(imagePath!!) }
-                vm.quickSendVision(text, base64, bmp)
+                vm.sendImageMessage(text, imageFilePath = imagePath, thumbnail = bmp)
             }
             return
         }
@@ -583,24 +582,21 @@ private fun FloatingPanelScreen(
         input = ""
     }
 
-    // 识图模式：视觉模型分析（结果进聊天会话 → 输出区显示 + App 聊天记录留存一份，
-    // 且聊天记录里能看到「截图 + 提示词」的完整一问一答，见 quickAnalyzeResult）
+    // 识图模式：截图分析 —— **已并入聊天通道**（2026-09-11）：
+    // 用「设置 → 高级设置 → 提示词」里对应的可编辑提示词 + 这张图，作为一轮普通对话发送。
+    // 因此带图轮同样拥有完整上下文、工具回路与思维链，且能重做/编辑/删除。
     fun analyze(key: String) {
         val path = imagePath ?: return
-        if (analyzing) return
-        analyzing = true
+        if (isStreaming) return
         scope.launch {
-            val instruction = ScreenSenseStarter.instructionFor(key)
-            val result = withContext(Dispatchers.IO) {
-                try {
-                    val base64 = ImageUtils.fileToBase64(path)
-                    container.visionAnalyzer.analyze(base64, instruction)
-                } catch (e: Exception) {
-                    "⚠️ 识屏失败：${e.message}"
-                }
+            val promptKey = ScreenSenseStarter.promptKeyFor(key)
+            val instruction = try {
+                container.promptStore.prompt(promptKey)
+            } catch (_: Exception) {
+                ScreenSenseStarter.instructionFor(key)
             }
-            vm.quickAnalyzeResult(path, instruction, result)
-            analyzing = false
+            val bmp = withContext(Dispatchers.IO) { ImageUtils.decodeThumbnail(path) }
+            vm.sendImageMessage(instruction, imageFilePath = path, thumbnail = bmp)
         }
     }
 
@@ -704,13 +700,13 @@ private fun FloatingPanelScreen(
                                 GlassActionButton(
                                     text = pair.second,
                                     icon = pair.first,
-                                    enabled = !analyzing,
+                                    enabled = !isStreaming,
                                     onClick = { analyze(key) },
                                     modifier = Modifier.weight(1f)
                                 )
                             }
                         }
-                        if (analyzing) {
+                        if (isStreaming) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(top = 8.dp)
@@ -870,6 +866,39 @@ private fun FloatingPanelScreen(
             modifier = Modifier.padding(bottom = 6.dp)
         )
     }
+
+                    // ---- 附件预览（面板原来没有附件栏：编辑重发带图消息时原图会还原到这里）----
+                    pendingImage?.let { p ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        ) {
+                            Image(
+                                bitmap = p.thumbnail.asImageBitmap(),
+                                contentDescription = "待发送图片",
+                                modifier = Modifier
+                                    .height(46.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color.White.copy(alpha = 0.06f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                            )
+                            Spacer(Modifier.size(8.dp))
+                            Text(
+                                "图片已就绪，输入要求后与它一起发送",
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.7f),
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { vm.removePendingImage() }) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "移除图片",
+                                    tint = Color.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
 
                     // ---- 玻璃输入行 ----
                     val placeholder = when (selectedMode) {

@@ -19,7 +19,6 @@ import com.example.assistant.core.storage.StoredTurn
 import com.example.assistant.core.storage.StoredUiMessage
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.core.vision.ScreenSenseController
-import com.example.assistant.core.vision.VisionAnalyzer
 import com.example.assistant.data.db.entity.parseDiaryTags
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.MemoryRepository
@@ -51,9 +50,11 @@ data class ChatUiMessage(
     val streaming: Boolean = false,
     /** 消息附带的图片缩略图（识屏截图 / 上传的图片），空表示无图 */
     val image: Bitmap? = null,
+    /** 附带图片在本机的文件路径（chat_images 下；会话只存路径不存 base64） */
+    val imagePath: String? = null,
     /** 分段内容（按真实时序：思考块/正文段/工具执行行）；非空时优先于 text/thinking 渲染 */
     val segments: List<MsgSegment> = emptyList(),
-    /** 该轮能否「重做」（走对话通道生成的才行；视觉独立通道生成的历史上不可重做） */
+    /** 该轮能否「重做」（走对话通道生成的才行） */
     val regenerable: Boolean = false
 )
 
@@ -137,7 +138,6 @@ class ChatViewModel(
     private val settingsStore: SettingsStore,
     private val diaryRepository: DiaryRepository,
     private val memoryRepository: MemoryRepository,
-    private val visionAnalyzer: VisionAnalyzer,
     private val screenSenseController: ScreenSenseController,
     private val conversationLog: ConversationLog,
     private val ttsManager: TtsManager,
@@ -198,10 +198,8 @@ class ChatViewModel(
     /** 会话快照保留天数（0 = 不留存） */
     private var retentionDays = SettingsStore.DEFAULT_CHAT_RETENTION_DAYS
 
-    /** 带图用户消息的原图 base64（编辑重发时恢复进附件栏用）；超 40 条丢最旧 */
-    private val imageBase64ByMsgId = object : LinkedHashMap<Long, String>(16, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>): Boolean = size > 40
-    }
+    /** 历史图片保留张数（-1 = 全部保留；0 = 只当前轮；默认 1） */
+    private var imageRetention = SettingsStore.DEFAULT_CHAT_IMAGE_KEEP
 
     /**
      * 识屏流程被触发的事件：浮动界面订阅它直接走自己的识图流程。
@@ -267,6 +265,10 @@ class ChatViewModel(
                 if (it <= 0) sessionStore.clear()
             }
         }
+        // 历史图片保留张数（-1 = 全部；影响 token 成本，见设置页说明）
+        scope.launch {
+            settingsStore.chatImageKeep.collect { imageRetention = it }
+        }
         // 启动恢复（轻量持久化；超过保留天数视为过期直接丢掉）
         scope.launch { restoreSession() }
     }
@@ -330,7 +332,7 @@ class ChatViewModel(
             _isStreaming.value = true
             _error.value = null
             if (image != null) {
-                sendWithImage(text, image)
+                sendImageTurn(text, image.base64, null, image.thumbnail)
             } else {
                 sendText(text)
             }
@@ -386,61 +388,63 @@ class ChatViewModel(
     }
 
     /**
-     * 浮动界面识图模式对话：文字要求 + 截图**一起**发给视觉模型（流式）。
-     * 图片不重发进会话（占位文本），后续追问基于回复文本走普通聊天。
+     * 浮动界面识图模式对话 / 聊天页附件：文字要求 + 图片**一起**发给模型。
+     *
+     * 2026-09-11 起图片走**同一条聊天通道**（只换成「识屏（视觉）」指派的档案）：
+     * 图片只是这一轮用户消息里的一个 image part——相当于"多花一张图的 token"。
+     * 于是带图轮与纯文字轮完全同质：有完整上下文、能调用工具、展示思维链、
+     * 支持重做/编辑重发/删除单条，不再有独立的视觉通道与隐藏的静默调用。
+     *
+     * @param imageBase64 图片 base64（聊天页附件）；与 [imageFilePath] 二选一
+     * @param imageFilePath 图片本机路径（浮动面板截图）
      */
-    fun quickSendVision(text: String, imageBase64: String, thumbnail: Bitmap?) {
+    fun sendImageMessage(
+        text: String,
+        imageBase64: String? = null,
+        imageFilePath: String? = null,
+        thumbnail: Bitmap?
+    ) {
         val t = text.trim()
-        if (t.isEmpty() || _isStreaming.value) return
-        conversationLog.log(t)
+        if (_isStreaming.value) return
+        if (imageBase64 == null && imageFilePath == null) return
         scope.launch {
             _isStreaming.value = true
             _error.value = null
-            val placeholder = if (t.isNotEmpty()) "[📷 屏幕截图]\n$t" else "[📷 屏幕截图]"
-            val turnId = session.beginTurn(placeholder)
-            val visionMsgId = counter++
-            _messages.update { it + userMsg(visionMsgId, turnId, t, thumbnail) }
-            imageBase64ByMsgId[visionMsgId] = imageBase64
-            if (visionAnalyzer.visionProfile() == null) {
-                val guide = VisionAnalyzer.GUIDE_TEXT
-                session.appendAssistant(turnId, ChatMessage("assistant", guide))
-                append(assistantMsg(counter++, turnId, guide))
-            } else {
-                val streamingId = counter++
-                append(assistantMsg(streamingId, turnId, "", streaming = true))
-                val instruction = t.ifBlank { "请描述这张图片" }
-                val answer = streamVisionReply(imageBase64, instruction, streamingId)
-                session.appendAssistant(turnId, ChatMessage("assistant", answer))
-                // 视觉回复完成后：记录类请求走静默工具回路整理入库（失败自动兜底原文）
-                handleVisionRecordInBackground(t, answer, imageBase64)
-            }
+            if (t.isNotEmpty()) conversationLog.log(t)
+            sendImageTurn(t, imageBase64, imageFilePath, thumbnail)
             _isStreaming.value = false
-            persistSession()
         }
     }
 
-    /**
-     * 浮动界面识图按钮分析完成：把「截图 + 提示词」作为用户消息、
-     * 分析结果作为助手消息一起进聊天记录。
-     */
-    fun quickAnalyzeResult(imagePath: String, instruction: String, resultText: String) {
-        if (instruction.isNotBlank()) conversationLog.log(instruction)
-        scope.launch {
-            val bmp = withContext(Dispatchers.IO) {
-                try {
-                    android.graphics.BitmapFactory.decodeFile(imagePath)
-                } catch (_: Exception) {
-                    null
-                }
+    /** 带图消息实发：图片落盘（chat_images）→ 会话留路径 → 走对话回路 */
+    private suspend fun sendImageTurn(
+        text: String,
+        imageBase64: String?,
+        imageFilePath: String?,
+        thumbnail: Bitmap?
+    ) {
+        val path = withContext(Dispatchers.IO) {
+            when {
+                !imageFilePath.isNullOrEmpty() -> ImageUtils.importToChatImages(context, imageFilePath)
+                !imageBase64.isNullOrEmpty() ->
+                    ImageUtils.decodeBase64Bitmap(imageBase64)?.let { bmp ->
+                        ImageUtils.saveToChatImages(context, ImageUtils.scaleBitmap(bmp))
+                    }
+                else -> null
             }
-            val thumbnail = bmp?.let { ImageUtils.thumbnail(it) }
-            val placeholder = if (instruction.isNotEmpty()) "[📷 屏幕截图]\n$instruction" else "[📷 屏幕截图]"
-            val turnId = session.beginTurn(placeholder)
-            _messages.update { it + userMsg(counter++, turnId, instruction, thumbnail) }
-            session.appendAssistant(turnId, ChatMessage("assistant", resultText))
-            append(assistantMsg(counter++, turnId, resultText))
-            persistSession()
         }
+        // 没写要求时给一句默认指令（否则模型只看到一张图，不知道要做什么）
+        val instruction = text.ifBlank { DEFAULT_IMAGE_INSTRUCTION }
+        val turnId = session.beginTurn(instruction, path)
+        // 历史图片保留策略（默认只留最近 1 张；更早的图只留文字，省 token 与上传体积）
+        session.enforceImageRetention(imageRetention)
+        _messages.update {
+            it + ChatUiMessage(
+                id = counter++, turnId = turnId, role = "user", text = text,
+                image = thumbnail, imagePath = path
+            )
+        }
+        runTurn(turnId, text, preferVision = true)
     }
 
     /** 浮动界面「记录」模式：文本直接写入默认日记本（不经模型），并给出反馈消息 */
@@ -469,14 +473,16 @@ class ChatViewModel(
     /**
      * 跑一轮对话回路（发送/重做共用）：
      * 用**当前**会话（而非历史请求快照）重建上下文，因此删除/裁剪/记忆更新后重做不会发出过期请求。
+     * @param preferVision 本轮带图片 → 用「识屏（视觉）」指派的档案（同一条通道，只换模型）
      */
-    private suspend fun runTurn(turnId: Long, rawText: String) {
+    private suspend fun runTurn(turnId: Long, rawText: String, preferVision: Boolean = false) {
         val ctx = session.buildContext(minTurns, maxTurns, charLimit)
         _contextStatus.update { it.withContext(ctx, minTurns, maxTurns, charLimit) }
         val memoryText = memoryRepository.memoryContextText()
         val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
         when (val result = agent.route(
-            rawText, memoryText = memoryText, history = ctx.messages, diaryTags = diaryTags
+            rawText, memoryText = memoryText, history = ctx.messages,
+            diaryTags = diaryTags, preferVision = preferVision
         )) {
             is AgentResult.Command -> {
                 // 目前只有识屏关键词直连会走到这里
@@ -492,13 +498,20 @@ class ChatViewModel(
             is AgentResult.ChatRequested -> {
                 val streamingId = counter++
                 append(assistantMsg(streamingId, turnId, "", streaming = true, regenerable = true))
-                val outcome = streamReply(result.messages, streamingId)
+                val outcome = streamReply(result.messages, streamingId, result.capability)
+                // 带图轮失败且该档案没勾"支持图片输入" → 补一句明确的排查提示
+                val answer = if (preferVision && outcome.answer.contains("[出错：") &&
+                    !agent.visionModelSupportsImages()
+                ) {
+                    outcome.answer + "\n\n" + Agent.IMAGE_MODEL_GUIDE
+                } else outcome.answer
                 // 工具中间轮写回会话历史：后续追问时模型能看到调用过什么、拿到过什么结果
                 outcome.exchanges.forEach { (request, resultsMsg) ->
                     session.appendAssistant(turnId, ChatMessage("assistant", request))
                     session.appendAssistant(turnId, ChatMessage("user", resultsMsg))
                 }
-                session.appendAssistant(turnId, ChatMessage("assistant", outcome.answer))
+                session.appendAssistant(turnId, ChatMessage("assistant", answer))
+                updateMessage(streamingId) { it.copy(text = answer) }
                 // 记录兜底："记录…"类请求但模型没调 write_diary → 静默存原文（记录不能丢）
                 if (!outcome.toolNames.contains("write_diary") && intentRouter.looksLikeDiaryRequest(rawText)) {
                     writeDiary(rawText)
@@ -510,76 +523,18 @@ class ChatViewModel(
     }
 
     /**
-     * 附件消息：文字要求 + 图片一起发给「识屏」视觉模型（流式）。
-     * 图片不重发进会话（占位文本），后续追问基于回复文本走普通聊天。
-     */
-    private suspend fun sendWithImage(text: String, image: PendingImage) {
-        val placeholder = if (text.isNotEmpty()) "[📷 用户发送了一张图片]\n$text" else "[📷 用户发送了一张图片]"
-        val turnId = session.beginTurn(placeholder)
-        val newId = counter++
-        _messages.update { it + userMsg(newId, turnId, text, image.thumbnail) }
-        imageBase64ByMsgId[newId] = image.base64
-        // 未配置视觉模型 → 明确引导，不发起无意义的调用（记录意图仍照常入日记）
-        if (visionAnalyzer.visionProfile() == null) {
-            val guide = VisionAnalyzer.GUIDE_TEXT
-            session.appendAssistant(turnId, ChatMessage("assistant", guide))
-            append(assistantMsg(counter++, turnId, guide))
-            handleVisionRecordInBackground(text, "", image.base64)
-            return
-        }
-        val streamingId = counter++
-        append(assistantMsg(streamingId, turnId, "", streaming = true))
-        val instruction = text.ifBlank { "请描述这张图片" }
-        val answer = streamVisionReply(image.base64, instruction, streamingId)
-        session.appendAssistant(turnId, ChatMessage("assistant", answer))
-        // 视觉回复完成后：记录类请求走静默工具回路整理入库（失败自动兜底原文）
-        handleVisionRecordInBackground(text, answer, image.base64)
-    }
-
-    /**
-     * 视觉消息的记录处理：先落图片文件，再跑一个**静默工具回路**——把用户要求+视觉分析
-     * 结果作为素材交给主模型，由它正常调 write_diary 整理正文/选标签/带图片路径入库
-     * （顺带也能 write_memory）。失败或模型没写 → 兜底原文+图直接入日记（记录不能丢）。
-     */
-    private fun handleVisionRecordInBackground(userText: String, visionAnswer: String, imageBase64: String) {
-        if (userText.isBlank()) return
-        if (!intentRouter.looksLikeDiaryRequest(userText)) return
-        scope.launch {
-            // 图片先落盘（write_diary 的 image_paths 参数直接引用该路径）
-            val imagePath = withContext(Dispatchers.IO) {
-                ImageUtils.decodeBase64Bitmap(imageBase64)?.let { bmp ->
-                    ImageUtils.saveToFilesDir(
-                        context, ImageUtils.scaleBitmap(bmp), "diary_${System.currentTimeMillis()}.jpg"
-                    )
-                }
-            }
-            val memoryText = memoryRepository.memoryContextText()
-            val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
-            val task = buildString {
-                append("[后台任务] 用户刚发送了一张图片并对它说：「${userText}」，其中包含记录日记的意愿。")
-                append("\n视觉模型对该图片的分析结果：\n").append(visionAnswer.take(1500))
-                if (imagePath != null) {
-                    append("\n图片已保存到本地路径：").append(imagePath)
-                }
-                append("\n请整理成一条简洁日记并用 write_diary 写入（有图片路径就放进 image_paths 参数；")
-                append("对话里有值得长期记住的信息也可用 write_memory）。完成后只需简短确认。")
-            }
-            val result = agent.silentReply(task, memoryText, diaryTags)
-            if (!result.ok || !result.toolNames.contains("write_diary")) {
-                // 兜底：原文+图直接入日记（记录不能丢）
-                writeDiary(userText, imagePaths = listOfNotNull(imagePath))
-            }
-        }
-    }
-
-    /**
      * 收集一轮完整回复（含主模型驱动的工具循环），实时更新消息文本。
      * - Delta：流式增量追加到气泡基线之后
      * - RoundSettled：本轮正文并入基线（纯调用轮为空=重置流式区）
      * - ToolsRunning：气泡切到「🔧 …」执行状态
      * - Final：替换为最终回答（并记录用量/缓存命中）
      */
-    private suspend fun streamReply(messages: List<ChatMessage>, messageId: Long): StreamOutcome {
+    private suspend fun streamReply(
+        messages: List<ChatMessage>,
+        messageId: Long,
+        capability: com.example.assistant.core.network.Capability =
+            com.example.assistant.core.network.Capability.CHAT
+    ): StreamOutcome {
         var base = ""      // 已定格正文（各轮保留正文的累加；维护 text 字段供复制/滚动）
         var roundAcc = ""  // 本轮流式文本累计
         var textThisRound = false  // 本轮是否流出过正文（RoundSettled 时定位要清洗的段）
@@ -611,7 +566,7 @@ class ChatViewModel(
         }
 
         try {
-            agent.chatReplyFlow(messages).collect { ev ->
+            agent.chatReplyFlow(messages, capability).collect { ev ->
                 when (ev) {
                     is Agent.ReplyEvent.Delta -> {
                         appendThink(ev.thinking)
@@ -672,31 +627,7 @@ class ChatViewModel(
         )
     }
 
-    /** 视觉模型流式回复（附件图片），失败信息附到消息尾部 */
-    private suspend fun streamVisionReply(imageBase64: String, instruction: String, messageId: Long): String {
-        var acc = ""
-        try {
-            visionAnalyzer.analyzeStream(imageBase64, instruction).collect { chunk ->
-                val delta = chunk.choices.firstOrNull()?.delta
-                val text = delta?.textContent.orEmpty()
-                if (text.isNotEmpty()) {
-                    acc += text
-                    updateMessage(messageId) { it.copy(text = acc) }
-                }
-            }
-            // 兜底：流式结束仍无内容（模型返回空/思考吃光配额等），给出明确提示
-            if (acc.isBlank()) {
-                acc = "（模型没有返回内容，可能思考过程占满输出长度。可关闭思考或更换视觉模型后重试）"
-                updateMessage(messageId) { it.copy(text = acc) }
-            }
-            updateMessage(messageId) { it.copy(streaming = false) }
-        } catch (e: Exception) {
-            val tail = "\n\n[识屏出错：${e.message}]"
-            acc += tail
-            updateMessage(messageId) { it.copy(text = acc, streaming = false) }
-        }
-        return acc
-    }
+    /** 视觉模型流式回复已随"识图并入聊天通道"删除（图片轮与文字轮走同一条 chatReplyFlow） */
 
     /**
      * 重新生成某条助手回复：用**当前会话**重建这一轮的请求（不再使用历史请求快照），
@@ -718,7 +649,8 @@ class ChatViewModel(
             updateMessage(messageId) {
                 it.copy(text = "", thinking = "", streaming = true, segments = emptyList(), regenerable = true)
             }
-            runTurn(turn.id, rawText)
+            // 带图轮重做仍走「识屏」档案（图片还在会话里）
+            runTurn(turn.id, rawText, preferVision = turn.imagePath != null)
             _isStreaming.value = false
         }
     }
@@ -726,7 +658,7 @@ class ChatViewModel(
     /**
      * 编辑重发：撤回「最后一条用户消息」——界面与会话历史同步删掉它及其后的助手回复，
      * 返回原文供调用方填回输入框；用户改完再发送即全新一轮，上下文与界面保持一致。
-     * 带图消息：restoreImage=true 时把原图恢复进附件栏（聊天页）；面板无附件栏传 false。
+     * 带图消息：restoreImage=true 时按会话里记的图片路径把原图还原进附件栏（聊天页）。
      * 返回 null = 不可撤回（正在流式 / 该条不是最后的用户消息）。
      */
     fun withdrawForEdit(messageId: Long, restoreImage: Boolean = false): String? {
@@ -739,13 +671,18 @@ class ChatViewModel(
         val removed = list.drop(idx)
         _messages.update { it.take(idx) }
         removed.map { it.turnId }.distinct().forEach { session.deleteTurn(it) }
-        removed.forEach { imageBase64ByMsgId.remove(it.id) }
         refreshContextStatus()
         persistSession()
-        if (lastUser.image != null) {
-            val b64 = imageBase64ByMsgId.remove(lastUser.id)
-            if (restoreImage && b64 != null) {
-                _pendingImage.value = PendingImage(lastUser.image, b64)
+        // 带图消息：把原图（chat_images 下的文件）还原进附件栏，编辑后可直接重发
+        val path = lastUser.imagePath
+        if (restoreImage && path != null) {
+            scope.launch {
+                val pending = withContext(Dispatchers.IO) {
+                    val bmp = ImageUtils.decodeFit(path, ImageUtils.MAX_WIDTH)
+                    if (bmp == null) null
+                    else PendingImage(ImageUtils.thumbnail(bmp), ImageUtils.bitmapToBase64(bmp))
+                }
+                if (pending != null) _pendingImage.value = pending
             }
         }
         return lastUser.text
@@ -761,7 +698,6 @@ class ChatViewModel(
         val affected = _messages.value.filter { it.turnId == turnId }
         if (affected.isEmpty()) return false
         _messages.update { list -> list.filterNot { it.turnId == turnId } }
-        affected.forEach { imageBase64ByMsgId.remove(it.id) }
         session.deleteTurn(turnId)
         refreshContextStatus()
         persistSession()
@@ -770,7 +706,6 @@ class ChatViewModel(
 
     fun clearConversation() {
         session.clear()
-        imageBase64ByMsgId.clear()
         _messages.value = emptyList()
         _contextStatus.value = ContextStatus(
             minTurns = minTurns, maxTurns = maxTurns, charLimit = charLimit
@@ -800,6 +735,13 @@ class ChatViewModel(
                 session.turnFromStored(t.id, t.userText, t.imagePath, t.assistant)
             }
         )
+        // 带图轮：从 chat_images 路径懒加载缩略图（文件可能已被清理策略删掉 → 无缩略图）
+        val thumbs = withContext(Dispatchers.IO) {
+            snap.turns.mapNotNull { t ->
+                t.imagePath?.let { p -> ImageUtils.decodeThumbnail(p)?.let { b -> t.id to b } }
+            }.toMap()
+        }
+        val pathByTurn = snap.turns.associate { it.id to it.imagePath }
         _messages.value = snap.messages.map { m ->
             ChatUiMessage(
                 id = m.id,
@@ -808,7 +750,8 @@ class ChatViewModel(
                 text = m.text,
                 thinking = m.thinking,
                 streaming = false,
-                image = null,      // 缩略图不持久化；带图轮的原图路径在会话侧（P4 起）
+                image = thumbs[m.turnId],
+                imagePath = pathByTurn[m.turnId],
                 segments = m.segments.map { s ->
                     when (s.kind) {
                         "think" -> MsgSegment.Think(s.text)
@@ -836,7 +779,7 @@ class ChatViewModel(
             turns = turns.map { t ->
                 StoredTurn(
                     id = t.id,
-                    userText = t.user?.textContent,
+                    userText = t.userText,
                     imagePath = t.imagePath,
                     assistant = t.assistant.map { it.textContent }
                 )
@@ -912,7 +855,7 @@ class ChatViewModel(
      * 供重发/重做时做关键词判断与记录兜底。
      */
     private fun rawUserText(turn: Session.Turn): String? {
-        val text = turn.user?.textContent ?: return null
+        val text = turn.userText ?: return null
         return text.replaceFirst(TIMESTAMP_PREFIX, "")
     }
 
@@ -941,6 +884,9 @@ class ChatViewModel(
     companion object {
         /** 用户消息时间戳前缀（Session 写入，见 Session.stamp） */
         private val TIMESTAMP_PREFIX = Regex("""^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}] """)
+
+        /** 只发图片没写要求时的默认指令 */
+        private const val DEFAULT_IMAGE_INSTRUCTION = "请描述这张图片"
 
         /** 后台静默抽取长期记忆的旧入口已删除：对话内记忆改由主模型 write_memory 工具完成 */
     }

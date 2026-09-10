@@ -229,6 +229,17 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setChatSessionRetentionDays(v) }
     }
 
+    /** 历史图片保留张数（-1 = 全部；0 = 只当前轮；默认 1） */
+    val chatImageKeep: StateFlow<Int> = settingsStore.chatImageKeep
+        .stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000),
+            SettingsStore.DEFAULT_CHAT_IMAGE_KEEP
+        )
+
+    fun setChatImageKeep(v: Int) {
+        viewModelScope.launch { settingsStore.setChatImageKeep(v) }
+    }
+
     // ---- 秘密功能：对话历史记录开关 ----
     val secretLogEnabled: StateFlow<Boolean> = settingsStore.secretLogEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)

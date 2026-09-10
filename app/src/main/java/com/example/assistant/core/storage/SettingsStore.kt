@@ -167,6 +167,15 @@ class SettingsStore(context: Context) {
     suspend fun setChatSessionRetentionDays(v: Int) =
         dataStore.edit { it[KEY_CHAT_RETENTION_DAYS] = v }
 
+    /**
+     * 历史图片保留张数（-1 = 全部保留；0 = 只保留当前轮；**默认 1**）。
+     * 图片进历史后每轮都要重发（token + 上传体积），故默认只留最近一张；
+     * 更早的图只把 `imagePath` 置空（消息内容不改写），仅在新图加入时产生一次缓存失效。
+     */
+    val chatImageKeep: Flow<Int> =
+        dataStore.data.map { it[KEY_CHAT_IMAGE_KEEP] ?: DEFAULT_CHAT_IMAGE_KEEP }
+    suspend fun setChatImageKeep(v: Int) = dataStore.edit { it[KEY_CHAT_IMAGE_KEEP] = v }
+
     // ---- 日记标签词汇表（用户自定义；AI 只能从这份列表里选 0-3 个） ----
     /** 标签列表，逗号分隔。默认：工作、生活、待办、经验 */
     val diaryTagsCsv: Flow<String> = dataStore.data.map { it[KEY_DIARY_TAGS] ?: DEFAULT_DIARY_TAGS_CSV }
@@ -220,6 +229,7 @@ class SettingsStore(context: Context) {
         private val KEY_MIN_TURNS = intPreferencesKey("conversation_min_turns")
         private val KEY_CONTEXT_CHAR_LIMIT = intPreferencesKey("conversation_context_char_limit")
         private val KEY_CHAT_RETENTION_DAYS = intPreferencesKey("chat_session_retention_days")
+        private val KEY_CHAT_IMAGE_KEEP = intPreferencesKey("chat_image_keep")
         private val KEY_DIARY_TAGS = stringPreferencesKey("diary_tags_csv")
         private val KEY_SECRET_LOG = booleanPreferencesKey("secret_log_enabled")
         private val KEY_AUTO_BACKUP = booleanPreferencesKey("auto_backup_enabled")
@@ -241,5 +251,8 @@ class SettingsStore(context: Context) {
 
         /** 会话快照保留天数默认值（0 = 不留存） */
         const val DEFAULT_CHAT_RETENTION_DAYS = 7
+
+        /** 历史图片保留张数默认值（-1 = 全部；0 = 只当前轮） */
+        const val DEFAULT_CHAT_IMAGE_KEEP = 1
     }
 }

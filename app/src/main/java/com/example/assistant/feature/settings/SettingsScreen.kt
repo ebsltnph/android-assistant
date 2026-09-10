@@ -513,12 +513,8 @@ private fun SettingsMainList(
                 onEdit = { onEditPrompt(PromptStore.PromptKey.ASSISTANT_SYSTEM) }
             )
         }
-        item {
-            PromptCard(
-                key = PromptStore.PromptKey.SCREEN_SENSE,
-                onEdit = { onEditPrompt(PromptStore.PromptKey.SCREEN_SENSE) }
-            )
-        }
+        // （原「识屏提示词」入口已删除：识图并入聊天通道后由三个快捷动作提示词承担，
+        //   见「高级设置 → 提示词」里的「识屏·提取文字 / 翻译 / 总结内容」）
 
         // ---- 10. 版本号（隐藏入口：连点 3 次进秘密功能——不显眼，防止误入） ----
         item {
@@ -605,7 +601,8 @@ private fun ModelConfigPage(
         item { SubPageHeader("模型配置", onBack) }
         item {
             Text(
-                "每个提供商可单独测试连接、设置思考强度；对话 / 识屏 / 分类可指派不同提供商。",
+                "每个提供商可单独测试连接、设置思考强度；对话 / 识屏 / 语音识别可指派不同提供商。" +
+                    "（建议把「对话」与「识屏」指派成同一个带图模型：两边的提示词缓存才能共用。）",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -672,22 +669,39 @@ private fun ModelConfigPage(
                     Text("识屏（视觉）模型", style = MaterialTheme.typography.titleSmall)
                     when {
                         visionProfile == null || !visionProfile.isConfigured() -> Text(
-                            "⚠️ 未配置识屏模型。请在「能力指派」中把「识屏（视觉）」指派给支持图片输入的模型" +
-                                "（如通义 qwen-vl、智谱 GLM-4V、Kimi vision、OpenAI gpt-4o）；" +
+                            "⚠️ 未配置识屏模型。带图片的消息会用它——请在「能力指派」里指派一个支持图片" +
+                                "输入的模型（如通义 qwen-vl、智谱 GLM-4V、Kimi vision、OpenAI gpt-4o）；" +
                                 "DeepSeek 官方 API 不支持图片。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )
                         !visionProfile.supportsVision -> Text(
-                            "⚠️ 识屏模型：${visionProfile.name}（未勾选「支持图片输入」，编辑该提供商开启）",
+                            "⚠️ 识屏模型：${visionProfile.name}（未勾选「支持图片输入」，编辑该提供商开启；" +
+                                "未开启时历史图片不会发给它，当前轮的图片仍会尝试发送）",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )
-                        else -> Text(
-                            "✓ 识屏模型：${visionProfile.name}（${visionProfile.model}）",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        else -> {
+                            val chatProfile = remember(assignments, profiles) {
+                                val assignedId = assignments[Capability.CHAT]
+                                profiles.firstOrNull { it.id == assignedId }
+                                    ?: profiles.firstOrNull { it.isDefault }
+                            }
+                            Text(
+                                "✓ 识屏模型：${visionProfile.name}（${visionProfile.model}）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                if (chatProfile?.id == visionProfile.id)
+                                    "与「对话」是同一个档案 → 文字轮与带图轮共用同一条缓存前缀，命中率最优。"
+                                else
+                                    "与「对话」是不同档案（对话：${chatProfile?.name ?: "未配置"}）→ " +
+                                        "文字轮与带图轮的提示词缓存相互独立；想让缓存共用就把两者指派成同一个模型。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -1056,14 +1070,14 @@ private fun QuietHoursPage(
 
 // ======================= 提示词高级设置子页面 =======================
 
-/** 提示词高级设置：除「助手系统提示词」「识屏提示词」外的其余各组 */
+/** 提示词高级设置：除「助手系统提示词」外的其余各组（含识屏三个快捷动作提示词） */
 @Composable
 private fun PromptsAdvancedPage(
     onBack: () -> Unit,
     onEditPrompt: (PromptStore.PromptKey) -> Unit
 ) {
     val advancedKeys = PromptStore.PromptKey.entries.filter {
-        it != PromptStore.PromptKey.ASSISTANT_SYSTEM && it != PromptStore.PromptKey.SCREEN_SENSE
+        it != PromptStore.PromptKey.ASSISTANT_SYSTEM
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1266,6 +1280,7 @@ private fun ConversationLengthCard(vm: SettingsViewModel) {
     val maxTurns by vm.conversationMaxTurns.collectAsState()
     val charLimit by vm.conversationCharLimit.collectAsState()
     val retentionDays by vm.chatSessionRetentionDays.collectAsState()
+    val imageKeep by vm.chatImageKeep.collectAsState()
 
     var minText by remember(minTurns) { mutableStateOf(minTurns.toString()) }
     var maxText by remember(maxTurns) { mutableStateOf(maxTurns.toString()) }
@@ -1333,6 +1348,32 @@ private fun ConversationLengthCard(vm: SettingsViewModel) {
             Text(
                 "对话内容只存在本机一个文件里（不进备份、不上传），超过保留天数会在下次启动时清空。" +
                     "会话是随时可丢的内容，没必要一直记录。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "历史图片保留张数（带图对话的图每轮都要重发，越少越省 token 与流量）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(
+                    0 to "只当前轮",
+                    1 to "最近 1 张",
+                    3 to "最近 3 张",
+                    -1 to "全部"
+                ).forEach { (v, label) ->
+                    FilterChip(
+                        selected = imageKeep == v,
+                        onClick = { vm.setChatImageKeep(v) },
+                        label = { Text(label) }
+                    )
+                }
+            }
+            Text(
+                "只在新图片加入时把更早的图从上下文里换成文字（一次性的缓存失效），" +
+                    "当前轮的图片永远会发给模型。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1526,12 +1567,19 @@ private fun ProviderEditDialog(
                 OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, label = { Text("API Key") }, singleLine = true)
                 OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("模型名（如 deepseek-chat）") }, singleLine = true)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("支持图片输入（识屏用）", modifier = Modifier.weight(1f))
+                    Text("支持图片输入（带图对话用）", modifier = Modifier.weight(1f))
                     Switch(checked = supportsVision, onCheckedChange = {
                         supportsVision = it
                         if (it) supportsAudio = false   // 语音识别档案与对话/视觉链路互斥
                     })
                 }
+                Text(
+                    "勾选后：带图片的那一轮会把图发给它，历史里的图片也会一并带上。" +
+                        "没勾选时带图轮仍会尝试发送（当前轮的图），但历史图片会被自动替换成文字，" +
+                        "避免纯文本模型直接报错。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("支持语音识别（悬浮球语音用）", modifier = Modifier.weight(1f))
                     Switch(checked = supportsAudio, onCheckedChange = {

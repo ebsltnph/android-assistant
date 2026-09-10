@@ -58,7 +58,19 @@ object ScreenSenseStarter {
         app.container.panelState.value = AppContainer.PanelState.HIDDEN
     }
 
-    /** 识屏动作 → 视觉模型指令（迁移自 P5 的 ScreenResultOverlay，勿删） */
+    /**
+     * 识屏快捷动作 → 可编辑提示词的键（设置 → 高级设置 → 提示词里能改）。
+     * 识图并入聊天通道后，动作就是"用哪句提示词 + 图片"发一轮对话。
+     */
+    fun promptKeyFor(action: String): com.example.assistant.core.storage.PromptStore.PromptKey =
+        when (action) {
+            "translate" -> com.example.assistant.core.storage.PromptStore.PromptKey.SCREEN_ACTION_TRANSLATE
+            "describe", "analysis", "full_analysis", "analyze" ->
+                com.example.assistant.core.storage.PromptStore.PromptKey.SCREEN_ACTION_DESCRIBE
+            else -> com.example.assistant.core.storage.PromptStore.PromptKey.SCREEN_ACTION_EXTRACT
+        }
+
+    /** 兜底文案（提示词读取失败时用；正常情况下走 [promptKeyFor] 读用户可编辑的提示词） */
     fun instructionFor(action: String): String = when (action) {
         "extract" -> "请提取这张图片上的全部文字，按原有顺序和布局整理输出"
         "translate" -> "请把这张图片上的文字内容翻译成简体中文"

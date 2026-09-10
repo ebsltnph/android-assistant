@@ -9,6 +9,7 @@ import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.network.dto.ChatRequest
 import com.example.assistant.core.network.dto.ChatResponse
+import com.example.assistant.core.network.dto.ContentPart
 import com.example.assistant.core.network.dto.StreamOptions
 import com.example.assistant.core.network.dto.Usage
 import kotlinx.coroutines.flow.Flow
@@ -54,9 +55,10 @@ class Agent(
     }
 
     sealed interface AgentResult {
-        /** 需要走对话回路（流式 + 工具循环） */
+        /** 需要走对话回路（流式 + 工具循环）；capability 决定用哪个档案（带图轮走「识屏」档案） */
         data class ChatRequested(
-            val messages: List<ChatMessage>
+            val messages: List<ChatMessage>,
+            val capability: Capability = Capability.CHAT
         ) : AgentResult
 
         /** 命令类意图（目前仅识屏关键词直连；由上层处理） */
@@ -71,66 +73,45 @@ class Agent(
      * 由主模型决定是否调用工具、调用哪个——不再有独立的意图分类/判断调用。
      *
      * @param history 会话历史对话尾部（应已含当前用户消息）
-     * @param diaryTags 用户自定义日记标签词汇表（进易变上下文，供 write_diary 选标签）
+     * @param diaryTags 用户自定义日记标签词汇表（进静态块，供 write_diary 选标签）
+     * @param preferVision 本轮带图片：改用「识屏（视觉）」指派的档案
+     *        （**同一条通道，只换模型**——上下文结构、工具回路、思考展示完全一致）
      */
     suspend fun route(
         text: String,
         memoryText: String? = null,
         history: List<ChatMessage> = emptyList(),
-        diaryTags: List<String> = emptyList()
+        diaryTags: List<String> = emptyList(),
+        preferVision: Boolean = false
     ): AgentResult {
         // 关键词只保留识屏直连
         val keyword = intentRouter.keywordRoute(text)
         if (keyword != null) return AgentResult.Command(keyword)
-        return chatRequested(text, memoryText, history, diaryTags)
+        return chatRequested(text, memoryText, history, diaryTags, preferVision)
     }
-    /** 静默工具回路的产出（不产生界面事件） */
-    data class SilentResult(
-        val ok: Boolean,
-        /** 成功执行过的工具名 */
-        val toolNames: List<String>,
-        val answer: String
-    )
 
     /**
      * 后台静默工具回路：跑完整工具循环但不产生任何界面事件、不进会话历史。
-     * 用途：视觉消息的记录处理（视觉模型没有工具回路，把分析结果作为素材交给
-     * 主模型整理入日记/写记忆），以及未来类似的后台小任务。
-     * 任何异常都返回 ok=false，由调用方兜底。
+     *
+     * ⚠️ 2026-09-11 起**不再有调用方**：带图消息改走同一条聊天通道（主模型自己调 write_diary），
+     * 项目不再有任何"隐藏的模型调用"。保留此方法会重新引入静默消耗，故已删除实现，
+     * 仅留注释说明历史（备份/文档见 CLAUDE.md 开发日志）。
      */
-    suspend fun silentReply(
-        userText: String,
-        memoryText: String? = null,
-        diaryTags: List<String> = emptyList()
-    ): SilentResult {
-        return try {
-            val profile = providerRegistry.profileFor(Capability.CHAT)
-                ?: return SilentResult(false, emptyList(), "")
-            if (!profile.isConfigured()) return SilentResult(false, emptyList(), "")
-            val conversation = listOf(ChatMessage("user", userText))
-            val messages = promptBuilder.buildChatMessages(
-                memoryText = memoryText,
-                conversation = conversation,
-                toolManual = toolRegistry.manual(),
-                diaryTags = diaryTags
-            )
-            var final: ReplyEvent.Final? = null
-            chatReplyFlow(messages).collect { if (it is ReplyEvent.Final) final = it }
-            val f = final
-            SilentResult(f != null, f?.toolNames ?: emptyList(), f?.answer ?: "")
-        } catch (_: Exception) {
-            SilentResult(false, emptyList(), "")
-        }
-    }
+
+    /** 当前「识屏（视觉）」档案是否勾选了"支持图片输入"（带图轮失败时的排查提示用） */
+    suspend fun visionModelSupportsImages(): Boolean =
+        providerRegistry.profileFor(Capability.VISION)?.supportsVision == true
 
     /** 组装对话回路的初始请求消息 */
     private suspend fun chatRequested(
         text: String,
         memoryText: String?,
         history: List<ChatMessage>,
-        diaryTags: List<String>
+        diaryTags: List<String>,
+        preferVision: Boolean
     ): AgentResult {
-        val profile = providerRegistry.profileFor(Capability.CHAT)
+        val capability = if (preferVision) Capability.VISION else Capability.CHAT
+        val profile = providerRegistry.profileFor(capability)
             ?: return AgentResult.Error("尚未配置模型提供商，请到「设置」填写")
         if (!profile.isConfigured()) {
             return AgentResult.Error("模型提供商未配置完整，请到「设置」检查")
@@ -142,7 +123,25 @@ class Agent(
             toolManual = toolRegistry.manual(),
             diaryTags = diaryTags
         )
-        return AgentResult.ChatRequested(messages)
+        // 目标模型不支持图片输入时：历史里的图片会直接 400，替换为文字占位
+        // （当前轮的图片始终保留——那是用户的明确意图，不支持就让 API 报错并给出提示）
+        val out = if (profile.supportsVision) messages else stripHistoricalImages(messages)
+        return AgentResult.ChatRequested(out, capability)
+    }
+
+    /**
+     * 把**非最后一条**用户消息里的图片 part 换成文字占位。
+     * 最后一条用户消息 = 本轮输入，永远保留（历史图片已在 Session 层按保留策略裁剪）。
+     */
+    private fun stripHistoricalImages(messages: List<ChatMessage>): List<ChatMessage> {
+        val lastUserIdx = messages.indexOfLast { it.role == "user" }
+        if (lastUserIdx < 0) return messages
+        return messages.mapIndexed { i, m ->
+            if (i == lastUserIdx || m.content.none { it.type == "image_url" }) m
+            else m.copy(content = m.content.map {
+                if (it.type == "image_url") ContentPart.text(HISTORICAL_IMAGE_PLACEHOLDER) else it
+            })
+        }
     }
 
     /**
@@ -156,7 +155,10 @@ class Agent(
      * 单次回复最多 MAX_TOOL_ROUNDS 个工具轮；超限注入强制收尾指令；
      * guard 上限双保险保证任何情况下必然终止。
      */
-    fun chatReplyFlow(baseMessages: List<ChatMessage>): Flow<ReplyEvent> = flow {
+    fun chatReplyFlow(
+        baseMessages: List<ChatMessage>,
+        capability: Capability = Capability.CHAT
+    ): Flow<ReplyEvent> = flow {
         var messages = baseMessages
         var forcedFinal = false
         var toolRounds = 0
@@ -181,7 +183,7 @@ class Agent(
             // ---- 一轮流式收集（开头标记缓冲：疑似"[调用"时不上屏）----
             var acc = ""
             var released = false
-            chatStream(messages).collect { chunk ->
+            chatStream(messages, capability).collect { chunk ->
                 chunk.usage?.let { lastUsage = it }   // 流式：厂商在最后一个 chunk 带用量
                 val delta = chunk.choices.firstOrNull()?.delta
                 val t = delta?.textContent.orEmpty()
@@ -267,8 +269,11 @@ class Agent(
     }
 
     /** 发送流式对话请求（单次请求；工具回路由 chatReplyFlow 编排多次调用本方法） */
-    suspend fun chatStream(messages: List<ChatMessage>): Flow<ChatResponse> {
-        val profile = providerRegistry.profileFor(Capability.CHAT)
+    suspend fun chatStream(
+        messages: List<ChatMessage>,
+        capability: Capability = Capability.CHAT
+    ): Flow<ChatResponse> {
+        val profile = providerRegistry.profileFor(capability)
             ?: throw IllegalStateException("未配置对话提供商")
         val api = providerRegistry.apiFor(profile)
         val effort = providerRegistry.reasoningEffortFor(profile)
@@ -356,5 +361,15 @@ class Agent(
     companion object {
         /** 循环保险丝：正常最多 纯答/多轮工具+强制收尾 轮 */
         private const val GUARD_LIMIT = 10
+
+        /** 目标模型不支持图片时，历史图片替换成的文字占位 */
+        const val HISTORICAL_IMAGE_PLACEHOLDER = "[（历史图片：当前模型不支持图片输入，已省略）]"
+
+        /** 带图轮报错时的排查提示（模型不支持图片输入的典型症状是 HTTP 400） */
+        const val IMAGE_MODEL_GUIDE =
+            "💡 排查：带图对话用的是「设置 → 模型配置 → 能力指派 → 识屏（视觉）」指派的档案。" +
+                "请确认它就是支持图片输入的模型（如通义 qwen-vl、智谱 GLM-4V、Kimi vision、gpt-4o 等），" +
+                "并在编辑该提供商时打开「支持图片输入」开关——建议把「对话」与「识屏」指派成同一个" +
+                "带图模型，这样两种轮次共用同一套提示词缓存。"
     }
 }

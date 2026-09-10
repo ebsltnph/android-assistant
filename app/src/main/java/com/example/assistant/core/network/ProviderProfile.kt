@@ -15,7 +15,7 @@ data class ProviderProfile(
     val baseUrl: String,            // 如 https://api.deepseek.com（注意：不含 /v1 尾缀，拼接时统一处理）
     val apiKey: String = "",
     val model: String = "",
-    val supportsVision: Boolean = false, // 是否支持图片输入（识屏需要）
+    val supportsVision: Boolean = false, // 是否支持图片输入（带图轮需要；不勾选时历史图片不会发给它）
     val supportsAudio: Boolean = false, // 是否支持音频转文字（悬浮球语音输入的远程识别用）
     val isDefault: Boolean = false,
     // 思考深度（per-provider）："default" | "low" | "medium" | "high"
@@ -43,9 +43,14 @@ data class ProviderProfile(
  * （原 CLASSIFY「意图分类」能力位已随主模型统一调度架构删除：不再有独立的分类调用。
  *   删除是安全的——指派备份导出/恢复都按现存枚举遍历，旧备份里的 CLASSIFY 键自动忽略；
  *   DataStore 里残留的 capability_CLASSIFY 键成为无害孤儿数据。）
+ *
+ * 2026-09-11 起 VISION 的语义变化：识图已并入聊天通道（同一条通道、只换模型），
+ * 该能力位 = "**带图片的那一轮**用哪个档案"。
+ * 建议把「对话」与「识屏」指派成同一个带图模型：那样两种轮次共用同一条消息数组，
+ * 提示词缓存命中率最高（否则两边是两套相互独立的缓存）。
  */
 enum class Capability(val displayName: String, val description: String) {
     CHAT("对话", "日常问答与全部工具调用使用的模型"),
-    VISION("识屏（视觉）", "截屏分析、OCR、翻译，需要支持图片输入的模型"),
+    VISION("识屏（视觉）", "带图片的消息（识屏/上传图片）使用它；建议与「对话」指派同一个带图模型以共用缓存"),
     ASR("语音识别", "悬浮球语音输入的远程转写（音频转文字），需支持 OpenAI 语音接口的模型")
 }

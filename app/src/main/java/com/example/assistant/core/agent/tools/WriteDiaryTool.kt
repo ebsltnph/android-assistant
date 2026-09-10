@@ -36,10 +36,9 @@ class WriteDiaryTool(
         val rejected = requested.filter { it !in vocab }
         val book = diaryRepository.defaultBook()
             ?: return ToolOutcome.Failure("默认日记本不存在（异常状态），请告知用户到日记页检查。")
-        // 可选图片：只接受已存在的 diary_images 目录下文件（防模型编造任意路径）
-        val imagePaths = args.argStrList("image_paths").filter { p ->
-            p.contains("diary_images") && java.io.File(p).exists()
-        }
+        // 可选图片：只接受本机聊天图片/日记图片目录下的真实文件（防模型编造任意路径）；
+        // 聊天图片会**复制**进 diary_images（此后受 DB 引用保护，不会被启动清理删掉）
+        val imagePaths = args.argStrList("image_paths").mapNotNull { normalizeImagePath(it) }
         diaryRepository.addEntry(book.id, content, source = "chat", imagePaths = imagePaths, tags = tags)
         val imgNote = if (imagePaths.isEmpty()) "" else "（含 ${imagePaths.size} 张图片）"
         val note = if (rejected.isEmpty()) ""
@@ -49,5 +48,28 @@ class WriteDiaryTool(
             (if (tags.isEmpty()) "" else "（标签：${tags.joinToString("、")}）") + note +
                 "。请不要在回复里重复日记全文。"
         )
+    }
+
+    /**
+     * 图片路径校验与归位：
+     * - diary_images 下的存在文件：原样使用；
+     * - chat_images 下的存在文件（带图对话保存的原图）：复制进 diary_images 并返回新路径；
+     * - 其它路径/不存在：丢弃（模型编造或文件已被清理）。
+     */
+    private fun normalizeImagePath(raw: String): String? {
+        val f = java.io.File(raw)
+        if (!f.exists() || !f.isFile) return null
+        val path = f.absolutePath
+        if (path.contains("diary_images")) return path
+        if (!path.contains("chat_images")) return null
+        return try {
+            val filesDir = f.parentFile?.parentFile ?: return null
+            val dir = java.io.File(filesDir, "diary_images").apply { mkdirs() }
+            val dest = java.io.File(dir, "diary_${System.currentTimeMillis()}_${f.name}")
+            f.copyTo(dest, overwrite = false)
+            dest.absolutePath
+        } catch (_: Exception) {
+            null
+        }
     }
 }

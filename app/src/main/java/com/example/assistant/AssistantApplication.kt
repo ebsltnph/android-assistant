@@ -148,7 +148,9 @@ class AssistantApplication : Application() {
      * 缓存自动清理（启动时后台执行）：
      * 1. **孤儿日记图片**：filesDir/diary_images 下未被 DB 引用的文件
      *    （删除条目/删单张图片/换图失败等场景可能留下残留）
-     * 2. **过期识屏截图**：cacheDir/screensense 下超过 7 天的文件（截图体积大，
+     * 2. **过期聊天图片**：filesDir/chat_images 下超过 7 天的文件
+     *    （带图对话保存的原图；被 write_diary 采用的会复制进 diary_images，不受此影响）
+     * 3. **过期识屏截图**：cacheDir/screensense 下超过 7 天的文件（截图体积大，
      *    系统 cache 清理不保证及时）
      */
     private fun cleanupCaches() {
@@ -159,6 +161,9 @@ class AssistantApplication : Application() {
                     if (f.absolutePath !in referenced) f.delete()
                 }
                 val cutoff = System.currentTimeMillis() - 7 * 24 * 3600_000L
+                File(filesDir, "chat_images").listFiles()?.forEach { f ->
+                    if (f.lastModified() < cutoff) f.delete()
+                }
                 File(cacheDir, "screensense").listFiles()?.forEach { f ->
                     if (f.lastModified() < cutoff) f.delete()
                 }

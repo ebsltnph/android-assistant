@@ -38,7 +38,6 @@ import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
 import com.example.assistant.core.storage.SummaryStore
 import com.example.assistant.core.vision.ScreenSenseController
-import com.example.assistant.core.vision.VisionAnalyzer
 import com.example.assistant.data.db.AppDatabase
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.EventRepository
@@ -199,7 +198,6 @@ class AppContainer(context: Context) {
 
     // ---- v1.5.x：远程语音识别客户端（悬浮球语音输入 remote 模式用） ----
     val asrClient: AsrClient by lazy { AsrClient.create() }
-    val visionAnalyzer: VisionAnalyzer by lazy { VisionAnalyzer(providerRegistry, promptStore) }
 
     // ---- P6：聊天核心（进程级共享单例：聊天页与浮动界面共用同一会话） ----
     val chatViewModel: ChatViewModel by lazy {
@@ -210,7 +208,6 @@ class AppContainer(context: Context) {
             settingsStore = settingsStore,
             diaryRepository = diaryRepository,
             memoryRepository = memoryRepository,
-            visionAnalyzer = visionAnalyzer,
             screenSenseController = screenSenseController,
             conversationLog = conversationLog,
             ttsManager = ttsManager,

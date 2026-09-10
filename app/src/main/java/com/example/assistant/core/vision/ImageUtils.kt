@@ -131,6 +131,34 @@ object ImageUtils {
     }
 
     /**
+     * 保存**聊天图片**到 filesDir/chat_images 下（JPEG 90）。
+     *
+     * 为什么不直接放 diary_images：`AssistantApplication.cleanupCaches()` 每次启动
+     * 会删除 diary_images 里"未被数据库引用"的文件——聊天图片用户很可能不让记录，
+     * 放那里下次启动就被清掉，会话里会留下死路径。
+     * 聊天图片由 write_diary 真正入库时再**复制**进 diary_images（见 WriteDiaryTool）。
+     * 失败返回 null。
+     */
+    fun saveToChatImages(context: Context, bitmap: Bitmap): String? {
+        return try {
+            val dir = File(context.filesDir, "chat_images").apply { mkdirs() }
+            val file = File(dir, "img_${System.currentTimeMillis()}.jpg")
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+            }
+            file.absolutePath
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 本地图片文件 → 缩到宽 ≤ [MAX_WIDTH] 后存进 chat_images（识屏截图进聊天通道用） */
+    fun importToChatImages(context: Context, sourcePath: String): String? {
+        val bmp = decodeFit(sourcePath, MAX_WIDTH) ?: return null
+        return saveToChatImages(context, bmp)
+    }
+
+    /**
      * 把日记图片保存到系统相册（MediaStore，API 29+ 无需存储权限；
      * API 28- 需要 WRITE_EXTERNAL_STORAGE 运行时权限，未授权会失败返回 false）。
      * 返回是否成功。
