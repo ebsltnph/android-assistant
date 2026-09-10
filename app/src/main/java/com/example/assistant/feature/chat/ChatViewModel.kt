@@ -32,9 +32,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 聊天界面的一条消息 */
+/**
+ * 聊天界面的一条消息。`turnId` 指向 Session 里的「轮」——
+ * 同一轮的用户气泡与助手气泡共享它，删除单条对话（需求 3）以轮为单位整体处理。
+ */
 data class ChatUiMessage(
     val id: Long,
+    val turnId: Long,
     val role: String,        // "user" | "assistant"
     val text: String,
     /** 推理模型的思考过程（独立于正式回答展示，带"思考过程"标注） */
@@ -43,7 +47,9 @@ data class ChatUiMessage(
     /** 消息附带的图片缩略图（识屏截图 / 上传的图片），空表示无图 */
     val image: Bitmap? = null,
     /** 分段内容（按真实时序：思考块/正文段/工具执行行）；非空时优先于 text/thinking 渲染 */
-    val segments: List<MsgSegment> = emptyList()
+    val segments: List<MsgSegment> = emptyList(),
+    /** 该轮能否「重做」（走对话通道生成的才行；视觉独立通道生成的历史上不可重做） */
+    val regenerable: Boolean = false
 )
 
 /**
@@ -77,6 +83,30 @@ data class PendingImage(
     val base64: String
 )
 
+/**
+ * 上下文状态（聊天页状态行展示用）：轮数窗口 + 字符当量 + 最近一次请求的缓存命中。
+ * 这些机制对用户本来完全不可见（荣耀 logcat 也拿不到日志），故直接显示到界面上。
+ */
+data class ContextStatus(
+    val turns: Int = 0,
+    val minTurns: Int = 5,
+    val maxTurns: Int = 20,
+    val chars: Int = 0,
+    val charLimit: Int = 24_000,
+    val promptTokens: Int? = null,
+    val cachedTokens: Int? = null,
+    val trimmedBySoftCap: Boolean = false
+) {
+    /** 缓存命中率（厂商未报告缓存字段时为 null） */
+    val cacheHitPercent: Int?
+        get() {
+            val total = promptTokens ?: return null
+            val hit = cachedTokens ?: return null
+            if (total <= 0) return null
+            return (hit * 100 / total).coerceIn(0, 100)
+        }
+}
+
 /** 一轮流式回复的产出：最终回答 + 工具信息（写回会话历史 / 记录兜底用） */
 private data class StreamOutcome(
     val answer: String,
@@ -91,6 +121,9 @@ private data class StreamOutcome(
  * 聊天页与浮动界面共用同一份会话与消息列表。
  * 主模型统一调度架构：是否调用工具、调用哪个全部由主聊天模型在回复中决定
  * （提醒/记录/记忆/监控/搜索/读网页/识屏），这里只负责路由、渲染与会话维护。
+ *
+ * 2026-09-11 起会话改用「轮」模型（Session.Turn）：
+ * 删除单条、编辑重发、重做、上下文上下限裁剪都以轮为单位，界面与上下文不会再错位。
  */
 class ChatViewModel(
     private val context: Context,
@@ -113,6 +146,10 @@ class ChatViewModel(
 
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming
+
+    /** 上下文状态（状态行）：轮数/字符当量/上次缓存命中 */
+    private val _contextStatus = MutableStateFlow(ContextStatus())
+    val contextStatus: StateFlow<ContextStatus> = _contextStatus
 
     /** 是否正在 TTS 朗读（气泡喇叭按钮高亮/停止用） */
     val ttsSpeaking: StateFlow<Boolean> get() = ttsManager.speaking
@@ -147,6 +184,11 @@ class ChatViewModel(
     private val session = Session()
     private var counter = 0L
 
+    /** 上下文窗口设置（DataStore 实时同步；状态行展示用） */
+    private var minTurns = 5
+    private var maxTurns = 20
+    private var charLimit = SettingsStore.DEFAULT_CONTEXT_CHAR_LIMIT
+
     /** 带图用户消息的原图 base64（编辑重发时恢复进附件栏用）；超 40 条丢最旧 */
     private val imageBase64ByMsgId = object : LinkedHashMap<Long, String>(16, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>): Boolean = size > 40
@@ -160,9 +202,6 @@ class ChatViewModel(
     private val _screenSenseRequested = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val screenSenseRequested: SharedFlow<Unit> = _screenSenseRequested
 
-    /** 助手消息 id → 触发它的请求消息（重新生成用） */
-    private val regenerateMessages = mutableMapOf<Long, List<ChatMessage>>()
-
     init {
         // 识屏结果 → 追加消息 + 截图进附件栏（小窗「在 App 中继续」）
         scope.launch {
@@ -171,8 +210,8 @@ class ChatViewModel(
                     addFileAttachment(result.imagePath)
                 }
                 if (result.resultText.isNotBlank()) {
-                    append(ChatUiMessage(counter++, "assistant", result.resultText))
-                    session.addAssistant(result.resultText)
+                    val turnId = session.addAssistantOnly(result.resultText)
+                    append(assistantMsg(counter++, turnId, result.resultText))
                 }
             }
         }
@@ -192,9 +231,24 @@ class ChatViewModel(
                 _inputText.value = text
             }
         }
-        // 设置页「聊天上下文长度」实时生效
+        // 上下文窗口设置实时生效（下限/上限/字符软上限）
         scope.launch {
-            settingsStore.conversationMaxTurns.collect { session.setMaxTurns(it) }
+            settingsStore.conversationMinTurns.collect {
+                minTurns = it
+                refreshContextStatus()
+            }
+        }
+        scope.launch {
+            settingsStore.conversationMaxTurns.collect {
+                maxTurns = it
+                refreshContextStatus()
+            }
+        }
+        scope.launch {
+            settingsStore.conversationCharLimit.collect {
+                charLimit = it
+                refreshContextStatus()
+            }
         }
     }
 
@@ -324,19 +378,20 @@ class ChatViewModel(
             _isStreaming.value = true
             _error.value = null
             val placeholder = if (t.isNotEmpty()) "[📷 屏幕截图]\n$t" else "[📷 屏幕截图]"
-            session.addUser(placeholder)
+            val turnId = session.beginTurn(placeholder)
             val visionMsgId = counter++
-            _messages.update { it + ChatUiMessage(visionMsgId, "user", t, image = thumbnail) }
+            _messages.update { it + userMsg(visionMsgId, turnId, t, thumbnail) }
             imageBase64ByMsgId[visionMsgId] = imageBase64
             if (visionAnalyzer.visionProfile() == null) {
-                append(ChatUiMessage(counter++, "assistant", VisionAnalyzer.GUIDE_TEXT))
-                session.addAssistant(VisionAnalyzer.GUIDE_TEXT)
+                val guide = VisionAnalyzer.GUIDE_TEXT
+                session.appendAssistant(turnId, ChatMessage("assistant", guide))
+                append(assistantMsg(counter++, turnId, guide))
             } else {
                 val streamingId = counter++
-                append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
+                append(assistantMsg(streamingId, turnId, "", streaming = true))
                 val instruction = t.ifBlank { "请描述这张图片" }
                 val answer = streamVisionReply(imageBase64, instruction, streamingId)
-                session.addAssistant(answer)
+                session.appendAssistant(turnId, ChatMessage("assistant", answer))
                 // 视觉回复完成后：记录类请求走静默工具回路整理入库（失败自动兜底原文）
                 handleVisionRecordInBackground(t, answer, imageBase64)
             }
@@ -360,10 +415,10 @@ class ChatViewModel(
             }
             val thumbnail = bmp?.let { ImageUtils.thumbnail(it) }
             val placeholder = if (instruction.isNotEmpty()) "[📷 屏幕截图]\n$instruction" else "[📷 屏幕截图]"
-            session.addUser(placeholder)
-            _messages.update { it + ChatUiMessage(counter++, "user", instruction, image = thumbnail) }
-            append(ChatUiMessage(counter++, "assistant", resultText))
-            session.addAssistant(resultText)
+            val turnId = session.beginTurn(placeholder)
+            _messages.update { it + userMsg(counter++, turnId, instruction, thumbnail) }
+            session.appendAssistant(turnId, ChatMessage("assistant", resultText))
+            append(assistantMsg(counter++, turnId, resultText))
         }
     }
 
@@ -375,8 +430,8 @@ class ChatViewModel(
         scope.launch {
             writeDiary(t)
             val hint = "📔 已记入日记本"
-            append(ChatUiMessage(counter++, "assistant", hint))
-            session.addAssistant(hint)
+            val turnId = session.addAssistantOnly(hint)
+            append(assistantMsg(counter++, turnId, hint))
         }
     }
 
@@ -384,42 +439,51 @@ class ChatViewModel(
     private suspend fun sendText(text: String) {
         // 秘密功能：记录用户发出的内容（数字分身素材）
         conversationLog.log(text)
-        session.addUser(text)
-        _messages.update { it + ChatUiMessage(counter++, "user", text) }
+        val turnId = session.beginTurn(text)
+        _messages.update { it + userMsg(counter++, turnId, text, null) }
+        runTurn(turnId, text)
+    }
 
-        // 长期记忆注入 + 日记标签词汇表（易变上下文，供 write_diary 选标签）
+    /**
+     * 跑一轮对话回路（发送/重做共用）：
+     * 用**当前**会话（而非历史请求快照）重建上下文，因此删除/裁剪/记忆更新后重做不会发出过期请求。
+     */
+    private suspend fun runTurn(turnId: Long, rawText: String) {
+        val ctx = session.buildContext(minTurns, maxTurns, charLimit)
+        _contextStatus.update { it.withContext(ctx, minTurns, maxTurns, charLimit) }
         val memoryText = memoryRepository.memoryContextText()
         val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
-        when (val result = agent.route(text, memoryText = memoryText, history = session.all, diaryTags = diaryTags)) {
+        when (val result = agent.route(
+            rawText, memoryText = memoryText, history = ctx.messages, diaryTags = diaryTags
+        )) {
             is AgentResult.Command -> {
                 // 目前只有识屏关键词直连会走到这里
                 val hint = executeCommand(result.intent)
-                append(ChatUiMessage(counter++, "assistant", hint))
-                session.addAssistant(hint)
+                session.appendAssistant(turnId, ChatMessage("assistant", hint))
+                append(assistantMsg(counter++, turnId, hint))
             }
             is AgentResult.Error -> {
                 val msg = "⚠️ ${result.message}"
-                append(ChatUiMessage(counter++, "assistant", msg))
-                session.addAssistant(msg)
+                session.appendAssistant(turnId, ChatMessage("assistant", msg))
+                append(assistantMsg(counter++, turnId, msg))
             }
             is AgentResult.ChatRequested -> {
                 val streamingId = counter++
-                // 记住请求消息，供"重新生成"复用
-                regenerateMessages[streamingId] = result.messages
-                append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
+                append(assistantMsg(streamingId, turnId, "", streaming = true, regenerable = true))
                 val outcome = streamReply(result.messages, streamingId)
                 // 工具中间轮写回会话历史：后续追问时模型能看到调用过什么、拿到过什么结果
                 outcome.exchanges.forEach { (request, resultsMsg) ->
-                    session.addAssistant(request)
-                    session.addUser(resultsMsg)
+                    session.appendAssistant(turnId, ChatMessage("assistant", request))
+                    session.appendAssistant(turnId, ChatMessage("user", resultsMsg))
                 }
-                session.addAssistant(outcome.answer)
+                session.appendAssistant(turnId, ChatMessage("assistant", outcome.answer))
                 // 记录兜底："记录…"类请求但模型没调 write_diary → 静默存原文（记录不能丢）
-                if (!outcome.toolNames.contains("write_diary") && intentRouter.looksLikeDiaryRequest(text)) {
-                    writeDiary(text)
+                if (!outcome.toolNames.contains("write_diary") && intentRouter.looksLikeDiaryRequest(rawText)) {
+                    writeDiary(rawText)
                 }
             }
         }
+        refreshContextStatus()
     }
 
     /**
@@ -428,22 +492,23 @@ class ChatViewModel(
      */
     private suspend fun sendWithImage(text: String, image: PendingImage) {
         val placeholder = if (text.isNotEmpty()) "[📷 用户发送了一张图片]\n$text" else "[📷 用户发送了一张图片]"
-        session.addUser(placeholder)
+        val turnId = session.beginTurn(placeholder)
         val newId = counter++
-        _messages.update { it + ChatUiMessage(newId, "user", text, image = image.thumbnail) }
+        _messages.update { it + userMsg(newId, turnId, text, image.thumbnail) }
         imageBase64ByMsgId[newId] = image.base64
         // 未配置视觉模型 → 明确引导，不发起无意义的调用（记录意图仍照常入日记）
         if (visionAnalyzer.visionProfile() == null) {
-            append(ChatUiMessage(counter++, "assistant", VisionAnalyzer.GUIDE_TEXT))
-            session.addAssistant(VisionAnalyzer.GUIDE_TEXT)
+            val guide = VisionAnalyzer.GUIDE_TEXT
+            session.appendAssistant(turnId, ChatMessage("assistant", guide))
+            append(assistantMsg(counter++, turnId, guide))
             handleVisionRecordInBackground(text, "", image.base64)
             return
         }
         val streamingId = counter++
-        append(ChatUiMessage(streamingId, "assistant", "", streaming = true))
+        append(assistantMsg(streamingId, turnId, "", streaming = true))
         val instruction = text.ifBlank { "请描述这张图片" }
         val answer = streamVisionReply(image.base64, instruction, streamingId)
-        session.addAssistant(answer)
+        session.appendAssistant(turnId, ChatMessage("assistant", answer))
         // 视觉回复完成后：记录类请求走静默工具回路整理入库（失败自动兜底原文）
         handleVisionRecordInBackground(text, answer, image.base64)
     }
@@ -489,7 +554,7 @@ class ChatViewModel(
      * - Delta：流式增量追加到气泡基线之后
      * - RoundSettled：本轮正文并入基线（纯调用轮为空=重置流式区）
      * - ToolsRunning：气泡切到「🔧 …」执行状态
-     * - Final：替换为最终回答
+     * - Final：替换为最终回答（并记录用量/缓存命中）
      */
     private suspend fun streamReply(messages: List<ChatMessage>, messageId: Long): StreamOutcome {
         var base = ""      // 已定格正文（各轮保留正文的累加；维护 text 字段供复制/滚动）
@@ -559,6 +624,11 @@ class ChatViewModel(
                         exchanges = ev.exchanges
                         toolNames = ev.toolNames
                         finalAnswer = ev.answer
+                        ev.usage?.let { u ->
+                            _contextStatus.update {
+                                it.copy(promptTokens = u.promptTokens, cachedTokens = u.cachedTokens)
+                            }
+                        }
                         snapshot(ev.answer)
                     }
                 }
@@ -606,20 +676,26 @@ class ChatViewModel(
     }
 
     /**
-     * 重新生成某条助手回复：清空该条内容，用记忆的请求参数重新流式生成。
-     * 只对最近一次回复有意义（messages 是触发时的快照）。
+     * 重新生成某条助手回复：用**当前会话**重建这一轮的请求（不再使用历史请求快照），
+     * 因此删除/裁剪/记忆更新之后重做也不会发出过期上下文。
+     * 只对最后一轮有意义（界面也只对最后一条助手消息显示重做按钮）。
      */
     fun regenerate(messageId: Long) {
         if (_isStreaming.value) return
-        val messages = regenerateMessages[messageId] ?: return
+        val msg = _messages.value.firstOrNull { it.id == messageId } ?: return
+        if (!msg.regenerable) return
+        val turn = session.lastTurn() ?: return
+        if (turn.id != msg.turnId) return
+        val rawText = rawUserText(turn) ?: return
         scope.launch {
             _isStreaming.value = true
             _error.value = null
-            // 清空该条并重新流式（分段时间线一并清空重建）
-            updateMessage(messageId) { it.copy(text = "", thinking = "", streaming = true, segments = emptyList()) }
-            val outcome = streamReply(messages, messageId)
-            // 会话尾部同步替换为该新回复（中间工具轮已在上次回复时入历史，这里只换最后的回答）
-            session.replaceLastAssistant(outcome.answer)
+            // 会话侧丢掉这一轮已有的助手消息，重新生成（工具轮一起重来，避免"旧工具结果+新回答"的矛盾）
+            session.clearAssistant(turn.id)
+            updateMessage(messageId) {
+                it.copy(text = "", thinking = "", streaming = true, segments = emptyList(), regenerable = true)
+            }
+            runTurn(turn.id, rawText)
             _isStreaming.value = false
         }
     }
@@ -636,8 +712,12 @@ class ChatViewModel(
         val lastUser = list.lastOrNull { it.role == "user" } ?: return null
         if (lastUser.id != messageId) return null
         val idx = list.indexOf(lastUser)
+        // 界面与该轮的会话历史一起删（按 turnId 精确定位，多删的助手提示轮一并清理）
+        val removed = list.drop(idx)
         _messages.update { it.take(idx) }
-        session.removeLastTurn()
+        removed.map { it.turnId }.distinct().forEach { session.deleteTurn(it) }
+        removed.forEach { imageBase64ByMsgId.remove(it.id) }
+        refreshContextStatus()
         if (lastUser.image != null) {
             val b64 = imageBase64ByMsgId.remove(lastUser.id)
             if (restoreImage && b64 != null) {
@@ -647,19 +727,83 @@ class ChatViewModel(
         return lastUser.text
     }
 
-    fun clearConversation() {
-        session.clear()
-        regenerateMessages.clear()
-        imageBase64ByMsgId.clear()
-        _messages.value = emptyList()
+    /**
+     * 删除单条对话（需求 3）：一次删掉这一轮的**用户消息 + 全部助手回复**（含工具中间轮），
+     * 使其不再出现在上下文里。**不回退工具副作用**——已创建的提醒/已写入的日记/已记的记忆都保留。
+     * 返回 true = 已从上下文与界面移除（流式中不可删）。
+     */
+    fun deleteTurn(turnId: Long): Boolean {
+        if (_isStreaming.value) return false
+        val affected = _messages.value.filter { it.turnId == turnId }
+        if (affected.isEmpty()) return false
+        _messages.update { list -> list.filterNot { it.turnId == turnId } }
+        affected.forEach { imageBase64ByMsgId.remove(it.id) }
+        session.deleteTurn(turnId)
+        refreshContextStatus()
+        return true
     }
 
+    fun clearConversation() {
+        session.clear()
+        imageBase64ByMsgId.clear()
+        _messages.value = emptyList()
+        _contextStatus.value = ContextStatus(
+            minTurns = minTurns, maxTurns = maxTurns, charLimit = charLimit
+        )
+    }
+
+    // ---- 内部工具 ----
+
+    private fun userMsg(id: Long, turnId: Long, text: String, image: Bitmap?): ChatUiMessage =
+        ChatUiMessage(id = id, turnId = turnId, role = "user", text = text, image = image)
+
+    private fun assistantMsg(
+        id: Long,
+        turnId: Long,
+        text: String,
+        streaming: Boolean = false,
+        regenerable: Boolean = false
+    ): ChatUiMessage = ChatUiMessage(
+        id = id, turnId = turnId, role = "assistant", text = text,
+        streaming = streaming, regenerable = regenerable
+    )
+
+    /** 兼容旧实现里对"重做占位"的清理（当前无占位表，保留空实现以免调用点遗漏） */
     private fun append(msg: ChatUiMessage) {
         _messages.update { it + msg }
     }
 
     private fun updateMessage(id: Long, transform: (ChatUiMessage) -> ChatUiMessage) {
         _messages.update { list -> list.map { if (it.id == id) transform(it) else it } }
+    }
+
+    /** 状态行：按当前会话（会触发一次窗口裁剪，与真实发送口径一致）刷新 */
+    private fun refreshContextStatus() {
+        val ctx = session.buildContext(minTurns, maxTurns, charLimit)
+        _contextStatus.update { it.withContext(ctx, minTurns, maxTurns, charLimit) }
+    }
+
+    private fun ContextStatus.withContext(
+        ctx: Session.BuiltContext,
+        min: Int,
+        max: Int,
+        limit: Int
+    ): ContextStatus = copy(
+        turns = ctx.turns,
+        chars = ctx.chars,
+        minTurns = min,
+        maxTurns = max,
+        charLimit = limit,
+        trimmedBySoftCap = ctx.trimmedBySoftCap
+    )
+
+    /**
+     * 从一轮里取出用户的**原文**（去掉 Session 打的时间戳前缀），
+     * 供重发/重做时做关键词判断与记录兜底。
+     */
+    private fun rawUserText(turn: Session.Turn): String? {
+        val text = turn.user?.textContent ?: return null
+        return text.replaceFirst(TIMESTAMP_PREFIX, "")
     }
 
     /**
@@ -684,6 +828,10 @@ class ChatViewModel(
         diaryRepository.addEntry(book.id, content, source = "chat", imagePaths = imagePaths)
     }
 
+    companion object {
+        /** 用户消息时间戳前缀（Session 写入，见 Session.stamp） */
+        private val TIMESTAMP_PREFIX = Regex("""^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}] """)
 
-    /** 后台静默抽取长期记忆的旧入口已删除：对话内记忆改由主模型 write_memory 工具完成 */
+        /** 后台静默抽取长期记忆的旧入口已删除：对话内记忆改由主模型 write_memory 工具完成 */
+    }
 }

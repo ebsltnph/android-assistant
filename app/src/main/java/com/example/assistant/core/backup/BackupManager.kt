@@ -279,6 +279,8 @@ class BackupManager(
             reasoningEffort = settingsStore.reasoningEffort.first(),
             floatingBallEnabled = settingsStore.floatingBallEnabled.first(),
             conversationMaxTurns = settingsStore.conversationMaxTurns.first(),
+            conversationMinTurns = settingsStore.conversationMinTurns.first(),
+            conversationCharLimit = settingsStore.conversationCharLimit.first(),
             diaryTagsCsv = settingsStore.diaryTagsCsv.first(),
             secretLogEnabled = settingsStore.secretLogEnabled.first(),
             panelVoiceMode = settingsStore.panelVoiceMode.first(),
@@ -414,6 +416,8 @@ class BackupManager(
         settingsStore.setReasoningEffort(s.reasoningEffort)
         settingsStore.setFloatingBallEnabled(s.floatingBallEnabled)
         settingsStore.setConversationMaxTurns(s.conversationMaxTurns)
+        settingsStore.setConversationMinTurns(s.conversationMinTurns)
+        settingsStore.setConversationCharLimit(s.conversationCharLimit)
         settingsStore.setDiaryTagsCsv(s.diaryTagsCsv)
         settingsStore.setSecretLogEnabled(s.secretLogEnabled)
         settingsStore.setPanelVoiceMode(s.panelVoiceMode)

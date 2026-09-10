@@ -30,5 +30,23 @@ data class Usage(
     @SerialName("completion_tokens")
     val completionTokens: Int? = null,
     @SerialName("total_tokens")
-    val totalTokens: Int? = null
+    val totalTokens: Int? = null,
+    /** DeepSeek 系：命中的缓存 token 数 */
+    @SerialName("prompt_cache_hit_tokens")
+    val promptCacheHitTokens: Int? = null,
+    @SerialName("prompt_cache_miss_tokens")
+    val promptCacheMissTokens: Int? = null,
+    /** OpenAI 系：{"cached_tokens": N} */
+    @SerialName("prompt_tokens_details")
+    val promptTokensDetails: PromptTokensDetails? = null
+) {
+    /** 缓存命中的输入 token（两种厂商格式统一读取；都没有则 null = 该厂商未报告） */
+    val cachedTokens: Int?
+        get() = promptCacheHitTokens ?: promptTokensDetails?.cachedTokens
+}
+
+@Serializable
+data class PromptTokensDetails(
+    @SerialName("cached_tokens")
+    val cachedTokens: Int? = null
 )

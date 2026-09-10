@@ -121,5 +121,19 @@ data class ChatRequest(
      * null = 不发送（跟随厂商/模型默认）。
      */
     @SerialName("reasoning_effort")
-    val reasoningEffort: String? = null
+    val reasoningEffort: String? = null,
+    /**
+     * 流式附带的用量统计开关：`{"include_usage": true}` 让厂商在流末尾补一个 usage 块
+     * （用于读取"缓存命中 token"，验证提示词缓存是否真的生效）。
+     * 部分中转站不认识该参数会 HTTP 400 → ProviderRegistry 会自动去掉并记住（见 effortSafeCall）。
+     */
+    @SerialName("stream_options")
+    val streamOptions: StreamOptions? = null
+)
+
+/** 流式请求选项（目前只用 include_usage） */
+@Serializable
+data class StreamOptions(
+    @SerialName("include_usage")
+    val includeUsage: Boolean = true
 )

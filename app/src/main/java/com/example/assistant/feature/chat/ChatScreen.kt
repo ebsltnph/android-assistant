@@ -90,6 +90,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
     val error by vm.error.collectAsState()
     val speakingMsgId by vm.speakingMsgId.collectAsState()
     val pendingImage by vm.pendingImage.collectAsState()
+    val contextStatus by vm.contextStatus.collectAsState()
 
     // 相册选图（Photo Picker，免存储权限）
     val pickImageLauncher = rememberLauncherForActivityResult(
@@ -117,6 +118,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f)
             )
+            ContextStatusChip(contextStatus)
             IconButton(onClick = { vm.clearConversation() }) {
                 Icon(Icons.Filled.Delete, contentDescription = "清空对话")
             }
@@ -160,7 +162,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                     val lastEditableUserId = messages.lastOrNull { it.role == "user" }?.id
                     MessageBubble(
                         msg = msg,
-                        isLastAssistant = msg.role == "assistant" && msg.id == messages.lastOrNull()?.id,
+                        isLastAssistant = msg.regenerable && msg.id == messages.lastOrNull()?.id,
                         speakingThis = speakingMsgId == msg.id,
                         onSpeak = { vm.speakMessage(msg) },
                         showEditResend = msg.role == "user" && msg.id == lastEditableUserId,
@@ -271,6 +273,63 @@ fun ChatScreen(modifier: Modifier = Modifier) {
         )
     }
 }
+
+/**
+ * 上下文状态行（点击展开细节）。
+ * 上下文窗口与提示词缓存命中率本来完全不可见（荣耀机型连 logcat 都拿不到），
+ * 显示出来才能回答"它怎么忘了刚才说的"和"缓存策略到底有没有生效"。
+ */
+@Composable
+private fun ContextStatusChip(status: ContextStatus) {
+    var expanded by remember { mutableStateOf(false) }
+    val pct = status.cacheHitPercent
+    val summary = buildString {
+        append("上下文 ").append(status.turns).append('/').append(status.maxTurns).append(" 轮")
+        append(" · 约 ").append(formatCharCount(status.chars))
+        if (pct != null) append(" · 命中 ").append(pct).append('%')
+    }
+    Column(horizontalAlignment = Alignment.End) {
+        Text(
+            summary,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+        )
+        if (expanded) {
+            Text(
+                buildString {
+                    append("窗口：满 ").append(status.maxTurns).append(" 轮后回落到 ")
+                    append(status.minTurns).append(" 轮\n")
+                    append("字符软上限：")
+                    if (status.charLimit <= 0) append("已关闭")
+                    else append(status.charLimit).append(" 字")
+                    if (status.trimmedBySoftCap) append("（已触发裁剪）")
+                    append("\n最近一次请求：")
+                    if (status.promptTokens == null) append("厂商未返回用量")
+                    else {
+                        append(status.promptTokens).append(" tokens")
+                        status.cachedTokens?.let { append(" · 缓存命中 ").append(it) }
+                    }
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.End,
+                modifier = Modifier
+                    .widthIn(max = 260.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.White.copy(alpha = 0.06f))
+                    .padding(8.dp)
+            )
+        }
+    }
+}
+
+/** 字符数 → "3.2k 字" 这类紧凑显示 */
+private fun formatCharCount(chars: Int): String =
+    if (chars < 1000) "$chars 字" else "%.1fk 字".format(chars / 1000.0)
 
 @Composable
 private fun MessageBubble(

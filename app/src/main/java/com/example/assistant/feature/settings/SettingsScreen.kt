@@ -111,7 +111,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val briefingEnabled by vm.briefingEnabled.collectAsState()
     val quietStart by vm.quietStartMinute.collectAsState()
     val quietEnd by vm.quietEndMinute.collectAsState()
-    val conversationMaxTurns by vm.conversationMaxTurns.collectAsState()
     val secretLogEnabled by vm.secretLogEnabled.collectAsState()
 
     // 子页面导航（null = 顶层列表；系统返回键回退）
@@ -155,7 +154,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 briefingEnabled = briefingEnabled,
                 quietStart = quietStart,
                 quietEnd = quietEnd,
-                conversationMaxTurns = conversationMaxTurns,
                 overlayGranted = overlayGranted,
                 onOpenSubPage = { subPage = it },
                 onOpenOverlaySettings = openOverlaySettings,
@@ -282,7 +280,6 @@ private fun SettingsMainList(
     briefingEnabled: Boolean,
     quietStart: Int,
     quietEnd: Int,
-    conversationMaxTurns: Int,
     overlayGranted: Boolean,
     onOpenSubPage: (SettingsSubPage) -> Unit,
     onOpenOverlaySettings: () -> Unit,
@@ -487,12 +484,9 @@ private fun SettingsMainList(
             )
         }
 
-        // ---- 7. 聊天上下文长度 ----
+        // ---- 7. 聊天上下文长度（上下限双阈值 + 字符软上限） ----
         item {
-            ConversationLengthCard(
-                current = conversationMaxTurns,
-                onSave = { vm.setConversationMaxTurns(it) }
-            )
+            ConversationLengthCard(vm = vm)
         }
 
         // ---- 8. 搜索（keyless 默认） ----
@@ -1257,40 +1251,88 @@ private fun formatBytes(bytes: Long): String = when {
     else -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
 }
 
-// ======================= 聊天上下文长度 =======================
+// ======================= 聊天上下文长度（上下限双阈值） =======================
 
 /**
- * 聊天上下文长度设置：对话能记住的最近轮数（5-50，默认 10）。
+ * 聊天上下文长度设置（2026-09-11 改为**上下限双阈值**，目的是提高提示词缓存命中率）：
+ *  - 轮数在「下限 ~ 上限」之间：每轮新消息只是往上追加 → 请求前缀与上一轮完全一致 → 缓存全命中；
+ *  - 轮数达到上限后：下一条消息只带最近「下限」轮发给模型（会话物理裁剪到下限）。
+ * 另设**字符软上限**：轮数不等于 token（一次网页阅读就顶十几轮闲聊），超出时从最旧的轮开始丢。
  * 输入即改本地态，点「保存」才持久化（与搜索 API Key 卡片同一交互）。
  */
 @Composable
-private fun ConversationLengthCard(current: Int, onSave: (Int) -> Unit) {
-    var text by remember(current) { mutableStateOf(current.toString()) }
-    val parsed = text.toIntOrNull()
-    val valid = parsed != null && parsed in 5..50
+private fun ConversationLengthCard(vm: SettingsViewModel) {
+    val minTurns by vm.conversationMinTurns.collectAsState()
+    val maxTurns by vm.conversationMaxTurns.collectAsState()
+    val charLimit by vm.conversationCharLimit.collectAsState()
+
+    var minText by remember(minTurns) { mutableStateOf(minTurns.toString()) }
+    var maxText by remember(maxTurns) { mutableStateOf(maxTurns.toString()) }
+    var charText by remember(charLimit) { mutableStateOf(charLimit.toString()) }
+
+    val minV = minText.toIntOrNull()
+    val maxV = maxText.toIntOrNull()
+    val charV = charText.toIntOrNull()
+    val valid = minV != null && maxV != null && charV != null &&
+        minV in 1..100 && maxV in 1..100 && minV <= maxV && charV in 0..400_000
+
     GlassCard {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("聊天上下文长度", style = MaterialTheme.typography.titleSmall)
             Text(
-                "对话能记住的最近轮数（5-50，默认 10）。越大上下文越全、越费 token。",
+                "对话能记住的最近轮数：**轮数到上限后，下一条消息回落到下限**再重新累积。" +
+                    "这样每次请求的前缀都是上一次的延长，提示词缓存才能命中（旧版固定窗口滚动，" +
+                    "每轮都从头部丢消息，等于永远不命中）。当前：下限 $minTurns · 上限 $maxTurns 轮。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = minText,
+                    onValueChange = { minText = it.filter(Char::isDigit).take(3) },
+                    label = { Text("下限（1-100）") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = maxText,
+                    onValueChange = { maxText = it.filter(Char::isDigit).take(3) },
+                    label = { Text("上限（1-100）") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+            }
             OutlinedTextField(
-                value = text,
-                onValueChange = { text = it.filter(Char::isDigit).take(2) },
-                label = { Text("轮数（5-50）") },
+                value = charText,
+                onValueChange = { charText = it.filter(Char::isDigit).take(6) },
+                label = { Text("字符软上限（0 = 关闭）") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth()
             )
+            Text(
+                "字符软上限按「字」粗略折算 token（图片按 1500 字当量），" +
+                    "超出时从最旧的轮开始丢（优先于下限，至少保留最近 1 轮）。默认 24000。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(enabled = valid, onClick = { parsed?.let(onSave) }) { Text("保存") }
+                OutlinedButton(
+                    enabled = valid,
+                    onClick = {
+                        minV?.let { vm.setConversationMinTurns(it) }
+                        maxV?.let { vm.setConversationMaxTurns(it) }
+                        charV?.let { vm.setConversationCharLimit(it) }
+                    }
+                ) { Text("保存") }
                 Text(
-                    if (valid) "输入 $parsed 轮"
-                    else "当前 $current 轮 · 输入 5-50 之间",
+                    if (valid) "下限 $minV · 上限 $maxV · 字符 $charV"
+                    else "下限须 ≤ 上限，范围 1-100；字符 0-400000",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 8.dp)
                 )
             }
         }

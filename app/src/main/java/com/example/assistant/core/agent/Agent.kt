@@ -9,6 +9,8 @@ import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.network.dto.ChatRequest
 import com.example.assistant.core.network.dto.ChatResponse
+import com.example.assistant.core.network.dto.StreamOptions
+import com.example.assistant.core.network.dto.Usage
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -42,11 +44,12 @@ class Agent(
         /** 正在执行一批工具调用（界面显示「🔧 …」状态） */
         data class ToolsRunning(val labels: List<String>) : ReplyEvent
 
-        /** 最终回答（answer 已含执行页脚）；toolNames = 成功执行过的工具名；exchanges = 工具中间轮 */
+        /** 最终回答（answer 已含执行页脚）；toolNames = 成功执行过的工具名；exchanges = 工具中间轮；usage = 本次回复最后一次请求的用量（含缓存命中，可能为 null） */
         data class Final(
             val answer: String,
             val toolNames: List<String>,
-            val exchanges: List<Pair<String, String>>
+            val exchanges: List<Pair<String, String>>,
+            val usage: Usage? = null
         ) : ReplyEvent
     }
 
@@ -81,7 +84,6 @@ class Agent(
         if (keyword != null) return AgentResult.Command(keyword)
         return chatRequested(text, memoryText, history, diaryTags)
     }
-
     /** 静默工具回路的产出（不产生界面事件） */
     data class SilentResult(
         val ok: Boolean,
@@ -110,7 +112,7 @@ class Agent(
                 memoryText = memoryText,
                 conversation = conversation,
                 toolManual = toolRegistry.manual(),
-                volatileContext = promptBuilder.buildVolatileContext(diaryTags)
+                diaryTags = diaryTags
             )
             var final: ReplyEvent.Final? = null
             chatReplyFlow(messages).collect { if (it is ReplyEvent.Final) final = it }
@@ -138,7 +140,7 @@ class Agent(
             memoryText = memoryText,
             conversation = conversation,
             toolManual = toolRegistry.manual(),
-            volatileContext = promptBuilder.buildVolatileContext(diaryTags)
+            diaryTags = diaryTags
         )
         return AgentResult.ChatRequested(messages)
     }
@@ -163,6 +165,7 @@ class Agent(
         val usedLabels = LinkedHashSet<String>()              // 成功执行过的动作描述（页脚）
         val exchanges = mutableListOf<Pair<String, String>>() // (模型输出原文, 回传的结果消息)
         val successMemo = HashMap<String, String>()           // 本回复内成功调用备忘（签名→feedback），重复调用直接复用
+        var lastUsage: Usage? = null                          // 最后一次请求的用量（含缓存命中）
 
         fun absorbProse(prose: String) {
             val p = prose.trim()
@@ -179,6 +182,7 @@ class Agent(
             var acc = ""
             var released = false
             chatStream(messages).collect { chunk ->
+                chunk.usage?.let { lastUsage = it }   // 流式：厂商在最后一个 chunk 带用量
                 val delta = chunk.choices.firstOrNull()?.delta
                 val t = delta?.textContent.orEmpty()
                 val th = delta?.reasoningContent.orEmpty()
@@ -196,7 +200,7 @@ class Agent(
             val act = !forcedFinal && toolRounds < ToolRegistry.MAX_TOOL_ROUNDS && calls.isNotEmpty()
             if (!act) {
                 absorbProse(toolRegistry.stripCallLines(acc))
-                emit(finish(finalized, usedToolNames, usedLabels, exchanges))
+                emit(finish(finalized, usedToolNames, usedLabels, exchanges, lastUsage))
                 return@flow
             }
 
@@ -245,20 +249,21 @@ class Agent(
         }
 
         // guard 兜底出口（正常流程到不了这里）
-        emit(finish(finalized, usedToolNames, usedLabels, exchanges))
+        emit(finish(finalized, usedToolNames, usedLabels, exchanges, lastUsage))
     }
 
-    /** 组装最终回答：正文 + 已执行动作页脚；toolNames 随事件外传（记录兜底判断用） */
+    /** 组装最终回答：正文 + 已执行动作页脚；toolNames/usage 随事件外传（记录兜底判断、缓存命中展示用） */
     private fun finish(
         finalized: StringBuilder,
         usedToolNames: Set<String>,
         usedLabels: Set<String>,
-        exchanges: List<Pair<String, String>>
+        exchanges: List<Pair<String, String>>,
+        usage: Usage?
     ): ReplyEvent.Final {
         val body = finalized.toString().ifBlank { "（模型没有返回内容，请重试或换个说法）" }
         val answer = if (usedLabels.isEmpty()) body
         else body + "\n\n🔧 已执行：" + usedLabels.joinToString("、")
-        return ReplyEvent.Final(answer, usedToolNames.toList(), exchanges.toList())
+        return ReplyEvent.Final(answer, usedToolNames.toList(), exchanges.toList(), usage)
     }
 
     /** 发送流式对话请求（单次请求；工具回路由 chatReplyFlow 编排多次调用本方法） */
@@ -274,7 +279,9 @@ class Agent(
             // 4096：推理模型思考占配额，且多轮工具场景回答更长（2048 曾被吃光）
             maxTokens = 4096,
             stream = true,
-            reasoningEffort = effort
+            reasoningEffort = effort,
+            // 流式也要用量统计：缓存命中 token 是验证"提示词缓存是否生效"的唯一手段
+            streamOptions = StreamOptions(includeUsage = true)
         )
         val header = providerRegistry.authHeader(profile.apiKey)
         return flow {

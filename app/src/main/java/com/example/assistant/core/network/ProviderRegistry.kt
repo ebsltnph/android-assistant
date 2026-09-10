@@ -29,6 +29,12 @@ class ProviderRegistry(
      */
     private val effortUnsupported = mutableSetOf<String>()
 
+    /**
+     * 已知不认识 stream_options（流式用量统计）的 (baseUrl|model) 集合。
+     * 与 reasoning_effort 同一套降级思路：发一次带参请求，400 指向该参数就永久去掉并记住。
+     */
+    private val streamOptionsUnsupported = mutableSetOf<String>()
+
     /** 每个模型最近一次请求的思考参数实际状态（设置页展示用）：unset / sent:<值> / stripped */
     private val effortStatus = mutableMapOf<String, String>()
 
@@ -102,13 +108,11 @@ class ProviderRegistry(
         call: suspend (String, ChatRequest) -> T
     ): T {
         val key = statusKey(profile)
-        var req = if (key in effortUnsupported && request.reasoningEffort != null) {
-            effortStatus[key] = "stripped"
-            request.copy(reasoningEffort = null)
-        } else {
-            effortStatus[key] = request.reasoningEffort?.let { "sent:$it" } ?: "unset"
-            request
-        }
+        var req = request
+        // 已知不支持的参数：直接不发（省一次失败的往返）
+        if (key in effortUnsupported && req.reasoningEffort != null) req = req.copy(reasoningEffort = null)
+        if (key in streamOptionsUnsupported && req.streamOptions != null) req = req.copy(streamOptions = null)
+        effortStatus[key] = req.reasoningEffort?.let { "sent:$it" } ?: "unset"
         while (true) {
             try {
                 return call(header, req)
@@ -128,8 +132,14 @@ class ProviderRegistry(
                     else -> null
                 }
                 // 只对"参数不认识/值非法"类 400 降级；其他错误原样抛给上层
-                if (code != 400 || body.isNullOrBlank() || !looksLikeReasoningParamProblem(body)) throw e
+                if (code != 400 || body.isNullOrBlank()) throw e
                 when {
+                    // 0 级：stream_options 不认识 → 去掉并记住（缓存命中统计失效，不影响对话）
+                    looksLikeStreamOptionsProblem(body) && req.streamOptions != null -> {
+                        streamOptionsUnsupported += key
+                        req = req.copy(streamOptions = null)
+                    }
+                    !looksLikeReasoningParamProblem(body) -> throw e
                     // 第一级：xhigh 超出模型支持范围 → 降到 high 再试一次
                     req.reasoningEffort == "xhigh" -> {
                         req = req.copy(reasoningEffort = "high")
@@ -176,6 +186,18 @@ class ProviderRegistry(
         return b.contains("unknown parameter") || b.contains("unknown_parameter") ||
             (b.contains("reasoning_effort") &&
                 (b.contains("parameter") || b.contains("invalid") || b.contains("value")))
+    }
+
+    /**
+     * 错误信息是否指向 stream_options / include_usage 不被支持。
+     * 必须比 reasoning 分支先判断：部分厂商把任何未知字段都回 "Unknown parameter: 'xxx'"，
+     * 若先走 reasoning 分支会误把 reasoning_effort 去掉。
+     */
+    private fun looksLikeStreamOptionsProblem(body: String): Boolean {
+        val b = body.lowercase()
+        if (!b.contains("stream_options") && !b.contains("include_usage")) return false
+        return b.contains("unknown") || b.contains("unsupported") || b.contains("invalid") ||
+            b.contains("not support") || b.contains("parameter") || b.contains("extra")
     }
 }
 

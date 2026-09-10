@@ -981,7 +981,7 @@ private fun OutputArea(
                 items(messages.takeLast(30)) { msg ->
                     MessageBubble(
                         msg = msg,
-                        isLastAssistant = msg.role == "assistant" && msg.id == lastId,
+                        isLastAssistant = msg.regenerable && msg.id == lastId,
                         speakingThis = speakingMsgId == msg.id,
                         onSpeak = { onSpeak(msg) },
                         showEditResend = msg.role == "user" &&

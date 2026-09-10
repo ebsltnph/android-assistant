@@ -65,7 +65,12 @@ data class BackupSettings(
     val quietEndMinute: Int = 7 * 60,
     val reasoningEffort: String = "default",
     val floatingBallEnabled: Boolean = false,
-    val conversationMaxTurns: Int = 10,
+    /** 上下文**上限**轮数（旧版的单一"上下文长度"键沿用这个键名） */
+    val conversationMaxTurns: Int = 20,
+    /** 上下文**下限**轮数（触顶后回落到这里；缓存友好的双阈值窗口） */
+    val conversationMinTurns: Int = 5,
+    /** 上下文字符软上限（0 = 关闭） */
+    val conversationCharLimit: Int = 24000,
     /** 日记标签词汇表（逗号分隔） */
     val diaryTagsCsv: String = "工作,生活,待办,经验",
     val secretLogEnabled: Boolean = false,

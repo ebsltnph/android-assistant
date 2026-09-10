@@ -190,12 +190,32 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setScreenSenseRegionEnabled(v) }
     }
 
-    // ---- 对话：聊天上下文长度（轮数，默认 10） ----
+    // ---- 对话：聊天上下文长度（上下限双阈值 + 字符软上限） ----
+    /** 上限（默认 20 轮）：超过就回落到下限 */
     val conversationMaxTurns: StateFlow<Int> = settingsStore.conversationMaxTurns
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 10)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 20)
 
     fun setConversationMaxTurns(v: Int) {
         viewModelScope.launch { settingsStore.setConversationMaxTurns(v) }
+    }
+
+    /** 下限（默认 5 轮） */
+    val conversationMinTurns: StateFlow<Int> = settingsStore.conversationMinTurns
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 5)
+
+    fun setConversationMinTurns(v: Int) {
+        viewModelScope.launch { settingsStore.setConversationMinTurns(v) }
+    }
+
+    /** 字符软上限（默认 24000 字当量；0 = 关闭） */
+    val conversationCharLimit: StateFlow<Int> = settingsStore.conversationCharLimit
+        .stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000),
+            SettingsStore.DEFAULT_CONTEXT_CHAR_LIMIT
+        )
+
+    fun setConversationCharLimit(v: Int) {
+        viewModelScope.launch { settingsStore.setConversationCharLimit(v) }
     }
 
     // ---- 秘密功能：对话历史记录开关 ----

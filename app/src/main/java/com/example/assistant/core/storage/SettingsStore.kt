@@ -133,9 +133,29 @@ class SettingsStore(context: Context) {
         dataStore.edit { it[KEY_BUBBLE_ICON_IMAGE] = v }
 
     // ---- 对话 ----
-    /** 聊天上下文长度（对话轮数，默认 10；范围 5-50 由设置页 UI 约束） */
-    val conversationMaxTurns: Flow<Int> = dataStore.data.map { it[KEY_MAX_TURNS] ?: 10 }
+    /**
+     * 聊天上下文长度：**上下限双阈值**（轮）。
+     *  - 轮数 ≤ 上限：整段发给模型（每轮只是上一轮的延长 → 缓存命中）；
+     *  - 超过上限：只发最近「下限」轮，并把会话物理裁剪到下限。
+     * 这样发送序列呈 下限 → 下限+1 → … → 上限 → 下限 → …，
+     * 区间内每轮都能命中前面全部缓存（旧的单阈值滚动窗口等于每轮都失效）。
+     */
+    /** 上限（默认 20 轮） */
+    val conversationMaxTurns: Flow<Int> = dataStore.data.map { it[KEY_MAX_TURNS] ?: 20 }
     suspend fun setConversationMaxTurns(v: Int) = dataStore.edit { it[KEY_MAX_TURNS] = v }
+
+    /** 下限（默认 5 轮）：触顶后回落到这里 */
+    val conversationMinTurns: Flow<Int> = dataStore.data.map { it[KEY_MIN_TURNS] ?: 5 }
+    suspend fun setConversationMinTurns(v: Int) = dataStore.edit { it[KEY_MIN_TURNS] = v }
+
+    /**
+     * 上下文字符软上限（默认 24000 字当量；0 = 关闭）。
+     * 轮数不等于 token——一次网页阅读就顶十几轮闲聊，故再按字符数兜底裁剪
+     * （优先于下限，至少保留最近 1 轮）。
+     */
+    val conversationCharLimit: Flow<Int> =
+        dataStore.data.map { it[KEY_CONTEXT_CHAR_LIMIT] ?: DEFAULT_CONTEXT_CHAR_LIMIT }
+    suspend fun setConversationCharLimit(v: Int) = dataStore.edit { it[KEY_CONTEXT_CHAR_LIMIT] = v }
 
     // ---- 日记标签词汇表（用户自定义；AI 只能从这份列表里选 0-3 个） ----
     /** 标签列表，逗号分隔。默认：工作、生活、待办、经验 */
@@ -187,6 +207,8 @@ class SettingsStore(context: Context) {
         private val KEY_BUBBLE_ICON_IMAGE = stringPreferencesKey("bubble_icon_image_path")
         private val KEY_SCREEN_SENSE_REGION = booleanPreferencesKey("screen_sense_region_enabled")
         private val KEY_MAX_TURNS = intPreferencesKey("conversation_max_turns")
+        private val KEY_MIN_TURNS = intPreferencesKey("conversation_min_turns")
+        private val KEY_CONTEXT_CHAR_LIMIT = intPreferencesKey("conversation_context_char_limit")
         private val KEY_DIARY_TAGS = stringPreferencesKey("diary_tags_csv")
         private val KEY_SECRET_LOG = booleanPreferencesKey("secret_log_enabled")
         private val KEY_AUTO_BACKUP = booleanPreferencesKey("auto_backup_enabled")
@@ -202,5 +224,8 @@ class SettingsStore(context: Context) {
 
         /** 远程识别默认停顿（毫秒）：比早期的 1.4s 更宽容，避免句子中间被截断 */
         const val DEFAULT_VOICE_SILENCE_MS = 2_500
+
+        /** 上下文字符软上限默认值（约 12k token 量级；0 = 关闭该保护） */
+        const val DEFAULT_CONTEXT_CHAR_LIMIT = 24_000
     }
 }
