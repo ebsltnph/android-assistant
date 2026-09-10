@@ -9,8 +9,8 @@ import kotlin.math.sqrt
 
 /**
  * 远程识别用录音器：16kHz 单声道 PCM 采集 → WAV 文件（上传给识别 API）。
- * 内置简单能量检测：听到说话后连续静音 1.4 秒自动结束；总时长上限 45 秒；
- * 外部也可随时 finish()（手动结束）或 cancel()（丢弃不回调）。
+ * 内置简单能量检测：听到说话后连续静音 [silenceMs]（设置页可调，默认 2.5 秒）自动结束；
+ * 总时长上限 60 秒；外部也可随时 finish()（手动结束）或 cancel()（丢弃不回调）。
  * 回调在录音线程触发，面板侧自行 launch 到主线程更新 UI。
  */
 class RemoteVoiceRecorder(private val context: Context) {
@@ -20,12 +20,21 @@ class RemoteVoiceRecorder(private val context: Context) {
     @Volatile private var finishRequested = false
     @Volatile private var cancelled = false   // 取消 = 丢弃内容且不触发任何回调
 
-    /** 开始录音。onFinish(file) 正常产出；onError(msg) 失败（含「没听到说话」） */
-    fun start(onFinish: (File) -> Unit, onError: (String) -> Unit) {
+    /**
+     * 开始录音。onFinish(file) 正常产出；onError(msg) 失败（含「没听到说话」）。
+     * @param silenceMs 说完判定为结束所需的静音时长（毫秒；由设置页「说完停顿」决定）
+     */
+    fun start(
+        silenceMs: Long = DEFAULT_SILENCE_MS,
+        onFinish: (File) -> Unit,
+        onError: (String) -> Unit
+    ) {
         cancel()
         stopRequested = false
         finishRequested = false
         cancelled = false
+        // 下限保护：设置值异常时不至于"刚开口就结束"
+        val effectiveSilence = silenceMs.coerceIn(MIN_SILENCE_MS, MAX_SILENCE_MS)
         thread = Thread {
             var record: AudioRecord? = null
             try {
@@ -49,7 +58,7 @@ class RemoteVoiceRecorder(private val context: Context) {
                 record.startRecording()
                 var totalMs = 0L
                 var speechSeen = false
-                var silenceMs = 0L
+                var silenceAccumMs = 0L   // 连续静音累计（与参数 silenceMs 区分）
                 while (!stopRequested && !finishRequested && totalMs < MAX_MS) {
                     val n = record.read(buf, 0, buf.size)
                     if (n <= 0) continue
@@ -64,12 +73,12 @@ class RemoteVoiceRecorder(private val context: Context) {
                             for (c in preRoll) pcm.write(c, 0, c.size)  // 补回说话前的缓冲
                             preRoll.clear()
                         }
-                        silenceMs = 0
+                        silenceAccumMs = 0
                         pcm.write(chunk, 0, chunk.size)
                     } else if (speechSeen) {
                         pcm.write(chunk, 0, chunk.size)
-                        silenceMs += 100
-                        if (silenceMs >= SILENCE_MS) break   // 说完停顿够久 → 自动结束
+                        silenceAccumMs += 100
+                        if (silenceAccumMs >= effectiveSilence) break   // 说完停顿够久 → 自动结束
                     } else {
                         preRoll.addLast(chunk)
                         if (preRoll.size > PREROLL_CHUNKS) preRoll.removeFirst()
@@ -124,9 +133,14 @@ class RemoteVoiceRecorder(private val context: Context) {
     }
 
     companion object {
-        private const val MAX_MS = 45_000L      // 单次录音上限
-        private const val SILENCE_MS = 1_400L   // 说完后静音这么久判定结束
+        private const val MAX_MS = 60_000L      // 单次录音上限（停顿可调长后放宽到 60s）
         private const val SPEECH_RMS = 1_200.0  // 超过视为「在说话」（偏灵敏，配预录缓冲）
         private const val PREROLL_CHUNKS = 6    // 预录缓冲块数（6×100ms）
+
+        /** 默认"说完停顿"（毫秒）：设置页未设值时使用 */
+        const val DEFAULT_SILENCE_MS = 2_500L
+        /** 可调范围（设置页同步用这两条边界） */
+        const val MIN_SILENCE_MS = 1_000L
+        const val MAX_SILENCE_MS = 6_000L
     }
 }

@@ -282,6 +282,8 @@ class BackupManager(
             diaryTagsCsv = settingsStore.diaryTagsCsv.first(),
             secretLogEnabled = settingsStore.secretLogEnabled.first(),
             panelVoiceMode = settingsStore.panelVoiceMode.first(),
+            panelAutoVoiceEnabled = settingsStore.panelAutoVoiceEnabled.first(),
+            voiceSilenceMs = settingsStore.voiceSilenceMs.first(),
             autoBackupEnabled = settingsStore.autoBackupEnabled.first(),
             autoBackupIntervalDays = settingsStore.autoBackupIntervalDays.first()
         )
@@ -415,6 +417,8 @@ class BackupManager(
         settingsStore.setDiaryTagsCsv(s.diaryTagsCsv)
         settingsStore.setSecretLogEnabled(s.secretLogEnabled)
         settingsStore.setPanelVoiceMode(s.panelVoiceMode)
+        settingsStore.setPanelAutoVoiceEnabled(s.panelAutoVoiceEnabled)
+        settingsStore.setVoiceSilenceMs(s.voiceSilenceMs)
         settingsStore.setAutoBackupEnabled(s.autoBackupEnabled)
         settingsStore.setAutoBackupIntervalDays(s.autoBackupIntervalDays)
     }

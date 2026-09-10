@@ -381,39 +381,46 @@ private fun FloatingPanelScreen(
         if (listening || transcribing || isStreaming) return
         listening = true
         voicePartial = ""
-        remoteRecorder.start(
-            onFinish = { file ->
-                scope.launch {
-                    listening = false
-                    transcribing = true
-                    try {
-                        // 识别模型 = 「模型配置 → 能力指派 → 语音识别」指派的档案
-                        val prof = container.providerRegistry.profileFor(
-                            com.example.assistant.core.network.Capability.ASR
-                        )
-                        if (prof == null || !prof.isConfigured()) {
-                            voiceError = "未指派语音识别模型：请到 设置→模型配置→能力指派→语音识别 选择" +
-                                "（编辑提供商时打开「支持语音识别」开关）"
-                            return@launch
+        scope.launch {
+            // 说完停顿时间来自设置（默认 2.5s）；读设置是挂起操作，读完要复核用户是否已取消
+            val silenceMs = container.settingsStore.voiceSilenceMs.first()
+            if (!listening) return@launch
+            remoteRecorder.start(
+                silenceMs = silenceMs.toLong(),
+                onFinish = { file ->
+                    scope.launch {
+                        listening = false
+                        transcribing = true
+                        try {
+                            // 识别模型 = 「模型配置 → 能力指派 → 语音识别」指派的档案
+                            val prof = container.providerRegistry.profileFor(
+                                com.example.assistant.core.network.Capability.ASR
+                            )
+                            if (prof == null || !prof.isConfigured()) {
+                                voiceError = "未指派语音识别模型：请到 设置→模型配置→能力指派→语音识别 选择" +
+                                    "（编辑提供商时打开「支持语音识别」开关）"
+                                return@launch
+                            }
+                            when (val r = container.asrClient.transcribe(
+                                prof.normalizedBaseUrl(), prof.apiKey, prof.model, file
+                            )) {
+                                is com.example.assistant.core.network.AsrClient.Result.Text ->
+                                    if (r.text.isNotBlank()) vm.quickSend(r.text)
+                                    else voiceError = "没识别出内容，请再试一次"
+                                is com.example.assistant.core.network.AsrClient.Result.Error ->
+                                    voiceError = r.message
+                            }
+                        } catch (e: Exception) {
+                            voiceError = "识别失败：" + (e.message ?: "未知错误")
+                        } finally {
+                            transcribing = false
+                            try { file.delete() } catch (_: Exception) {}
                         }
-                        when (val r = container.asrClient.transcribe(
-                            prof.normalizedBaseUrl(), prof.apiKey, prof.model, file
-                        )) {
-                            is com.example.assistant.core.network.AsrClient.Result.Text ->
-                                if (r.text.isNotBlank()) vm.quickSend(r.text)
-                                else voiceError = "没识别出内容，请再试一次"
-                            is com.example.assistant.core.network.AsrClient.Result.Error -> voiceError = r.message
-                        }
-                    } catch (e: Exception) {
-                        voiceError = "识别失败：" + (e.message ?: "未知错误")
-                    } finally {
-                        transcribing = false
-                        try { file.delete() } catch (_: Exception) {}
                     }
-                }
-            },
-            onError = { msg -> scope.launch { listening = false; voiceError = msg } }
-        )
+                },
+                onError = { msg -> scope.launch { listening = false; voiceError = msg } }
+            )
+        }
     }
 
     // 权限授予后按「当时申请的方式」继续（system→听写 / remote→录音）
@@ -512,6 +519,8 @@ private fun FloatingPanelScreen(
     LaunchedEffect(autoVoiceRequested) {
         if (!autoVoiceRequested) return@LaunchedEffect
         kotlinx.coroutines.delay(450) // 让面板先完成入场动画再动键盘/麦克风
+        // 设置页总开关关闭 → 只打开面板，不弹键盘也不开麦（麦克风按钮仍可手动用）
+        if (!container.settingsStore.panelAutoVoiceEnabled.first()) return@LaunchedEffect
         val m = container.settingsStore.panelVoiceMode.first()
         var waited = 0
         while (isStreaming && waited < 10_000) {

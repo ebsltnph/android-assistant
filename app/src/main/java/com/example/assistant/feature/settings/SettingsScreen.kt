@@ -1600,41 +1600,97 @@ private fun PromptEditDialog(
 }
 
 /** 
- * 悬浮球语音输入方式选择（三选一）。远程识别的模型在「模型配置 → 能力指派 → 语音识别」指派。
+ * 悬浮球语音输入设置：总开关（点悬浮球是否自动开始语音）+ 方式三选一 + 说完停顿时间。
+ * 远程识别的模型在「模型配置 → 能力指派 → 语音识别」指派。
  * 独立组件：直接拿 SettingsViewModel，避免主列表函数参数继续膨胀。
  */
 @Composable
 private fun VoiceModeSection(vm: SettingsViewModel) {
     val voiceMode by vm.panelVoiceMode.collectAsState()
+    val autoVoice by vm.panelAutoVoiceEnabled.collectAsState()
+    val silenceMs by vm.voiceSilenceMs.collectAsState()
 
     Column(modifier = Modifier.padding(top = 8.dp)) {
-        Text("悬浮球语音输入", style = MaterialTheme.typography.titleSmall)
+        // 总开关：关闭后点悬浮球只打开面板（不弹键盘、不开麦），面板里的麦克风按钮仍可手动用
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("点悬浮球自动开始语音", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (autoVoice) "点悬浮球后直接进入语音输入（方式见下）"
+                    else "关闭：点悬浮球只打开面板，需要时手动点麦克风",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = autoVoice,
+                onCheckedChange = { vm.setPanelAutoVoiceEnabled(it) }
+            )
+        }
+
+        Text(
+            "语音输入方式",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(top = 10.dp),
+            color = if (autoVoice) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.padding(top = 6.dp)
         ) {
             FilterChip(
                 selected = voiceMode == "ime",
+                enabled = autoVoice,
                 onClick = { vm.setPanelVoiceMode("ime") },
                 label = { Text("键盘语音") }
             )
             FilterChip(
                 selected = voiceMode == "system",
+                enabled = autoVoice,
                 onClick = { vm.setPanelVoiceMode("system") },
                 label = { Text("系统听写") }
             )
             FilterChip(
                 selected = voiceMode == "remote",
+                enabled = autoVoice,
                 onClick = { vm.setPanelVoiceMode("remote") },
                 label = { Text("远程识别") }
             )
         }
         Text(
-            when (voiceMode) {
-                "system" -> "点悬浮球后直接开始系统听写（部分机型不支持，不支持时自动改弹键盘）"
-                "remote" -> "点悬浮球后录音并上传到「语音识别」指派的模型，识别文字自动发送"
+            when {
+                !autoVoice -> "已关闭自动语音：方式选择暂不生效；面板里的麦克风按钮仍按所选方式工作。"
+                voiceMode == "system" -> "点悬浮球后直接开始系统听写（部分机型不支持，不支持时自动改弹键盘）"
+                voiceMode == "remote" -> "点悬浮球后录音并上传到「语音识别」指派的模型，识别文字自动发送"
                 else -> "默认：打开面板后弹出键盘，点键盘上的麦克风即可语音输入"
             },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp)
+        )
+
+        // 说完停顿：只对远程识别生效（系统听写/键盘语音的判停由厂商引擎与输入法决定）
+        Text(
+            "说完停顿（远程识别）",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(top = 12.dp)
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(top = 6.dp)
+        ) {
+            listOf(1500, 2000, 2500, 3000, 4000, 5000).forEach { ms ->
+                FilterChip(
+                    selected = silenceMs == ms,
+                    onClick = { vm.setVoiceSilenceMs(ms) },
+                    label = { Text(if (ms % 1000 == 0) "${ms / 1000}s" else "${ms / 1000.0}s") }
+                )
+            }
+        }
+        Text(
+            "说完静音这么久就判定结束并开始识别（默认 2.5s）。觉得话没说完就被截断就调长，" +
+                "觉得停顿太久就调短。仅「远程识别」方式生效。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 6.dp)

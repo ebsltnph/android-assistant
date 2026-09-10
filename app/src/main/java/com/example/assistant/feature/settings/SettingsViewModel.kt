@@ -109,6 +109,25 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setPanelVoiceMode(v) }
     }
 
+    /** 点悬浮球是否自动开始语音（默认开） */
+    val panelAutoVoiceEnabled: StateFlow<Boolean> = settingsStore.panelAutoVoiceEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setPanelAutoVoiceEnabled(v: Boolean) {
+        viewModelScope.launch { settingsStore.setPanelAutoVoiceEnabled(v) }
+    }
+
+    /** 远程识别「说完停顿」（毫秒，默认 2500） */
+    val voiceSilenceMs: StateFlow<Int> = settingsStore.voiceSilenceMs
+        .stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000),
+            SettingsStore.DEFAULT_VOICE_SILENCE_MS
+        )
+
+    fun setVoiceSilenceMs(v: Int) {
+        viewModelScope.launch { settingsStore.setVoiceSilenceMs(v) }
+    }
+
     // ---- v1.5.x：悬浮球外观 ----
     val bubbleIconEmoji: StateFlow<String> = settingsStore.bubbleIconEmoji
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")

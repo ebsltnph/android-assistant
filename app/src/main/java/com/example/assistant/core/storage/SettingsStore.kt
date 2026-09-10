@@ -97,6 +97,26 @@ class SettingsStore(context: Context) {
     suspend fun setPanelVoiceMode(v: String) =
         dataStore.edit { it[KEY_PANEL_VOICE_MODE] = v }
 
+    /**
+     * 点悬浮球是否自动开始语音输入（**默认开**，保持既有行为）。
+     * 关闭后：点悬浮球只打开面板（不弹键盘、不开麦），面板里的麦克风按钮仍可手动使用；
+     * 上方的语音方式三选一仅在该开关打开时生效。
+     */
+    val panelAutoVoiceEnabled: Flow<Boolean> =
+        dataStore.data.map { it[KEY_PANEL_AUTO_VOICE] ?: true }
+    suspend fun setPanelAutoVoiceEnabled(v: Boolean) =
+        dataStore.edit { it[KEY_PANEL_AUTO_VOICE] = v }
+
+    /**
+     * 远程识别（remote 模式）「说完停顿多久判定结束」（毫秒，默认 2500）。
+     * 只作用于 RemoteVoiceRecorder 的能量检测；系统听写/键盘语音由厂商引擎与输入法决定，
+     * 不在此设置范围内（厂商引擎设静音参数有"永不结束"的坑，见 PanelVoiceController 注释）。
+     */
+    val voiceSilenceMs: Flow<Int> =
+        dataStore.data.map { it[KEY_VOICE_SILENCE_MS] ?: DEFAULT_VOICE_SILENCE_MS }
+    suspend fun setVoiceSilenceMs(v: Int) =
+        dataStore.edit { it[KEY_VOICE_SILENCE_MS] = v }
+
 
 
     // ---- v1.5.x：悬浮球外观 ----
@@ -161,6 +181,8 @@ class SettingsStore(context: Context) {
         private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
         private val KEY_PANEL_VOICE_MODE = stringPreferencesKey("panel_voice_mode")
+        private val KEY_PANEL_AUTO_VOICE = booleanPreferencesKey("panel_auto_voice_enabled")
+        private val KEY_VOICE_SILENCE_MS = intPreferencesKey("voice_silence_ms")
         private val KEY_BUBBLE_ICON_EMOJI = stringPreferencesKey("bubble_icon_emoji")
         private val KEY_BUBBLE_ICON_IMAGE = stringPreferencesKey("bubble_icon_image_path")
         private val KEY_SCREEN_SENSE_REGION = booleanPreferencesKey("screen_sense_region_enabled")
@@ -177,5 +199,8 @@ class SettingsStore(context: Context) {
 
         /** v1.4.0 旧版默认标签；仅用于启动时迁移未自定义的用户 */
         private const val LEGACY_DEFAULT_DIARY_TAGS_CSV = "AI与开发,物理学习与科研,生活,待办,经验"
+
+        /** 远程识别默认停顿（毫秒）：比早期的 1.4s 更宽容，避免句子中间被截断 */
+        const val DEFAULT_VOICE_SILENCE_MS = 2_500
     }
 }

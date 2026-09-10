@@ -71,6 +71,10 @@ data class BackupSettings(
     val secretLogEnabled: Boolean = false,
     /** 悬浮球语音输入方式（ime/system/remote）；识别模型走能力指派 */
     val panelVoiceMode: String = "ime",
+    /** 点悬浮球是否自动开始语音输入（默认开） */
+    val panelAutoVoiceEnabled: Boolean = true,
+    /** 远程识别「说完停顿」毫秒数（默认 2500） */
+    val voiceSilenceMs: Int = 2500,
     /** 定期自动备份开关与间隔（天） */
     val autoBackupEnabled: Boolean = false,
     val autoBackupIntervalDays: Int = 7
