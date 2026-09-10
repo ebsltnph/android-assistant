@@ -763,6 +763,8 @@ class ChatViewModel(
             )
         }
         counter = (_messages.value.maxOfOrNull { it.id } ?: -1L) + 1
+        // 恢复的历史图片也按当前保留策略收敛（用户可能把保留张数改小了）
+        session.enforceImageRetention(settingsStore.chatImageKeep.first())
         refreshContextStatus()
     }
 

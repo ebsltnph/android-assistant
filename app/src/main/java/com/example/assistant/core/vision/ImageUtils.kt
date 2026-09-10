@@ -155,7 +155,7 @@ object ImageUtils {
     /** 本地图片文件 → 缩到宽 ≤ [MAX_WIDTH] 后存进 chat_images（识屏截图进聊天通道用） */
     fun importToChatImages(context: Context, sourcePath: String): String? {
         val bmp = decodeFit(sourcePath, MAX_WIDTH) ?: return null
-        return saveToChatImages(context, bmp)
+        return saveToChatImages(context, scaleBitmap(bmp))
     }
 
     /**

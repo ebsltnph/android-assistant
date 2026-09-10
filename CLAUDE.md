@@ -72,8 +72,11 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 
 设计要点：
 - **单一 API 契约**：所有功能复用同一套 OpenAI 兼容接口；`ProviderRegistry` 按能力（对话/识屏/分类）解析提供商档案，按 baseUrl 缓存 Retrofit 实例
-- **提示词缓存结构**（`PromptBuilder` 保证，五段布局）：
-  `messages[0]` 静态系统外壳+用户设定（缓存）→ `messages[1]` 长期记忆块（缓存）→ `messages[2]` **工具手册**（ToolRegistry 静态文本，缓存）→ `messages[3]` 易变上下文（时间/标签词汇表）→ `messages[4..n]` 对话尾部（截断只删尾部）
+- **提示词缓存结构**（`PromptBuilder` 保证，**四段布局**，2026-09-11 起）：
+  `messages[0]` 静态系统外壳+用户设定（缓存）→ `messages[1]` **工具手册+日记标签词汇表**（缓存）→ `messages[2]` 长期记忆块（缓存）→ `messages[3..n]` 对话尾部（**每个用户消息自带创建时刻的 `[yyyy-MM-dd HH:mm]` 时间戳**，不再有单独的"当前时间"易变消息）
+  - 分层原则：**块顺序按"最稳定 → 最易变"排；绝不把易变内容（如当前时间）放在对话之前**——提示词缓存按最长公共前缀命中，中间插一条每分钟都变的消息会让其后整段历史永远无法命中（2026-09-11 修正的根因）
+  - 上下文窗口：**上下限双阈值**（到上限 U 后回落到下限 L 再重新累积 ⇒ 发送序列 L→L+1→…→U→L，区间内每轮都是上一轮的延长）+ 字符软上限兜底
+- **识图 = 同一条聊天通道，只换模型**（2026-09-11 起）：带图轮走 `Capability.VISION` 档案，其余（上下文/工具/思维链/重做/编辑/删除）与纯文字轮完全一致；图片存 `filesDir/chat_images`，会话只留路径；**没有任何"隐藏的静默调用"**（原 `Agent.silentReply` 已删除）
 - **意图路由**：仅识屏关键词本地直连；其余全部进对话回路由主模型自主调度（无独立分类调用）
 - **主模型统一工具调度（2026-08-24 架构定稿）**：提醒/记录/长期记忆/监控/搜索/网页阅读/识屏全部由主聊天模型经文本协议 `[调用] {"tool":...,"args":{...}}` 自主发起，`ToolRegistry` 解析分发、`Agent.chatReplyFlow` 统一回路执行与结果回传；仅剩识屏关键词本地直连与后台批处理（小结/期间总结/简报/事件轮询命中判断/日记页记忆抽取）走独立调用
 
@@ -220,6 +223,19 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **触发稳定性修复**（点悬浮球偶尔不触发）：① 方式值改直接读设置 `panelVoiceMode.first()`（stateIn 初值 "ime" 与真实值有竞态）；② 上一条还在回复时不再静默跳过——等回复完成（最多 10s）再启动，超时明确提示
   - **取消按钮修复**：RemoteVoiceRecorder 加 cancelled 标记——取消后丢弃录音不回调（原实现取消只是停采集，已录内容照样上传发送）
   - **面板麦克风按钮**：输入框左侧金色渐变圆 🎙️（与发送按钮同款风格），与悬浮球完全同链路（按设置方式启动）
+- [x] **v1.7 五项需求：缓存命中率重构 + 识图并入聊天通道 + 删除单条 + 语音开关/停顿可配**（2026-09-11 编码完成，编译+单测通过，**待真机验证**；方案与验证清单见 `.claude/plans/2026-09-11-五项需求调研与方案.md`）
+  - **悬浮球语音总开关**：设置 → 悬浮球 新增「点悬浮球自动开始语音」（`panel_auto_voice_enabled`，默认开）。关掉后点球只打开浮动面板（不弹键盘、不开麦），方式 chip 置灰，面板麦克风按钮仍可手动用
+  - **说完停顿可配**：`voice_silence_ms`（默认 2500，可选 1.5/2/2.5/3/4/5s），只作用于远程识别（`RemoteVoiceRecorder.start(silenceMs=…)`）；录音上限 45s→60s。系统听写/键盘语音的判停由厂商引擎与输入法决定（不动，见荣耀踩坑）
+  - **删除单条对话（需求 3）**：气泡图标行加 🗑（聊天页 + 浮动面板），二次确认后按 `turnId` **整轮**删除（用户消息 + 全部助手消息含工具中间轮），使其不再进上下文；**不回退工具副作用**（已建提醒/已写日记保留）。`Session` 因此从扁平消息队列改为**轮模型**（`Turn(id, userText, assistant, imagePath)`，`ChatUiMessage.turnId` 贯穿界面）
+  - **提示词缓存重构（需求 5）**：① 找到真正的根因——`PromptBuilder` 的 `messages[3]` 是"当前时间"，**每分钟变一次 ⇒ 其后整段对话历史永远无法命中缓存**；改为**用户消息创建时刻打 `[yyyy-MM-dd HH:mm]` 时间戳**（写一次固定，同时天然提供"当前时间"），易变块取消。② 重新分层：`[0]系统外壳 → [1]工具手册+标签词汇表 → [2]长期记忆 → [3..]对话`（按易变程度排序）。③ 上下文**上下限双阈值**（`conversation_min_turns` 默认 5 / `conversation_max_turns` 默认 20）：轮数到上限后下一条只带下限轮数并**物理裁剪** ⇒ 发送序列 `L→L+1→…→U→L`，区间内每轮都是上一轮的延长，缓存全命中（旧滚动窗口等于每轮都失效）。④ **字符软上限**（`conversation_context_char_limit` 默认 24000 字当量，图片按 1500）优先于下限兜底（一次 read_webpage 就顶十几轮）。⑤ **缓存命中原生可见**：`usage` 解析 `prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`（流式带 `stream_options.include_usage`，不认该参数的厂商走 `effortSafeCall` 同款降级记忆），聊天页标题右侧状态行显示 `上下文 8/20 轮 · 约 3.2k 字 · 命中 87%`，点开看细节
+  - **`regenerate` 修正**：不再用请求快照 `regenerateMessages`（删除/裁剪/记忆更新后会发出过期上下文，且新工具轮被丢弃 → 会话里"旧工具结果+新回答"自相矛盾）；改为**用当前会话重建这一轮**，并整体替换该轮助手消息
+  - **识图并入聊天通道（需求 4）**：带图轮与文字轮**同一条通道，只换模型**（`Agent.route(preferVision=true)` → `Capability.VISION` 档案 → `chatReplyFlow(messages, capability)`）。因此带图轮拥有完整上下文、工具回路、思维链展示，且支持重做/编辑重发/删除单条。**删除识屏独立提示词**（删 `PromptStore.SCREEN_SENSE` 键与设置页入口——额外 system 块会插进数组中间破坏缓存前缀），三个快捷按钮改为**"可编辑提示词 + 图片"**的普通轮（新增 `SCREEN_ACTION_EXTRACT/TRANSLATE/DESCRIBE`，在 设置 → 提示词 → 高级设置 里可改）。**删除静默调用**：`Agent.silentReply`/`SilentResult` 与 `VisionAnalyzer` 整类删除——带图记录改由主模型自己 `write_diary(image_paths=…)`
+  - **图片文件生命周期**（P4 前置坑）：聊天图片存独立目录 `filesDir/chat_images`（JPEG 90，会话只存路径，请求时才读成 base64）——**不能放 diary_images**，因为启动清理会删除"未被 DB 引用"的文件，用户不让记录就会留下死路径；`WriteDiaryTool` 放宽接受 `chat_images` 并在写入日记时**复制**进 `diary_images`（此后受引用保护）。历史图片默认只保留最近 1 张（`chat_image_keep`：0 只当前轮 / 1 / 3 / -1 全部），更早的把 `imagePath` 置空（不改写历史内容，仅一次缓存失效）；启动清理加 `chat_images` 超 7 天
+  - **当前轮的图永远发**：历史图片在目标档案未勾"支持图片输入"时自动替换为文字占位（`Agent.stripHistoricalImages`），避免纯文本对话模型在带图轮之后每轮都 HTTP 400；带图轮报错时附排查提示
+  - **会话轻量持久化**：`filesDir/chat_session.json`（`ChatSessionStore`）存会话轮 + 界面消息，启动恢复；**不进备份**（会话是随时可丢的内容），保留天数可设（`chat_session_retention_days` 默认 7，0=不留存，启动/保存时过期即清），条数上限 60 轮/120 条防膨胀
+  - **面板附件预览**：编辑重发带图消息时原图还原进面板附件栏（原先 `restoreImage=false` 会把图丢掉）
+  - **新增设置键**（均已进备份）：`panel_auto_voice_enabled`、`voice_silence_ms`、`conversation_min_turns`、`conversation_context_char_limit`、`chat_session_retention_days`、`chat_image_keep`；`conversation_max_turns` 沿用旧键（默认 10→20）
+  - **沙箱编译环境记录**：本机 `~/.gradle` 在 DSH 沙箱里只读，构建时用工作区内副本：`$env:GRADLE_USER_HOME="<repo>\.gradle\ghome"` + `--offline`（Kotlin daemon 起不来会回退进程内编译，属正常）
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

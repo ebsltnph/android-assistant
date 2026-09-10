@@ -83,8 +83,6 @@ class Session {
     private val turns = ArrayDeque<Turn>()
     private var seq = 0L
 
-    private val timeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
-
     val turnCount: Int get() = turns.size
 
     fun lastTurn(): Turn? = turns.lastOrNull()
@@ -218,7 +216,8 @@ class Session {
     fun currentCharWeight(): Int = turns.sumOf { it.charWeight() }
 
     /** 给用户消息打时间戳前缀（创建时刻固定，历史消息永不改写） */
-    private fun stamp(text: String): String = "[${timeFormat.format(Date())}] $text"
+    private fun stamp(text: String): String =
+        "[" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(Date()) + "] " + text
 
     companion object {
         /** 图片的字符当量（字符软上限的粗略折算：图片 token 与分辨率有关，这里只做量级估计） */
