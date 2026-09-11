@@ -96,6 +96,8 @@ fun ChatScreen(modifier: Modifier = Modifier) {
 
     // 删除单条对话（需求 3）：待确认的轮 id（null = 无弹窗）
     var pendingDeleteTurnId by remember { mutableStateOf<Long?>(null) }
+    // 清空全部对话：二次确认（与删除单条一致，防误触）
+    var pendingClearAll by remember { mutableStateOf(false) }
 
     // 相册选图（Photo Picker，免存储权限）
     val pickImageLauncher = rememberLauncherForActivityResult(
@@ -124,7 +126,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                 modifier = Modifier.weight(1f)
             )
             ContextStatusChip(contextStatus)
-            IconButton(onClick = { vm.clearConversation() }) {
+            IconButton(onClick = { pendingClearAll = true }) {
                 Icon(Icons.Filled.Delete, contentDescription = "清空对话")
             }
         }
@@ -305,6 +307,30 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             },
             dismissButton = {
                 TextButton(onClick = { pendingDeleteTurnId = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // 清空全部对话的二次确认
+    if (pendingClearAll) {
+        AlertDialog(
+            onDismissRequest = { pendingClearAll = false },
+            title = { Text("清空全部对话？") },
+            text = {
+                Text(
+                    "所有聊天记录与上下文都会被删除，本机保存的会话快照也会一起清掉。\n\n" +
+                        "注意：日记、长期记忆、提醒与事件监控不受影响，已执行的工具副作用不会回滚。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.clearConversation()
+                    pendingClearAll = false
+                    Toast.makeText(context, "已清空对话", Toast.LENGTH_SHORT).show()
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearAll = false }) { Text("取消") }
             }
         )
     }

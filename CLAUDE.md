@@ -236,6 +236,13 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **面板附件预览**：编辑重发带图消息时原图还原进面板附件栏（原先 `restoreImage=false` 会把图丢掉）
   - **新增设置键**（均已进备份）：`panel_auto_voice_enabled`、`voice_silence_ms`、`conversation_min_turns`、`conversation_context_char_limit`、`chat_session_retention_days`、`chat_image_keep`；`conversation_max_turns` 沿用旧键（默认 10→20）
   - **沙箱编译环境记录**：本机 `~/.gradle` 在 DSH 沙箱里只读，构建时用工作区内副本：`$env:GRADLE_USER_HOME="<repo>\.gradle\ghome"` + `--offline`（Kotlin daemon 起不来会回退进程内编译，属正常）
+- [x] **设置页整理 + 两个新工具 + 清空确认 + 滑动卡顿排查**（2026-09-11，编译通过，待真机复验）
+  - **设置页拆子页面**：悬浮球语音输入（总开关/方式/停顿）与聊天上下文（上下限/字符上限/会话保留/历史图片）各拆独立子页，主页只留一行摘要（右侧箭头，与其它入口卡一致）；chip 改 `FlowRow` 自动换行——修复"最右侧选项被压成扁条看不见字"
+  - **会话保留天数语义（用户确认）**：0 = **只停止持久化并删除已存快照**，当前会话与界面继续保留（不立即清空）；清空用聊天页删除按钮
+  - **聊天页右上角「清空对话」加二次确认**（与删除单条一致，防误触）
+  - **新工具 2 个（9 → 11）**：`update_diary(id, content?, tags?, delete?)` 改/删已有日记（id 来自 read_diary——**read_diary 返回每条都带 `#id`**；删除连图片文件一起清）；`list_reminders(scope?, limit?)` 读提醒列表（pending/all，带 #id、重复规则、状态）。配套：`ReminderRepository.all()`、`JsonObject.argLong/argBool/hasArg`；**记录兜底加保护**——本轮碰过日记（read/update/write）就不再触发"没调 write_diary 就存原文"的兜底，否则"把日记改成…"会被多写一条
+  - **滑动卡顿排查（真机实测）**：① `gfxinfo` 归因——滚动时 **UI 线程仅 1.6–2.5ms**、GPU 50th 6ms/95th 7–9ms、整帧（IntendedVsync→FrameCompleted）**15–20ms 紧贴 60Hz 预算**，慢帧全记为 Slow UI thread（管线超时，不是组合慢）；② **刷新率**：本 App 前台 `mActiveSfDisplayMode`=60Hz，但**微信、淘宝前台同样 60Hz**，只有系统「设置」App 是 120Hz ⇒ 这台 ROM 对第三方 App 统一 60Hz，不是本 App 被限制；`window.preferredDisplayModeId` 不被采纳（请求已保留，用户把系统刷新率切「高」时可用）；③ App 侧已做：去掉 GlassCard 的 `Modifier.shadow`（深色背景几乎不可见却是每卡最贵绘制项）、缩略图 LruCache 8MB（减少解码/分配/GC 停顿）、请求最高刷新率；④ 未做（待用户拍板）：玻璃背景换纯色底的「流畅模式」
+  - ⚠️ **环境坑（沙箱）**：`~/.gradle` 只读 → `GRADLE_USER_HOME=<repo>\.gradle\ghome` + `--offline`；adb 需 `ANDROID_USER_HOME=<repo>\.android`（否则服务起不来/设备未授权，先把 `~/.android/adbkey*` 复制进去）；**不要用 PowerShell `Get-Content/Set-Content` 改源码**——按 ANSI 读会把中文注释写成乱码（本次踩到，已整文件重写）
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））

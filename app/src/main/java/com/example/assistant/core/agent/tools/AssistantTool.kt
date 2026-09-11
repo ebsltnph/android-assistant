@@ -42,6 +42,25 @@ fun JsonObject.argStr(key: String): String? =
 
 fun JsonObject.argInt(key: String): Int? = JsonExtract.int(this, key)
 
+/** Long 读取（数据库 id 用；模型可能写 "12" / 12 / "12.0"） */
+fun JsonObject.argLong(key: String): Long? {
+    val p = this[key] as? JsonPrimitive ?: return null
+    return p.contentOrNull?.trim()?.toDoubleOrNull()?.toLong()
+}
+
+/** 布尔读取（模型可能写 true/"true"/1） */
+fun JsonObject.argBool(key: String): Boolean? {
+    val p = this[key] as? JsonPrimitive ?: return null
+    return when (p.contentOrNull?.trim()?.lowercase()) {
+        "true", "1", "yes", "是" -> true
+        "false", "0", "no", "否" -> false
+        else -> null
+    }
+}
+
+/** 模型是否传了这个键（用于区分"没传"与"传了空数组=清空"） */
+fun JsonObject.hasArg(key: String): Boolean = this.containsKey(key)
+
 fun JsonObject.argStrList(key: String): List<String> {
     val arr = this[key] as? JsonArray
     if (arr != null) {

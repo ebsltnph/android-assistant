@@ -11,10 +11,12 @@ import com.example.assistant.core.agent.PeriodSummaryGenerator
 import com.example.assistant.core.agent.PromptBuilder
 import com.example.assistant.core.agent.ReminderTimeParser
 import com.example.assistant.core.agent.tools.MonitorEventTool
+import com.example.assistant.core.agent.tools.ListRemindersTool
 import com.example.assistant.core.agent.tools.ReadDiaryTool
 import com.example.assistant.core.agent.tools.ReadWebpageTool
 import com.example.assistant.core.agent.tools.ScreenSenseTool
 import com.example.assistant.core.agent.tools.SpeakTool
+import com.example.assistant.core.agent.tools.UpdateDiaryTool
 import com.example.assistant.core.speech.TtsManager
 import com.example.assistant.core.agent.tools.SetReminderTool
 import com.example.assistant.core.agent.tools.ToolRegistry
@@ -139,6 +141,10 @@ class AppContainer(context: Context) {
                 ReadWebpageTool(pageReader),
                 // 读日记：主模型可检索用户历史日记
                 ReadDiaryTool(diaryRepository),
+                // 改日记：按 #id 修改正文/标签或删除（id 来自 read_diary 的结果）
+                UpdateDiaryTool(diaryRepository) { parseDiaryTags(settingsStore.diaryTagsCsv.first()) },
+                // 读提醒：查看提醒列表（"我有哪些提醒 / 明天有什么安排"）
+                ListRemindersTool(reminderRepository),
                 // 朗读：模型自主决定何时读、读什么（精简口语版）
                 SpeakTool(ttsManager),
                 SetReminderTool(reminderRepository, reminderScheduler, reminderTimeParser),

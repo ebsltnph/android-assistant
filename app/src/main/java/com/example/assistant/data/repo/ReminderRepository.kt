@@ -13,6 +13,9 @@ class ReminderRepository(private val dao: ReminderDao) {
 
     suspend fun pending(nowMillis: Long): List<ReminderEntity> = dao.pendingReminders(nowMillis)
 
+    /** 全部提醒（含已触发/已取消）——list_reminders 工具与备份用 */
+    suspend fun all(): List<ReminderEntity> = dao.all()
+
     suspend fun byId(id: Long): ReminderEntity? = dao.byId(id)
 
     suspend fun markFired(id: Long) = dao.updateStatus(id, "fired")

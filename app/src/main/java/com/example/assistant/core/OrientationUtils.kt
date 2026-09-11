@@ -54,6 +54,33 @@ object OrientationUtils {
     }
 
     /**
+     * 请求最高刷新率（2026-09-11 加入；**实测在本机不改变显示模式**，保留作通用请求）。
+     *
+     * 实测记录（荣耀 X50 GT / MagicOS，`dumpsys display` 的 mActiveSfDisplayMode）：
+     *  - 本 App 前台 = 60Hz；微信前台 = 60Hz；淘宝前台 = 60Hz；
+     *  - 系统「设置」App 前台 = 120Hz。
+     *  ⇒ 这台 ROM 对**第三方 App** 统一 60Hz，不是本 App 被单独限制；写 preferredDisplayModeId
+     *    也拿不到 120Hz（ROM 不采纳）。因此"滑动卡顿感"的第一变量是系统刷新率设置
+     *    （设置 → 显示和亮度 → 屏幕刷新率），App 内只能优化 UI 线程工作量。
+     *
+     * 保留本函数的原因：部分 ROM / 用户把系统刷新率切到「高」后会采纳 App 的期望模式，
+     * 此时这一行就能吃到高刷；失败或不支持时静默忽略。
+     */
+    fun requestHighRefreshRate(activity: Activity) {
+        try {
+            val display = activity.display ?: return
+            val best = display.supportedModes.maxByOrNull { it.refreshRate } ?: return
+            val lp = activity.window.attributes
+            if (lp.preferredDisplayModeId != best.modeId) {
+                lp.preferredDisplayModeId = best.modeId
+                activity.window.attributes = lp
+            }
+        } catch (_: Exception) {
+            // 个别 ROM 不支持该字段：忽略（保持系统默认帧率）
+        }
+    }
+
+    /**
      * 浮动界面朝向总控（v1.5.x）：
      * - 自动旋转开 → SENSOR（随时跟随物理旋转）；
      * - 自动旋转关 → 锁定 preferredRotation 指定的方向

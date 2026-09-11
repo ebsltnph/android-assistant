@@ -259,17 +259,12 @@ class ChatViewModel(
             }
         }
         // 会话快照保留天数：
-        //  - 改为 0（不留存）→ 删掉已存快照**并立即清空当前会话与聊天界面**。
-        //    只删文件不够：内存里的会话仍在界面上，用户会以为"设 0 没生效"
-        //    （进程没被真正杀掉时尤其明显）——所以这里直接把会话也清掉，语义明确、可立刻验证。
+        //  - 改为 0（不留存）→ 只**停止持久化并删掉已存快照**，当前会话与聊天界面继续保留
+        //    （用户确认的语义：0 = 只停止"记录到磁盘"，不等于清空当前对话；要清空用聊天页的删除按钮）
         scope.launch {
             settingsStore.chatSessionRetentionDays.collect { days ->
-                val turnedOff = days <= 0 && retentionDays > 0
                 retentionDays = days
-                if (days <= 0) {
-                    sessionStore.clear()
-                    if (turnedOff) clearConversation()
-                }
+                if (days <= 0) sessionStore.clear()
             }
         }
         // 历史图片保留张数（-1 = 全部；影响 token 成本，见设置页说明）
@@ -519,8 +514,13 @@ class ChatViewModel(
                 }
                 session.appendAssistant(turnId, ChatMessage("assistant", answer))
                 updateMessage(streamingId) { it.copy(text = answer) }
-                // 记录兜底："记录…"类请求但模型没调 write_diary → 静默存原文（记录不能丢）
-                if (!outcome.toolNames.contains("write_diary") && intentRouter.looksLikeDiaryRequest(rawText)) {
+                // 记录兜底："记录…"类请求但模型没调 write_diary → 静默存原文（记录不能丢）。
+                // 但模型已经处理过日记（读/改/删）时不要再兜底写入——否则"把日记改成…"会被
+                // 当成新记录多写一条（update_diary 走的是修改语义）。
+                val diaryTouched = outcome.toolNames.any {
+                    it == "write_diary" || it == "update_diary" || it == "read_diary"
+                }
+                if (!diaryTouched && intentRouter.looksLikeDiaryRequest(rawText)) {
                     writeDiary(rawText)
                 }
             }
@@ -730,10 +730,8 @@ class ChatViewModel(
         val days = settingsStore.chatSessionRetentionDays.first()
         retentionDays = days
         if (days <= 0) {
-            // 不留存：文件与界面都清干净（重启后不残留任何会话记录）
+            // 不留存：删掉旧文件即可（内存里本来就没有历史，当前会话不受影响）
             sessionStore.clear()
-            session.clear()
-            _messages.value = emptyList()
             return
         }
         if (sessionStore.pruneIfExpired(days)) return

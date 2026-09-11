@@ -105,6 +105,8 @@ class RegionPickerActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 与截图一致的旋转方向（系统自动旋转关闭时锁当前方向，避免中途旋转错乱）
         OrientationUtils.applyIfRotationLocked(this)
+        // 框选是拖动手势，同样请求最高刷新率（拖动跟手感）
+        OrientationUtils.requestHighRefreshRate(this)
         val path = intent.getStringExtra(EXTRA_PATH) ?: run { finish(); return }
         // 心跳：通知悬浮球服务「框选层还活着」（CAPTURING 自愈 60s 不强行恢复球）
         pickerScope.launch {

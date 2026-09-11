@@ -12,7 +12,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -21,8 +20,13 @@ import androidx.compose.ui.unit.dp
 
 /**
  * 通用玻璃拟态卡片（glassmorphism，风格与浮动界面一致）：
- * 低透明白玻璃底（顶部略亮模拟玻璃高光）+ 1dp 半透明白描边 + 大圆角 + 柔和阴影。
+ * 低透明白玻璃底（顶部略亮模拟玻璃高光）+ 1dp 半透明白描边 + 大圆角。
  * 背景放深墨夜景（NightBackground）上才有效果。
+ *
+ * ⚠️ 2026-09-11 性能实测：原先每张卡都带 `Modifier.shadow(10.dp, …)`。
+ * 真机 gfxinfo 显示 UI 线程只花 1.6–2.5ms，但整帧要 14.7–19.5ms（超出 60Hz 预算），
+ * 即瓶颈在 GPU/合成侧——模糊阴影是每张卡最贵的绘制项，而在深色背景上
+ * （阴影色 #060A13/60%）本来就几乎不可见。去掉后观感基本不变、合成负担明显下降。
  *
  * @param onClick 非空则整卡可点击（带涟漪反馈）
  * @param containerAlpha 白玻璃透明度（默认 0.08，需要更亮可调大）
@@ -43,12 +47,7 @@ fun GlassCard(
         )
     )
     Card(
-        modifier = modifier.shadow(
-            10.dp,
-            shape,
-            ambientColor = Color(0xFF060A13).copy(alpha = 0.6f),
-            spotColor = Color(0xFF060A13).copy(alpha = 0.5f)
-        ),
+        modifier = modifier,
         shape = shape,
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f))

@@ -18,10 +18,11 @@ class ReadDiaryTool(
 
     override val name = "read_diary"
     override val description =
-        "read_diary(query?, tags?, days?, limit?)：查询用户的历史日记，返回条目列表（含日期与标签）。" +
+        "read_diary(query?, tags?, days?, limit?)：查询用户的历史日记，返回条目列表（含 #id、日期与标签）。" +
         "query 为关键词（正文包含匹配）；tags 为标签数组（多个标签须同时满足）；" +
         "days 表示只看最近 N 天（不传不限时间）；limit 为最多返回几条（默认 8，最大 20）。" +
         "所有参数都可选，全都不传就是最近的日记。" +
+        "返回的每条都带 #id——用户要改或删某条日记时（update_diary）用它。" +
         "args 示例：{\"query\":\"项目评审\",\"days\":7} 或 {\"tags\":[\"工作\"],\"limit\":5}"
 
     override fun actionLabel(args: JsonObject): String {
@@ -60,7 +61,8 @@ class ReadDiaryTool(
         val body = matched.joinToString("\n\n") { e ->
             val tagMark = if (e.tags.isBlank()) "" else "  #" + e.tagList().joinToString(" #")
             val text = if (e.content.length > CONTENT_CAP) e.content.take(CONTENT_CAP) + "…" else e.content
-            "【" + fmt.format(Date(e.createdAtEpochMillis)) + "】" + tagMark + "\n" + text
+            // 每条带 #id：模型要改/删这一条（update_diary）时用它
+            "【" + fmt.format(Date(e.createdAtEpochMillis)) + "】#" + e.id + tagMark + "\n" + text
         }
         return ToolOutcome.Success("找到 " + matched.size + " 条日记：\n" + body)
     }

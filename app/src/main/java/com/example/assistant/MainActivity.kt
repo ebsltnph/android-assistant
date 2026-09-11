@@ -49,6 +49,7 @@ import com.example.assistant.data.db.entity.ReminderEntity
 import kotlinx.coroutines.launch
 import java.util.Calendar
 import com.example.assistant.core.AppSharedState
+import com.example.assistant.core.OrientationUtils
 import com.example.assistant.core.notification.Notifier
 import com.example.assistant.di.AppContainer
 import com.example.assistant.feature.chat.ChatScreen
@@ -93,6 +94,15 @@ class MainActivity : ComponentActivity() {
         // 主界面固定竖屏（manifest screenOrientation="portrait"，v1.2.1 用户决定），
         // 无需 OrientationUtils；浮动界面/授权 Activity 仍走 sensor（见各自 onCreate）
         enableEdgeToEdge()
+        // 请求最高刷新率（2026-09-11 实测记录）：
+        // 本机（荣耀 X50 GT / MagicOS）对**第三方 App** 统一跑 60Hz —— 实测本 App、微信、淘宝
+        // 在前台时 dumpsys display 的 mActiveSfDisplayMode 都是 60Hz，只有系统应用（如系统设置）是 120Hz。
+        // 所以这里"请求"最高模式对本机当前策略无效（不是我们被单独限制），但保留它是无害的：
+        // 部分 ROM/用户把系统刷新率切到「高」后会按 App 的期望模式切换。
+        // 结论：滑动观感的主要变量在**系统刷新率设置**（设置 → 显示和亮度 → 屏幕刷新率），
+        // 不在 App 内；App 侧可优化的只有 UI 线程工作量（见 CLAUDE.md 性能排查记录）。
+        OrientationUtils.requestHighRefreshRate(this)
+        requestNotificationPermissionIfNeeded()
         requestNotificationPermissionIfNeeded()
         handleIntent(intent)
         // 订阅识屏授权请求（聊天指令 → 弹系统授权框）

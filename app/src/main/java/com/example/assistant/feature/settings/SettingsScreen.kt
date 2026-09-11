@@ -1810,14 +1810,22 @@ private fun voiceModeLabel(mode: String): String = when (mode) {
 private fun silenceLabel(ms: Int): String =
     if (ms % 1000 == 0) "${ms / 1000}s" else "${ms / 1000.0}s"
 
-/** 主页摘要行：只显示当前设定，详细配置点「设置」进子页 */
+/** 主页摘要行：只显示当前设定，整行可点进子页（右侧与其它入口卡一致的箭头） */
 @Composable
 private fun BallVoiceSummaryRow(vm: SettingsViewModel, onOpen: () -> Unit) {
     val autoVoice by vm.panelAutoVoiceEnabled.collectAsState()
     val mode by vm.panelVoiceMode.collectAsState()
     val silence by vm.voiceSilenceMs.collectAsState()
 
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onOpen)
+            .padding(vertical = 8.dp)
+    ) {
         Column(modifier = Modifier.weight(1f)) {
             Text("语音输入", style = MaterialTheme.typography.titleSmall)
             Text(
@@ -1828,7 +1836,11 @@ private fun BallVoiceSummaryRow(vm: SettingsViewModel, onOpen: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        TextButton(onClick = onOpen) { Text("设置") }
+        Icon(
+            Icons.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

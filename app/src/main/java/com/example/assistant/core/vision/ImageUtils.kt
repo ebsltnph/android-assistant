@@ -55,8 +55,23 @@ object ImageUtils {
         }
     }
 
-    /** 聊天列表缩略图（宽 ≤ 256，省内存）；失败返回 null */
-    fun decodeThumbnail(path: String): Bitmap? = decodeFit(path, 256)
+    /**
+     * 缩略图缓存（按字节计容量 8MB，够放几十张 256px 缩略图）。
+     * 列表滚动时同一批缩略图会被反复组合/销毁；缓存后不再重复解码——
+     * 解码在 IO 线程本身不卡，但反复分配 Bitmap 带来的 GC 压力会以
+     * "Slow UI thread"（GC 暂停）的形式体现出来（2026-09-11 滚动卡顿排查）。
+     */
+    private val thumbCache = object : android.util.LruCache<String, Bitmap>(8 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
+
+    /** 聊天列表缩略图（宽 ≤ 256，省内存；带缓存）；失败返回 null */
+    fun decodeThumbnail(path: String): Bitmap? {
+        thumbCache.get(path)?.let { return it }
+        val bmp = decodeFit(path, 256) ?: return null
+        thumbCache.put(path, bmp)
+        return bmp
+    }
 
     /**
      * 按目标宽度采样解码本地图片（inSampleSize 防 OOM，解码后不再放大）。

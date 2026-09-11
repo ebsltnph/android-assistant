@@ -154,6 +154,8 @@ class FloatingPanelActivity : ComponentActivity() {
         val preferredRotation = intent.getIntExtra(EXTRA_ORIENTATION, Int.MIN_VALUE)
             .takeIf { it != Int.MIN_VALUE }
         com.example.assistant.core.OrientationUtils.applyPanelOrientation(this, preferredRotation)
+        // 请求最高刷新率（面板有动态光斑 + 消息流式滚动，60Hz 下观感发糊）
+        com.example.assistant.core.OrientationUtils.requestHighRefreshRate(this)
         // 面板打开：悬浮球服务据此隐藏悬浮球（防截进截图 + 不遮挡面板）
         isPanelOpen = true
         container.panelState.value = AppContainer.PanelState.PANEL_OPEN
