@@ -7,15 +7,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 
 /**
- * 主界面环境背景（静态绘制一次，无动画开销）：
- * 垂直深墨渐变打底 + 三处极淡氛围光晕（右上香槟金 / 左下信息蓝 / 左上冷白），
+ * 主界面环境背景（静态绘制，无动画）：
+ * 垂直深墨渐变打底 + 四处极淡氛围光晕（右上香槟金 / 左下信息蓝 / 左上冷白 / 左中金），
  * 让玻璃卡片有「透出光」的层次感——与浮动界面的光斑语言一致，但更克制。
+ *
+ * ⚠️ 性能（2026-09-11 卡顿排查实锤）：整屏背景里的大半径径向渐变如果留在主绘制层，
+ * **每一帧都要重新录制绘制命令 + 重新光栅化**（滚动时特别明显：UI 线程 6ms+、GPU 6–9ms）。
+ * 这里用 `graphicsLayer(CompositingStrategy.Offscreen)` 把静态背景录进**独立图层**：
+ * 只在尺寸/内容变化时录制一次，之后每帧只是一次纹理合成。
  */
 @Composable
 fun NightBackdrop(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier.fillMaxSize()) {
+    Canvas(
+        modifier = modifier
+            .fillMaxSize()
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    ) {
         drawRect(
             Brush.verticalGradient(
                 listOf(Color(0xFF0D1728), Color(0xFF0B1322), Color(0xFF091120))
