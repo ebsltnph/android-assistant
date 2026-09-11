@@ -107,7 +107,6 @@ class MainActivity : ComponentActivity() {
         // 不在 App 内；App 侧可优化的只有 UI 线程工作量（见 CLAUDE.md 性能排查记录）。
         OrientationUtils.requestHighRefreshRate(this)
         requestNotificationPermissionIfNeeded()
-        requestNotificationPermissionIfNeeded()
         handleIntent(intent)
         // 订阅识屏授权请求（聊天指令 → 弹系统授权框）
         lifecycleScope.launch {

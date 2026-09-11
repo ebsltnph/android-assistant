@@ -1061,6 +1061,18 @@ private fun OutputArea(
     }
 }
 
+// 气泡渐变 / 描边 / 形状：文件级常量（原先每次重组都新建 Brush + Color + Shape，
+// 面板消息列表滚动时每条气泡都在分配）——2026-09-11 卡顿排查第二轮
+private val PanelUserBubbleBrush: Brush = Brush.linearGradient(
+    listOf(Color(0xFFE4B863).copy(alpha = 0.30f), Color(0xFFC8A25A).copy(alpha = 0.16f))
+)
+private val PanelAssistantBubbleBrush: Brush = Brush.linearGradient(
+    listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.05f))
+)
+private val PanelUserBubbleBorder = Color(0xFFE4B863).copy(alpha = 0.5f)
+private val PanelAssistantBubbleBorder = Color.White.copy(alpha = 0.15f)
+private val PanelBubbleShape = RoundedCornerShape(14.dp)
+
 /** 单条消息气泡：用户右侧香槟金玻璃、助手左侧白色低透明玻璃（glassmorphism） */
 @Composable
 private fun MessageBubble(
@@ -1076,16 +1088,8 @@ private fun MessageBubble(
 ) {
     // （onRegenerate 参数为 () -> Unit，外层已绑定 msg.id）
     val isUser = msg.role == "user"
-    val bubbleBg: Brush = if (isUser) {
-        Brush.linearGradient(
-            listOf(Color(0xFFE4B863).copy(alpha = 0.30f), Color(0xFFC8A25A).copy(alpha = 0.16f))
-        )
-    } else {
-        Brush.linearGradient(
-            listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.05f))
-        )
-    }
-    val shape = RoundedCornerShape(14.dp)
+    val bubbleBg: Brush = if (isUser) PanelUserBubbleBrush else PanelAssistantBubbleBrush
+    val shape = PanelBubbleShape
     val showActions = !msg.streaming
     // 气泡 + 同一行的侧边操作按钮（不单独占一行）：
     // 用户消息图标在气泡左侧（行内最左），助手消息图标在气泡右侧（行内最右）；
@@ -1117,37 +1121,40 @@ private fun MessageBubble(
                 .background(bubbleBg)
                 .border(
                     1.dp,
-                    if (isUser) Color(0xFFE4B863).copy(alpha = 0.5f) else Color.White.copy(alpha = 0.15f),
+                    if (isUser) PanelUserBubbleBorder else PanelAssistantBubbleBorder,
                     shape
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
                 if (msg.segments.isNotEmpty()) {
-                    // 多轮工具回复：思考块/正文段/工具执行行按真实使用顺序渲染（与聊天页一致）
-                    msg.segments.forEachIndexed { si, seg ->
-                        when (seg) {
-                            is MsgSegment.Think -> ThinkingBlock(
-                                emoji = "💭",
-                                text = seg.text,
-                                showCursor = msg.streaming && si == msg.segments.lastIndex
-                            )
-                            is MsgSegment.Text -> if (seg.text.isNotEmpty()) {
-                                SelectionContainer {
-                                    RichMessageText(
+                    // 多轮工具回复：思考块/正文段/工具执行行按真实使用顺序渲染（与聊天页一致）。
+                    // 划词容器整条消息只套一个（原先每个正文段各一个）——2026-09-11 卡顿排查第二轮
+                    SelectionContainer {
+                        Column {
+                            msg.segments.forEachIndexed { si, seg ->
+                                when (seg) {
+                                    is MsgSegment.Think -> ThinkingBlock(
+                                        emoji = "💭",
                                         text = seg.text,
-                                        streaming = msg.streaming && si == msg.segments.lastIndex,
-                                        style = TextStyle(
-                                            fontSize = 14.sp,
-                                            lineHeight = 19.sp,
-                                            color = Color.White.copy(alpha = 0.92f)
-                                        )
+                                        showCursor = msg.streaming && si == msg.segments.lastIndex
                                     )
+                                    is MsgSegment.Text -> if (seg.text.isNotEmpty()) {
+                                        RichMessageText(
+                                            text = seg.text,
+                                            streaming = msg.streaming && si == msg.segments.lastIndex,
+                                            style = TextStyle(
+                                                fontSize = 14.sp,
+                                                lineHeight = 19.sp,
+                                                color = Color.White.copy(alpha = 0.92f)
+                                            )
+                                        )
+                                    }
+                                    is MsgSegment.Tools -> ToolsStatusLine(seg.labels)
                                 }
+                                if (si != msg.segments.lastIndex) Spacer(Modifier.height(4.dp))
                             }
-                            is MsgSegment.Tools -> ToolsStatusLine(seg.labels)
                         }
-                        if (si != msg.segments.lastIndex) Spacer(Modifier.height(4.dp))
                     }
                 } else {
                     // 单段消息：旧字段渲染（思考过程默认收起只显示摘要，点击展开/收起）

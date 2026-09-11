@@ -16,8 +16,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -37,7 +35,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -681,21 +678,7 @@ private fun TagManageDialog(
     )
 }
 
-/** 日记卡片上的超小标签药丸：显示用，不占高度 */
-@Composable
-private fun DiaryTagChip(tag: String) {
-    Text(
-        text = tag,
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
-            .padding(horizontal = 6.dp, vertical = 1.dp)
-    )
-}
-
-@OptIn(ExperimentalLayoutApi::class)
+/** 日记条目卡片：正文 + 标签（单行纯文字）+ 图片缩略图 + 时间 + 操作入口 */
 @Composable
 private fun DiaryEntryCard(
     entryWithImages: DiaryEntryWithImages,
@@ -727,21 +710,17 @@ private fun DiaryEntryCard(
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
-                // 条目标签：极小药丸，自动换行（原先用 horizontalScroll，每条目多一层
-                // clip + 滚动节点；标签只有几个，换行更省也更易读）
+                // 条目标签：单行纯文字（原先是「FlowRow + 每个标签一个药丸」，
+                // 每个标签要 2 个组合节点 + 一次换行测量，密集列表里这是每个条目的固定开销大头；
+                // 2026-09-11 卡顿排查第二轮：改成单个 Text，标签成本从 O(标签数) 降到 1）
                 val entryTags = remember(entry.tags) { entry.tagList() }
                 if (entryTags.isNotEmpty()) {
-                    FlowRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        entryTags.forEach { tag ->
-                            DiaryTagChip(tag)
-                        }
-                    }
+                    Text(
+                        text = entryTags.joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
                 }
                 // 图片列表（一条目多张）：多张才需要横向滚动（单张直接摆开，省一层滚动容器）
                 if (entryWithImages.images.isNotEmpty()) {
@@ -773,39 +752,51 @@ private fun DiaryEntryCard(
                     modifier = Modifier.padding(top = 2.dp)
                 )
             }
-            // 单一操作按钮：点击弹出「编辑内容 / 添加图片 / 删除」，不再占三格空间
+            // 单一操作入口：点击弹出「编辑内容 / 添加图片 / 删除」。
+            // 原先是 IconButton + 矢量 Icon（自带 48dp 最小交互区 + 涟漪 + 图标绘制），
+            // 每个条目一堆节点；改成轻量文本按钮，且菜单只在展开时才进组合。
+            // 不用长按整张卡片：长按会和划词（SelectionContainer）抢手势，
+            // 长按正文永远只选中文字、菜单打不开——2026-09-11 卡顿排查第二轮
             Box {
-                IconButton(
-                    onClick = { actionMenuExpanded = true },
-                    modifier = Modifier.size(32.dp)
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clickable(onClickLabel = "更多操作") { actionMenuExpanded = true },
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Filled.Edit, contentDescription = "更多操作", modifier = Modifier.size(16.dp))
+                    Text(
+                        text = "⋯",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                DropdownMenu(
-                    expanded = actionMenuExpanded,
-                    onDismissRequest = { actionMenuExpanded = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("✏️ 编辑内容与标签") },
-                        onClick = {
-                            actionMenuExpanded = false
-                            onEdit()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("🖼️ 添加图片") },
-                        onClick = {
-                            actionMenuExpanded = false
-                            onAddImage()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("🗑️ 删除") },
-                        onClick = {
-                            actionMenuExpanded = false
-                            onDelete()
-                        }
-                    )
+                if (actionMenuExpanded) {
+                    DropdownMenu(
+                        expanded = true,
+                        onDismissRequest = { actionMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("✏️ 编辑内容与标签") },
+                            onClick = {
+                                actionMenuExpanded = false
+                                onEdit()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("🖼️ 添加图片") },
+                            onClick = {
+                                actionMenuExpanded = false
+                                onAddImage()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("🗑️ 删除") },
+                            onClick = {
+                                actionMenuExpanded = false
+                                onDelete()
+                            }
+                        )
+                    }
                 }
             }
         }

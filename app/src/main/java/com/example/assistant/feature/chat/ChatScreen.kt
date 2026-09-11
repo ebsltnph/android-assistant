@@ -395,6 +395,24 @@ private fun ContextStatusChip(status: ContextStatus) {
 private fun formatCharCount(chars: Int): String =
     if (chars < 1000) "$chars 字" else "%.1fk 字".format(chars / 1000.0)
 
+// 气泡的形状 / 渐变 / 描边：提到文件级常量。
+// 原实现每次重组都新建 RoundedCornerShape + Brush + Color（列表滚动时每条气泡都在分配），
+// 这些值本身是恒定不变的——2026-09-11 卡顿排查第二轮。
+private val UserBubbleShape = RoundedCornerShape(
+    topStart = 18.dp, topEnd = 18.dp, bottomEnd = 6.dp, bottomStart = 18.dp
+)
+private val AssistantBubbleShape = RoundedCornerShape(
+    topStart = 18.dp, topEnd = 18.dp, bottomEnd = 18.dp, bottomStart = 6.dp
+)
+private val UserBubbleBrush: Brush = Brush.linearGradient(
+    listOf(Color(0xFFE4B863).copy(alpha = 0.20f), Color(0xFFE4B863).copy(alpha = 0.11f))
+)
+private val AssistantBubbleBrush: Brush = Brush.verticalGradient(
+    listOf(Color.White.copy(alpha = 0.085f), Color.White.copy(alpha = 0.05f))
+)
+private val UserBubbleBorderColor = Color(0xFFE4B863).copy(alpha = 0.38f)
+private val AssistantBubbleBorderColor = Color.White.copy(alpha = 0.13f)
+
 @Composable
 private fun MessageBubble(
     msg: ChatUiMessage,
@@ -415,32 +433,18 @@ private fun MessageBubble(
         // 气泡 + 外侧操作按钮：用户消息按钮在右下，助手消息按钮在左下
         Column(horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
             // 不对称圆角：靠近发言者一侧的底角收紧，形成「说话」的方向感
-            val bubbleShape = RoundedCornerShape(
-                topStart = 18.dp, topEnd = 18.dp,
-                bottomEnd = if (isUser) 6.dp else 18.dp,
-                bottomStart = if (isUser) 18.dp else 6.dp
-            )
+            // （形状是文件级常量，不再每次重组新建）
+            val bubbleShape = if (isUser) UserBubbleShape else AssistantBubbleShape
             // 气泡：原先用 M3 Card（每气泡多一层 Surface + elevation），
             // 改成 clip + 渐变背景 + 描边（视觉相同、少一层绘制）——2026-09-11 滚动卡顿排查
             Column(
                 modifier = Modifier
                     .widthIn(max = 320.dp)
                     .clip(bubbleShape)
-                    .background(
-                        if (isUser) Brush.linearGradient(
-                            listOf(
-                                Color(0xFFE4B863).copy(alpha = 0.20f),
-                                Color(0xFFE4B863).copy(alpha = 0.11f)
-                            )
-                        )
-                        else Brush.verticalGradient(
-                            listOf(Color.White.copy(alpha = 0.085f), Color.White.copy(alpha = 0.05f))
-                        )
-                    )
+                    .background(if (isUser) UserBubbleBrush else AssistantBubbleBrush)
                     .border(
                         1.dp,
-                        if (isUser) Color(0xFFE4B863).copy(alpha = 0.38f)
-                        else Color.White.copy(alpha = 0.13f),
+                        if (isUser) UserBubbleBorderColor else AssistantBubbleBorderColor,
                         bubbleShape
                     )
                     .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -457,24 +461,28 @@ private fun MessageBubble(
                         )
                     }
                     if (msg.segments.isNotEmpty()) {
-                        // 多轮工具回复：思考块/正文段/工具执行行按真实使用顺序渲染
-                        msg.segments.forEachIndexed { si, seg ->
-                            when (seg) {
-                                is MsgSegment.Think -> ThinkingBlock(
-                                    emoji = "🧠",
-                                    text = seg.text,
-                                    showCursor = msg.streaming && si == msg.segments.lastIndex
-                                )
-                                is MsgSegment.Text -> if (seg.text.isNotEmpty()) {
-                                    SelectionContainer {
-                                        RichMessageText(
+                        // 多轮工具回复：思考块/正文段/工具执行行按真实使用顺序渲染。
+                        // 划词容器整条消息只套一个（原先每个正文段各一个 SelectionContainer，
+                        // 多段消息就有多个划词注册节点）——2026-09-11 卡顿排查第二轮
+                        SelectionContainer {
+                            Column {
+                                msg.segments.forEachIndexed { si, seg ->
+                                    when (seg) {
+                                        is MsgSegment.Think -> ThinkingBlock(
+                                            emoji = "🧠",
                                             text = seg.text,
-                                            streaming = msg.streaming && si == msg.segments.lastIndex,
-                                            style = MaterialTheme.typography.bodyMedium
+                                            showCursor = msg.streaming && si == msg.segments.lastIndex
                                         )
+                                        is MsgSegment.Text -> if (seg.text.isNotEmpty()) {
+                                            RichMessageText(
+                                                text = seg.text,
+                                                streaming = msg.streaming && si == msg.segments.lastIndex,
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                        }
+                                        is MsgSegment.Tools -> ToolsStatusLine(seg.labels)
                                     }
                                 }
-                                is MsgSegment.Tools -> ToolsStatusLine(seg.labels)
                             }
                         }
                     } else {

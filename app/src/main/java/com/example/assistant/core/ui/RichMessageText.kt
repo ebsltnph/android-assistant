@@ -45,6 +45,10 @@ import androidx.compose.ui.unit.sp
  * 流式策略：remember 用「原始值」作 key（text/streaming/颜色/字号/密度/宽度）；
  * 同一公式位图走 [MathRenderer] 的 LRU 缓存，流式期间只真正渲染一次。
  *
+ * ⚠️ 性能（2026-09-11 卡顿排查第二轮）：**无公式的消息走不套 BoxWithConstraints 的快速路径**。
+ * 原实现无条件用 BoxWithConstraints 拿宽度给公式渲染用，而它是 SubcomposeLayout（多一次子组合），
+ * 等于列表里每条纯文字消息都白付一次子组合；真机干净实测滑动卡顿 100% 在 UI 线程组合。
+ *
  * 注意：复制/重做走 ChatUiMessage.text 原文（含 LaTeX 源与 ** 标记），不受本组件影响。
  */
 @Composable
@@ -62,50 +66,85 @@ fun RichMessageText(
     val baseColor = if (style.color != Color.Unspecified) style.color else LocalContentColor.current
     val baseFontSize = if (style.fontSize != TextUnit.Unspecified) style.fontSize else 14.sp
 
-    BoxWithConstraints(modifier) {
-        val maxWidthPx = constraints.maxWidth
-        // Density.density 是设备密度（如 3.0 = 480dpi），*160 得 dpi 整数值
-        val densityDpi = (density.density * 160f).toInt()
-        // key 全部用值类型；style 对象本身不放进来（每帧新建，放了缓存全废）
-        val blocks = remember(text, streaming, baseColor, baseFontSize, density.density, densityDpi, maxWidthPx) {
-            val textSizePx = with(density) { baseFontSize.toPx() }
+    // 先解析 token：**绝大多数消息根本没有公式**，此时宽度约束完全用不上，
+    // 可以直接跳过 BoxWithConstraints —— 它内部是 SubcomposeLayout，等于每条消息多一次子组合。
+    // 2026-09-11 卡顿排查第二轮：真机干净实测（只滑动 760 帧）100% 卡在 UI 线程组合/布局，
+    // GPU 3ms、慢绘制 0 次；列表里每条消息白付一次子组合是最容易被吃掉的固定开销。
+    val tokens = remember(text) { parseRichText(text) }
+    val hasMath = tokens.any { it is RichToken.Math }
+
+    if (!hasMath) {
+        val blocks = remember(text, streaming, baseColor, baseFontSize, density.density) {
             buildRichBlocks(
-                tokens = parseRichText(text),
+                tokens = tokens,
                 baseStyle = style,
                 baseColorArgb = baseColor.toArgb(),
-                textSizePx = textSizePx,
-                densityDpi = densityDpi,
-                maxWidthPx = maxWidthPx,
+                textSizePx = with(density) { baseFontSize.toPx() },
+                densityDpi = (density.density * 160f).toInt(),
+                // 无公式时 maxWidthPx 不参与任何渲染（只有 MathRenderer 用它）
+                maxWidthPx = 0,
                 density = density,
             )
         }
-        Column(modifier) {
-            for (b in blocks) {
-                when (b) {
-                    is RichBlock.Text -> {
-                        Text(
-                            text = b.annotated,
-                            style = style,
-                            inlineContent = b.inlineContent,
-                        )
-                    }
+        RichBlocksColumn(blocks, style, streaming, cursor, modifier)
+    } else {
+        BoxWithConstraints(modifier) {
+            val maxWidthPx = constraints.maxWidth
+            // Density.density 是设备密度（如 3.0 = 480dpi），*160 得 dpi 整数值
+            val densityDpi = (density.density * 160f).toInt()
+            // key 全部用值类型；style 对象本身不放进来（每帧新建，放了缓存全废）
+            val blocks = remember(text, streaming, baseColor, baseFontSize, density.density, densityDpi, maxWidthPx) {
+                val textSizePx = with(density) { baseFontSize.toPx() }
+                buildRichBlocks(
+                    tokens = tokens,
+                    baseStyle = style,
+                    baseColorArgb = baseColor.toArgb(),
+                    textSizePx = textSizePx,
+                    densityDpi = densityDpi,
+                    maxWidthPx = maxWidthPx,
+                    density = density,
+                )
+            }
+            RichBlocksColumn(blocks, style, streaming, cursor, Modifier)
+        }
+    }
+}
 
-                    is RichBlock.Math -> {
-                        // 块级公式：独立一行，按位图比例显示，水平居中
-                        Image(
-                            bitmap = b.imageBitmap,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 2.dp)
-                                .wrapContentWidth(Alignment.CenterHorizontally),
-                        )
-                    }
+/** 渲染块序列：文本段（可能含行内公式）+ 独立块级公式 + 流式光标 */
+@Composable
+private fun RichBlocksColumn(
+    blocks: List<RichBlock>,
+    style: TextStyle,
+    streaming: Boolean,
+    cursor: String,
+    modifier: Modifier,
+) {
+    Column(modifier) {
+        for (b in blocks) {
+            when (b) {
+                is RichBlock.Text -> {
+                    Text(
+                        text = b.annotated,
+                        style = style,
+                        inlineContent = b.inlineContent,
+                    )
+                }
+
+                is RichBlock.Math -> {
+                    // 块级公式：独立一行，按位图比例显示，水平居中
+                    Image(
+                        bitmap = b.imageBitmap,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp)
+                            .wrapContentWidth(Alignment.CenterHorizontally),
+                    )
                 }
             }
-            // 光标 ▍ 在最后追加，永不进入公式/标记
-            if (streaming) Text(cursor, style = style)
         }
+        // 光标 ▍ 在最后追加，永不进入公式/标记
+        if (streaming) Text(cursor, style = style)
     }
 }
 
