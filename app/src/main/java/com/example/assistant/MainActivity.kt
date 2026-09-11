@@ -34,11 +34,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
@@ -349,13 +353,34 @@ fun AssistantApp() {
             }
         }
     ) { innerPadding ->
-        val modifier = Modifier.padding(innerPadding)
-        when (currentTab) {
-            MainTab.Home -> HomeScreen(modifier)
-            MainTab.Chat -> ChatScreen(modifier)
-            MainTab.Diary -> DiaryScreen(modifier)
-            MainTab.Reminder -> ReminderScreen(modifier)
-            MainTab.Settings -> SettingsScreen(modifier)
+        // 五个页面**首次访问后保持组合**（2026-09-11 性能修复）：
+        // 原实现每次切换 tab 都把上一页整屏销毁、新页从零组合——日记/提醒/首页都要
+        // 重新订阅 Flow + 重新查库，用户反馈"点底部 tab 切换有明显延迟感"就是这个。
+        // 现在：访问过的页面留在组合树里（状态、滚动位置、数据都热着），
+        // 只有当前页参与绘制与交互：drawWithContent 跳过隐藏页绘制、zIndex 让当前页在最上层。
+        val visited = remember { mutableStateMapOf<MainTab, Unit>() }
+        LaunchedEffect(currentTab) { visited[currentTab] = Unit }
+        Box(Modifier.fillMaxSize().padding(innerPadding)) {
+            MainTab.entries.forEach { tab ->
+                if (visited.containsKey(tab)) {
+                    key(tab) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .zIndex(if (tab == currentTab) 1f else 0f)
+                                .drawWithContent { if (tab == currentTab) drawContent() }
+                        ) {
+                            when (tab) {
+                                MainTab.Home -> HomeScreen(Modifier)
+                                MainTab.Chat -> ChatScreen(Modifier)
+                                MainTab.Diary -> DiaryScreen(Modifier)
+                                MainTab.Reminder -> ReminderScreen(Modifier)
+                                MainTab.Settings -> SettingsScreen(Modifier)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

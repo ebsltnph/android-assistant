@@ -16,6 +16,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -157,6 +159,16 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
     var editingEntryId by remember { mutableStateOf<Long?>(null) }
     var editingEntryText by remember { mutableStateOf("") }
     var editingEntryTags by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // 条目补图：**屏幕级**一个多选 launcher（原先写在每个条目里，
+    // 密集列表滚动时每个条目都要注册一次 ActivityResultLauncher——2026-09-11 卡顿排查）
+    var pickImagesForEntryId by remember { mutableStateOf<Long?>(null) }
+    val pickImagesLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9)
+    ) { uris ->
+        val id = pickImagesForEntryId
+        pickImagesForEntryId = null
+        if (id != null && uris.isNotEmpty()) vm.addImagesToEntry(id, uris)
+    }
     // 下载图片到相册：API 29+ 无需权限；API 28- 需要 WRITE_EXTERNAL_STORAGE（授权后再存）
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -311,7 +323,14 @@ fun DiaryScreen(modifier: Modifier = Modifier) {
                                 editingEntryTags = item.entry.tagList().toSet()
                             },
                             onDelete = { vm.deleteEntry(item.entry.id) },
-                            onPickImages = { uris -> vm.addImagesToEntry(item.entry.id, uris) },
+                            // 图片选择器提到屏幕级（原先每个条目各注册一个 launcher，
+                            // 密集列表滚动时成本随条目数线性增长——见 2026-09-11 卡顿排查）
+                            onAddImage = {
+                                pickImagesForEntryId = item.entry.id
+                                pickImagesLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
                             onDeleteImage = { image -> vm.deleteImage(image) },
                             onViewImage = { path -> viewingImage = path }
                         )
@@ -676,28 +695,26 @@ private fun DiaryTagChip(tag: String) {
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DiaryEntryCard(
     entryWithImages: DiaryEntryWithImages,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
-    onPickImages: (List<Uri>) -> Unit,
+    onAddImage: () -> Unit,
     onDeleteImage: (DiaryImageEntity) -> Unit,
     onViewImage: (String) -> Unit
 ) {
     val entry = entryWithImages.entry
-    // 相册多选（Photo Picker，免存储权限；Android 13+ 原生多选，旧版本自动回退系统选择器）——
-    // 一次最多选 9 张，选完全部追加到条目（保留已有图片）
-    val pickImageLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9)
-    ) { uris ->
-        if (uris.isNotEmpty()) onPickImages(uris)
-    }
     // 单按钮 + 下拉菜单：编辑内容 / 添加图片 / 删除，避免三个按钮挤压文字空间
     var actionMenuExpanded by remember { mutableStateOf(false) }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        modifier = Modifier.fillMaxWidth()
+    // 条目容器用轻量 Box（原先用 M3 Card：多一层 Surface + elevation 阴影，
+    // 密集列表滚动时每帧的绘制成本随条目数增长——2026-09-11 卡顿排查）
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -710,28 +727,34 @@ private fun DiaryEntryCard(
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
-                // 条目标签：极小药丸，横向左右滑动，不换行，压到最小
-                val entryTags = entry.tagList()
+                // 条目标签：极小药丸，自动换行（原先用 horizontalScroll，每条目多一层
+                // clip + 滚动节点；标签只有几个，换行更省也更易读）
+                val entryTags = remember(entry.tags) { entry.tagList() }
                 if (entryTags.isNotEmpty()) {
-                    Row(
+                    FlowRow(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
                             .padding(top = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         entryTags.forEach { tag ->
                             DiaryTagChip(tag)
                         }
                     }
                 }
-                // 图片列表（一条目多张）：横向滚动缩略图，每张可点看大图、点右上角 ✕ 删除
+                // 图片列表（一条目多张）：多张才需要横向滚动（单张直接摆开，省一层滚动容器）
                 if (entryWithImages.images.isNotEmpty()) {
-                    Row(
-                        modifier = Modifier
+                    val imagesModifier = if (entryWithImages.images.size > 1) {
+                        Modifier
                             .padding(top = 4.dp)
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
+                            .horizontalScroll(rememberScrollState())
+                    } else {
+                        Modifier.padding(top = 4.dp)
+                    }
+                    Row(
+                        modifier = imagesModifier,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         entryWithImages.images.forEach { image ->
@@ -773,9 +796,7 @@ private fun DiaryEntryCard(
                         text = { Text("🖼️ 添加图片") },
                         onClick = {
                             actionMenuExpanded = false
-                            pickImageLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
+                            onAddImage()
                         }
                     )
                     DropdownMenuItem(

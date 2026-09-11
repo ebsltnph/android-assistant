@@ -165,14 +165,16 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // 列表级只算一次（原先写在 item 里：每条消息都全表扫一遍，O(n²)）
+                val lastUserId = messages.lastOrNull { it.role == "user" }?.id
+                val lastMsgId = messages.lastOrNull()?.id
                 items(messages, key = { it.id }) { msg ->
-                    val lastEditableUserId = messages.lastOrNull { it.role == "user" }?.id
                     MessageBubble(
                         msg = msg,
-                        isLastAssistant = msg.regenerable && msg.id == messages.lastOrNull()?.id,
+                        isLastAssistant = msg.regenerable && msg.id == lastMsgId,
                         speakingThis = speakingMsgId == msg.id,
                         onSpeak = { vm.speakMessage(msg) },
-                        showEditResend = msg.role == "user" && msg.id == lastEditableUserId,
+                        showEditResend = msg.role == "user" && msg.id == lastUserId,
                         onEditResend = { vm.withdrawForEdit(msg.id, restoreImage = true)?.let { vm.setInput(it) } },
                         onCopy = {
                             clipboard.setText(AnnotatedString(msg.text))
@@ -418,31 +420,31 @@ private fun MessageBubble(
                 bottomEnd = if (isUser) 6.dp else 18.dp,
                 bottomStart = if (isUser) 18.dp else 6.dp
             )
-            Card(
-                shape = bubbleShape,
-                colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-                border = BorderStroke(
-                    1.dp,
-                    if (isUser) Color(0xFFE4B863).copy(alpha = 0.38f)
-                    else Color.White.copy(alpha = 0.13f)
-                ),
-                modifier = Modifier.widthIn(max = 320.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .background(
-                            if (isUser) Brush.linearGradient(
-                                listOf(
-                                    Color(0xFFE4B863).copy(alpha = 0.20f),
-                                    Color(0xFFE4B863).copy(alpha = 0.11f)
-                                )
-                            )
-                            else Brush.verticalGradient(
-                                listOf(Color.White.copy(alpha = 0.085f), Color.White.copy(alpha = 0.05f))
+            // 气泡：原先用 M3 Card（每气泡多一层 Surface + elevation），
+            // 改成 clip + 渐变背景 + 描边（视觉相同、少一层绘制）——2026-09-11 滚动卡顿排查
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 320.dp)
+                    .clip(bubbleShape)
+                    .background(
+                        if (isUser) Brush.linearGradient(
+                            listOf(
+                                Color(0xFFE4B863).copy(alpha = 0.20f),
+                                Color(0xFFE4B863).copy(alpha = 0.11f)
                             )
                         )
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
+                        else Brush.verticalGradient(
+                            listOf(Color.White.copy(alpha = 0.085f), Color.White.copy(alpha = 0.05f))
+                        )
+                    )
+                    .border(
+                        1.dp,
+                        if (isUser) Color(0xFFE4B863).copy(alpha = 0.38f)
+                        else Color.White.copy(alpha = 0.13f),
+                        bubbleShape
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
                     // 消息附带图片（识屏截图 / 上传图片）
                     msg.image?.let {
                         Image(
@@ -493,7 +495,6 @@ private fun MessageBubble(
                         }
                     }
                 }
-            }
             // 气泡外操作按钮（图标）：复制（全部消息）；朗读（助手消息）；重做（仅最后一条助手回复）；
             // 删除这一轮（需求 3：一次删掉输入+输出，只让它不再出现在上下文里，不回退工具副作用）
             if (!msg.streaming) {
