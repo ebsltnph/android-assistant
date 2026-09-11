@@ -13,6 +13,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -165,7 +167,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 },
                 bubbleIconEmoji = bubbleIconEmoji,
                 onSetBubbleIcon = { vm.setBubbleIconEmoji(it) },
-                voiceSettingsVm = vm,
                 onPickBubbleImage = {
                     bubbleImagePicker.launch(
                         androidx.activity.result.PickVisualMediaRequest(
@@ -237,6 +238,14 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             SettingsSubPage.BACKUP -> BackupPage(
                 onBack = { subPage = null }
             )
+            SettingsSubPage.BALL_VOICE -> BallVoicePage(
+                vm = vm,
+                onBack = { subPage = null }
+            )
+            SettingsSubPage.CHAT_CONTEXT -> ChatContextPage(
+                vm = vm,
+                onBack = { subPage = null }
+            )
         }
     }
 
@@ -262,7 +271,11 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
 /** 设置页子页面（内部导航，不引入 NavHost） */
 private enum class SettingsSubPage {
-    USER_GUIDE, MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED, SECRET, BACKUP
+    USER_GUIDE, MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED, SECRET, BACKUP,
+    /** 悬浮球语音输入（配置项多，折叠进子页，主页只显示摘要） */
+    BALL_VOICE,
+    /** 聊天上下文（上下限/字符上限/会话保留/历史图片，同样折叠进子页） */
+    CHAT_CONTEXT
 }
 
 // ======================= 顶层列表 =======================
@@ -288,7 +301,6 @@ private fun SettingsMainList(
     onToggleFloatingBall: (Boolean) -> Unit,
     bubbleIconEmoji: String,
     onSetBubbleIcon: (String) -> Unit,
-    voiceSettingsVm: SettingsViewModel,
     onPickBubbleImage: () -> Unit,
     screenSenseRegionEnabled: Boolean,
     onToggleScreenSenseRegion: (Boolean) -> Unit
@@ -347,8 +359,11 @@ private fun SettingsMainList(
                         TextButton(onClick = onOpenOverlaySettings) { Text("去开启") }
                     }
                 }
-                // v1.5.x：悬浮球语音输入方式三选一
-                VoiceModeSection(vm = vm)
+                // 语音输入：配置项多，折叠进独立子页；主页只显示当前设定摘要
+                BallVoiceSummaryRow(
+                    vm = vm,
+                    onOpen = { onOpenSubPage(SettingsSubPage.BALL_VOICE) }
+                )
                 // 悬浮球图标：点开选择 emoji，实时生效
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -484,9 +499,12 @@ private fun SettingsMainList(
             )
         }
 
-        // ---- 7. 聊天上下文长度（上下限双阈值 + 字符软上限） ----
+        // ---- 7. 聊天上下文（上下限/字符上限/会话保留/历史图片 → 独立子页） ----
         item {
-            ConversationLengthCard(vm = vm)
+            ChatContextEntryCard(
+                vm = vm,
+                onOpen = { onOpenSubPage(SettingsSubPage.CHAT_CONTEXT) }
+            )
         }
 
         // ---- 8. 搜索（keyless 默认） ----
@@ -1265,17 +1283,40 @@ private fun formatBytes(bytes: Long): String = when {
     else -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
 }
 
-// ======================= 聊天上下文长度（上下限双阈值） =======================
+// ======================= 聊天上下文（入口卡 + 子页面） =======================
+
+/** 历史图片保留张数的展示文案 */
+private fun imageKeepLabel(keep: Int): String = when (keep) {
+    -1 -> "全部"
+    0 -> "仅当前轮"
+    else -> "最近 $keep 张"
+}
+
+/** 主页入口卡：只显示当前设定，详细配置进子页 */
+@Composable
+private fun ChatContextEntryCard(vm: SettingsViewModel, onOpen: () -> Unit) {
+    val minTurns by vm.conversationMinTurns.collectAsState()
+    val maxTurns by vm.conversationMaxTurns.collectAsState()
+    val charLimit by vm.conversationCharLimit.collectAsState()
+    val retentionDays by vm.chatSessionRetentionDays.collectAsState()
+    val imageKeep by vm.chatImageKeep.collectAsState()
+
+    EntryCard(
+        title = "聊天上下文",
+        subtitle = "下限 $minTurns / 上限 $maxTurns 轮 · 字符上限 $charLimit · " +
+            "会话保留 $retentionDays 天 · 历史图片 ${imageKeepLabel(imageKeep)}",
+        onClick = onOpen
+    )
+}
 
 /**
- * 聊天上下文长度设置（2026-09-11 改为**上下限双阈值**，目的是提高提示词缓存命中率）：
- *  - 轮数在「下限 ~ 上限」之间：每轮新消息只是往上追加 → 请求前缀与上一轮完全一致 → 缓存全命中；
- *  - 轮数达到上限后：下一条消息只带最近「下限」轮发给模型（会话物理裁剪到下限）。
- * 另设**字符软上限**：轮数不等于 token（一次网页阅读就顶十几轮闲聊），超出时从最旧的轮开始丢。
- * 输入即改本地态，点「保存」才持久化（与搜索 API Key 卡片同一交互）。
+ * 聊天上下文子页面（2026-09-11 从主页折叠进来）：上下限双阈值 + 字符软上限 + 会话保留 + 历史图片。
+ * 双阈值的意义：轮数到上限后回落到下限再重新累积，发送序列 L→L+1→…→U→L，
+ * 区间内每轮请求都是上一轮的延长，提示词缓存才能命中（旧的固定窗口滚动等于每轮都失效）。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ConversationLengthCard(vm: SettingsViewModel) {
+private fun ChatContextPage(vm: SettingsViewModel, onBack: () -> Unit) {
     val minTurns by vm.conversationMinTurns.collectAsState()
     val maxTurns by vm.conversationMaxTurns.collectAsState()
     val charLimit by vm.conversationCharLimit.collectAsState()
@@ -1295,88 +1336,128 @@ private fun ConversationLengthCard(vm: SettingsViewModel) {
         minV in 1..100 && maxV in 1..100 && minV <= maxV && charV in 0..400_000 &&
         retentionV in 0..90
 
-    GlassCard {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("聊天上下文长度", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "对话能记住的最近轮数：**轮数到上限后，下一条消息回落到下限**再重新累积。" +
-                    "这样每次请求的前缀都是上一次的延长，提示词缓存才能命中（旧版固定窗口滚动，" +
-                    "每轮都从头部丢消息，等于永远不命中）。当前：下限 $minTurns · 上限 $maxTurns 轮。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = minText,
-                    onValueChange = { minText = it.filter(Char::isDigit).take(3) },
-                    label = { Text("下限（1-100）") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedTextField(
-                    value = maxText,
-                    onValueChange = { maxText = it.filter(Char::isDigit).take(3) },
-                    label = { Text("上限（1-100）") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("聊天上下文", onBack) }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("上下文轮数（下限 / 上限）", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "轮数到上限后，下一条消息只带最近「下限」轮发给模型再重新累积。" +
+                            "这样每轮请求的前缀都是上一次的延长，提示词缓存才能命中。" +
+                            "当前：下限 $minTurns · 上限 $maxTurns 轮。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = minText,
+                            onValueChange = { minText = it.filter(Char::isDigit).take(3) },
+                            label = { Text("下限（1-100）") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = maxText,
+                            onValueChange = { maxText = it.filter(Char::isDigit).take(3) },
+                            label = { Text("上限（1-100）") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
-            OutlinedTextField(
-                value = charText,
-                onValueChange = { charText = it.filter(Char::isDigit).take(6) },
-                label = { Text("字符软上限（0 = 关闭）") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text(
-                "字符软上限按「字」粗略折算 token（图片按 1500 字当量），" +
-                    "超出时从最旧的轮开始丢（优先于下限，至少保留最近 1 轮）。默认 24000。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            OutlinedTextField(
-                value = retentionText,
-                onValueChange = { retentionText = it.filter(Char::isDigit).take(2) },
-                label = { Text("会话记录保留天数（0 = 不留存，默认 7）") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text(
-                "对话内容只存在本机一个文件里（不进备份、不上传），超过保留天数会在下次启动时清空。" +
-                    "会话是随时可丢的内容，没必要一直记录。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                "历史图片保留张数（带图对话的图每轮都要重发，越少越省 token 与流量）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(
-                    0 to "只当前轮",
-                    1 to "最近 1 张",
-                    3 to "最近 3 张",
-                    -1 to "全部"
-                ).forEach { (v, label) ->
-                    FilterChip(
-                        selected = imageKeep == v,
-                        onClick = { vm.setChatImageKeep(v) },
-                        label = { Text(label) }
+        }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("字符软上限", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "轮数不等于 token：一次网页阅读就顶十几轮闲聊。这里按「字」粗略折算" +
+                            "（图片按 1500 字当量），超出时从最旧的轮开始丢（优先于下限，至少保留最近 1 轮）。" +
+                            "0 = 关闭该保护。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = charText,
+                        onValueChange = { charText = it.filter(Char::isDigit).take(6) },
+                        label = { Text("字符上限（0 = 关闭）") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
-            Text(
-                "只在新图片加入时把更早的图从上下文里换成文字（一次性的缓存失效），" +
-                    "当前轮的图片永远会发给模型。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("会话记录保留", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "对话内容只存在本机一个文件里（不进备份、不上传）。" +
+                            "超过保留天数会在下次启动时清空；填 0 = 不留存，保存后**立即清空**当前会话记录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = retentionText,
+                        onValueChange = { retentionText = it.filter(Char::isDigit).take(2) },
+                        label = { Text("保留天数（0 = 不留存，默认 7）") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("历史图片保留张数", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "带图对话的图片每轮都要重发，保留越少越省 token 与流量。当前：${imageKeepLabel(imageKeep)}。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(0.dp)
+                    ) {
+                        listOf(
+                            0 to "仅当前轮",
+                            1 to "最近 1 张",
+                            3 to "最近 3 张",
+                            -1 to "全部"
+                        ).forEach { (v, label) ->
+                            FilterChip(
+                                selected = imageKeep == v,
+                                onClick = { vm.setChatImageKeep(v) },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
+                    Text(
+                        "只在新图片加入时把更早的图从上下文里换成文字（一次性的缓存失效）；" +
+                            "当前轮的图片永远会发给模型。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(
                     enabled = valid,
@@ -1395,6 +1476,15 @@ private fun ConversationLengthCard(vm: SettingsViewModel) {
                     modifier = Modifier.padding(start = 8.dp)
                 )
             }
+        }
+
+        item {
+            Text(
+                "提示：聊天页标题右侧的状态行会实时显示「上下文 N/M 轮 · 约 N 字 · 缓存命中 %」，" +
+                    "想确认缓存策略是否生效就看那里。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -1708,101 +1798,145 @@ private fun PromptEditDialog(
     )
 }
 
-/** 
- * 悬浮球语音输入设置：总开关（点悬浮球是否自动开始语音）+ 方式三选一 + 说完停顿时间。
- * 远程识别的模型在「模型配置 → 能力指派 → 语音识别」指派。
- * 独立组件：直接拿 SettingsViewModel，避免主列表函数参数继续膨胀。
- */
+// ======================= 悬浮球语音输入（摘要行 + 子页面） =======================
+
+/** 语音方式/停顿的展示文案（摘要行与子页面共用） */
+private fun voiceModeLabel(mode: String): String = when (mode) {
+    "system" -> "系统听写"
+    "remote" -> "远程识别"
+    else -> "键盘语音"
+}
+
+private fun silenceLabel(ms: Int): String =
+    if (ms % 1000 == 0) "${ms / 1000}s" else "${ms / 1000.0}s"
+
+/** 主页摘要行：只显示当前设定，详细配置点「设置」进子页 */
 @Composable
-private fun VoiceModeSection(vm: SettingsViewModel) {
-    val voiceMode by vm.panelVoiceMode.collectAsState()
+private fun BallVoiceSummaryRow(vm: SettingsViewModel, onOpen: () -> Unit) {
     val autoVoice by vm.panelAutoVoiceEnabled.collectAsState()
-    val silenceMs by vm.voiceSilenceMs.collectAsState()
+    val mode by vm.panelVoiceMode.collectAsState()
+    val silence by vm.voiceSilenceMs.collectAsState()
 
-    Column(modifier = Modifier.padding(top = 8.dp)) {
-        // 总开关：关闭后点悬浮球只打开面板（不弹键盘、不开麦），面板里的麦克风按钮仍可手动用
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("点悬浮球自动开始语音", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (autoVoice) "点悬浮球后直接进入语音输入（方式见下）"
-                    else "关闭：点悬浮球只打开面板，需要时手动点麦克风",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = autoVoice,
-                onCheckedChange = { vm.setPanelAutoVoiceEnabled(it) }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("语音输入", style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (!autoVoice) "已关闭自动语音 · 点球只打开面板"
+                else "点悬浮球自动开始 · " + voiceModeLabel(mode) +
+                    (if (mode == "remote") " · 停顿 " + silenceLabel(silence) else ""),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+        TextButton(onClick = onOpen) { Text("设置") }
+    }
+}
 
-        Text(
-            "语音输入方式",
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(top = 10.dp),
-            color = if (autoVoice) MaterialTheme.colorScheme.onSurface
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(top = 6.dp)
-        ) {
-            FilterChip(
-                selected = voiceMode == "ime",
-                enabled = autoVoice,
-                onClick = { vm.setPanelVoiceMode("ime") },
-                label = { Text("键盘语音") }
-            )
-            FilterChip(
-                selected = voiceMode == "system",
-                enabled = autoVoice,
-                onClick = { vm.setPanelVoiceMode("system") },
-                label = { Text("系统听写") }
-            )
-            FilterChip(
-                selected = voiceMode == "remote",
-                enabled = autoVoice,
-                onClick = { vm.setPanelVoiceMode("remote") },
-                label = { Text("远程识别") }
-            )
-        }
-        Text(
-            when {
-                !autoVoice -> "已关闭自动语音：方式选择暂不生效；面板里的麦克风按钮仍按所选方式工作。"
-                voiceMode == "system" -> "点悬浮球后直接开始系统听写（部分机型不支持，不支持时自动改弹键盘）"
-                voiceMode == "remote" -> "点悬浮球后录音并上传到「语音识别」指派的模型，识别文字自动发送"
-                else -> "默认：打开面板后弹出键盘，点键盘上的麦克风即可语音输入"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 6.dp)
-        )
+/**
+ * 悬浮球语音输入子页面：总开关 + 方式三选一 + 说完停顿。
+ * 远程识别的模型在「模型配置 → 能力指派 → 语音识别」指派。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BallVoicePage(vm: SettingsViewModel, onBack: () -> Unit) {
+    val autoVoice by vm.panelAutoVoiceEnabled.collectAsState()
+    val mode by vm.panelVoiceMode.collectAsState()
+    val silence by vm.voiceSilenceMs.collectAsState()
 
-        // 说完停顿：只对远程识别生效（系统听写/键盘语音的判停由厂商引擎与输入法决定）
-        Text(
-            "说完停顿（远程识别）",
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(top = 12.dp)
-        )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.padding(top = 6.dp)
-        ) {
-            listOf(1500, 2000, 2500, 3000, 4000, 5000).forEach { ms ->
-                FilterChip(
-                    selected = silenceMs == ms,
-                    onClick = { vm.setVoiceSilenceMs(ms) },
-                    label = { Text(if (ms % 1000 == 0) "${ms / 1000}s" else "${ms / 1000.0}s") }
-                )
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("悬浮球语音输入", onBack) }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("点悬浮球自动开始语音", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (autoVoice) "点悬浮球后直接进入下面的语音方式"
+                                else "关闭：点悬浮球只打开面板，需要时手动点麦克风",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = autoVoice,
+                            onCheckedChange = { vm.setPanelAutoVoiceEnabled(it) }
+                        )
+                    }
+                }
             }
         }
-        Text(
-            "说完静音这么久就判定结束并开始识别（默认 2.5s）。觉得话没说完就被截断就调长，" +
-                "觉得停顿太久就调短。仅「远程识别」方式生效。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 6.dp)
-        )
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("语音输入方式", style = MaterialTheme.typography.titleSmall)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(0.dp)
+                    ) {
+                        FilterChip(
+                            selected = mode == "ime",
+                            enabled = autoVoice,
+                            onClick = { vm.setPanelVoiceMode("ime") },
+                            label = { Text("键盘语音") }
+                        )
+                        FilterChip(
+                            selected = mode == "system",
+                            enabled = autoVoice,
+                            onClick = { vm.setPanelVoiceMode("system") },
+                            label = { Text("系统听写") }
+                        )
+                        FilterChip(
+                            selected = mode == "remote",
+                            enabled = autoVoice,
+                            onClick = { vm.setPanelVoiceMode("remote") },
+                            label = { Text("远程识别") }
+                        )
+                    }
+                    Text(
+                        when {
+                            !autoVoice -> "已关闭自动语音：方式选择暂不生效；面板里的麦克风按钮仍按所选方式工作。"
+                            mode == "system" -> "点悬浮球后直接开始系统听写（部分机型不支持，不支持时自动改弹键盘）"
+                            mode == "remote" -> "点悬浮球后录音并上传到「语音识别」指派的模型，识别文字自动发送"
+                            else -> "默认：打开面板后弹出键盘，点键盘上的麦克风即可语音输入"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("说完停顿（远程识别）", style = MaterialTheme.typography.titleSmall)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(0.dp)
+                    ) {
+                        listOf(1500, 2000, 2500, 3000, 4000, 5000).forEach { ms ->
+                            FilterChip(
+                                selected = silence == ms,
+                                onClick = { vm.setVoiceSilenceMs(ms) },
+                                label = { Text(silenceLabel(ms)) }
+                            )
+                        }
+                    }
+                    Text(
+                        "说完静音这么久就判定结束并开始识别（默认 2.5s）。觉得话没说完就被截断就调长，" +
+                            "觉得停顿太久就调短。仅「远程识别」方式生效。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
     }
 }

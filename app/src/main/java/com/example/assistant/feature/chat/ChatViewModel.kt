@@ -258,11 +258,18 @@ class ChatViewModel(
                 refreshContextStatus()
             }
         }
-        // 会话快照保留天数：改为 0（不留存）时立刻清掉已存快照
+        // 会话快照保留天数：
+        //  - 改为 0（不留存）→ 删掉已存快照**并立即清空当前会话与聊天界面**。
+        //    只删文件不够：内存里的会话仍在界面上，用户会以为"设 0 没生效"
+        //    （进程没被真正杀掉时尤其明显）——所以这里直接把会话也清掉，语义明确、可立刻验证。
         scope.launch {
-            settingsStore.chatSessionRetentionDays.collect {
-                retentionDays = it
-                if (it <= 0) sessionStore.clear()
+            settingsStore.chatSessionRetentionDays.collect { days ->
+                val turnedOff = days <= 0 && retentionDays > 0
+                retentionDays = days
+                if (days <= 0) {
+                    sessionStore.clear()
+                    if (turnedOff) clearConversation()
+                }
             }
         }
         // 历史图片保留张数（-1 = 全部；影响 token 成本，见设置页说明）
@@ -723,7 +730,10 @@ class ChatViewModel(
         val days = settingsStore.chatSessionRetentionDays.first()
         retentionDays = days
         if (days <= 0) {
+            // 不留存：文件与界面都清干净（重启后不残留任何会话记录）
             sessionStore.clear()
+            session.clear()
+            _messages.value = emptyList()
             return
         }
         if (sessionStore.pruneIfExpired(days)) return
