@@ -254,7 +254,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **复测结果（同条件 10 秒纯滑动，857 帧）**：50th 23→**22ms**（基本没动）、**90th 113→69ms**、**95th 150→93ms**、**99th 200→133ms**、janky **37.0%→28.8%**；**≥150ms 的长停顿 47 帧→8 帧（-83%）**、**≥200ms 的 15 帧→0 帧**；GPU 仍 3ms、Slow draw commands 仍 0 ⇒ **"顿一下"级别的长停顿基本消掉，但中位帧仍 22ms 超预算**。结论：裁剪有效但收益集中在大停顿；剩下那笔**每帧恒定**的成本（疑似滚动时整屏绘制命令重新录制，也在 UI 线程上）**无法继续归因**——本 ROM 的 `dumpsys gfxinfo <pkg> framestats` 不输出逐帧 CSV 段（只有汇总），拿不到阶段拆分。再往下只能"盲砍"（去划词 / 砍渐变描边圆角 / 压条目高度），收益不确定且外观缩水，**用户已决定就此收尾**
   - ⚠️ **冷启动卡顿（已定位，用户决定不改）**：`AssistantApplication.onCreate` 把一串重活塞在启动瞬间——`MathRenderer.init()`（**主线程同步**加载 jlatexmath 字体）、4 个 `scheduleXxx()`（**主线程同步**入队 WorkManager）、`cleanupCaches()`（立刻列目录删文件）、提醒恢复三轮查库+重排闹钟、日记本种子/标签迁移——正好和"刚打开 App 的头几秒滑动"抢 CPU/IO，几秒后活干完就顺了（用户原话：「刚打开 app 上下滑动卡顿明显，一段时间后再滑动明显改善」）。改法很便宜（前两项移到后台协程、cleanup 延后 ~15s、提醒恢复延后 ~5s），**用户决定不做**。另有一条改不了的：ART 无 AOT profile，头几次启动是解释/JIT——要根治得起 Baseline Profile，而它的生成要在真机上跑 instrumented 测试（= 当初清空用户数据的那条路径，**禁止**）
 - [x] **v1.7.0 发布**（2026-09-11）：版本号 1.6.0 → **1.7.0 / code 12**（MINOR 而非 PATCH：既有新功能也有架构级行为变化）。发布内容 = 五项需求（缓存命中率重构 / 识图并入聊天通道并删除静默调用 / 删除单条对话 / 悬浮球语音开关与停顿可配 / 会话轻量持久化）+ 新工具 update_diary 与 list_reminders + 设置页子页面与清空确认 + 两轮滑动流畅度优化（长停顿 47→8 帧）。GitHub Release v1.7.0 已附 `app-release.apk`（14MB，**debug 签名**，可覆盖升级不丢数据）。**推送坑复现**：沙箱内 `git push` 报 `sh.exe: couldn't create signal pipe, Win32 error 5` + 读不到凭据 ⇒ 必须 `-c http.sslBackend=openssl` + socks5 代理 + **danger-full-access 提权**；而 `gh` 是 Go 原生二进制 **不需要提权**（只要 `HTTPS_PROXY=http://127.0.0.1:7897`）
-- [x] **v1.7.1 两个 bug 修复：图片保留 keep=0 失效 + 改日记核对原正文**（2026-09-14，编译+30 个单测通过，已装机待用户验证）
+- [x] **v1.7.1 两个 bug 修复：图片保留 keep=0 失效 + 改日记核对原正文**（2026-09-14，编译+30 个单测通过，**真机验证通过，已发布 v1.7.1 / code 13**）
   - **bug1「历史图片保留 = 仅当前轮」时连当前轮的图都发不出去**：`Session.enforceImageRetention` 原来写 `withImage.dropLast(keep)`——`keep=0` 时 `dropLast(0)` 返回**整个列表**，把刚 `beginTurn` 加进来的当前轮图片也 `imagePath=null` 了 ⇒ 带图轮退化成纯文字请求。修复：`keep=0` 时先判断"最近一轮是否就是带图轮"，是才保留它（`keepCount = 1`），否则 `0` 全部丢弃
   - **「仅当前轮」原先是个空选项**：`enforceImageRetention` 只在 `sendImageTurn` 里调用过，而发图那一刻最新图必然就是当前轮 ⇒ `0` 与 `1` 行为完全相同，且发图后接一条**纯文字**追问时旧图仍会重发。改到 **`runTurn` 开头统一调用**（所有请求都从这走：发送/带图/重做/浮动面板），`0` 才真的等于"下一轮起这张图不再发送"（用户拍板按字面语义）。顺序必须在 `beginTurn` 之后（当前轮是最后一轮）
   - **bug2 改日记会改错条目**：`update_diary` 原来只凭 id 直接覆盖——模型把编号记串就**默默改掉另一条日记**（用户实测：模型改完自己发现"前后读出的结果不一致"，反复读回确认也理不清）。现在 `old_content` 与 `content` **都必填**：`old_content` 必须与该条当前正文一致（归一化去空白后完全相等，或是实际正文的 **≥30 字前缀**——对应 `read_diary` 列表截断的情况），不一致**直接拒绝**并让模型重读，错误信息只透露该条日期不透露正文（防止用报错信息绕过核对）。`content` 与 `old_content` 相同 = 正文不改（只改标签时模型回填原文即可，也顺带避免把截断读回的文本误写成新正文）。删除同样要 `old_content`（删错条目代价更大）
@@ -263,7 +263,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **配套：只读工具不再复用旧结果**（用户问的"缓存让模型无法立刻看到修改结果"的根因）：`Agent.chatReplyFlow` 的 `successMemo`（同参数调用结果复用）原来对所有工具生效，模型 `read_diary → update_diary → read_diary`（参数一模一样）时第二次 read 拿到的是**改动前**的备忘结果，于是判断"没改成功"。现在 `AssistantTool` 加 `readOnly` 标记（read_diary / list_reminders / read_webpage / web_search 为 true），只读工具既不复用也不写入备忘
   - **speak 工具的动作描述不再截断**（用户要求"看到完整注入 TTS 的文字"）：`actionLabel` 原来 `text.take(10)`，现在返回完整文本 `朗读「…」`——它同时出现在流式期的「🔧 …」状态行、消息时间线的工具行、以及结尾「🔧 已执行：…」页脚。`TtsManager.speak()` 只做 `trim()` 后原样交给引擎，所以 args.text 就是真正注入语音引擎的内容
   - **测试**：新增 `app/src/test/.../SessionAndDiaryGuardTest.kt`（11 例）覆盖 keep=0/1/-1 与文本轮接续、正文核对（精确/去空白/长前缀/错条目/过短/空白），全套 30 例通过
-  - **装机**：`adb install -r` 覆盖安装（保留数据），启动无 FATAL，进程存活
+  - **装机**：`adb install -r` 覆盖安装（保留数据），启动无 FATAL，进程存活；用户真机验证通过后发布 **1.7.1 / code 13**（PATCH：纯修复）
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
