@@ -17,9 +17,15 @@ class SpeakTool(private val ttsManager: TtsManager) : AssistantTool {
         "text 必须是提炼后的口语短文：去掉 markdown 符号、列表、公式和代码，把要点压缩成一两句话，" +
         "不是照搬回复全文。args 示例：{\"text\":\"明天上午十点开会，我已经记好了\"}"
 
+    /**
+     * 动作描述 = 界面上的「🔧 朗读「…」」行与结尾「已执行：…」页脚。
+     * ⚠️ 这里**故意不截断**：用户要求看到完整注入 TTS 的文字——
+     * TtsManager.speak() 只做 trim，所以 args.text 就是真正送进语音引擎的内容，
+     * 截断后用户无法核对模型到底念了什么。
+     */
     override fun actionLabel(args: JsonObject): String {
-        val t = args.argStr("text")?.take(10) ?: "?"
-        return "朗读「$t…」"
+        val t = args.argStr("text") ?: return "朗读"
+        return "朗读「$t」"
     }
 
     override suspend fun execute(args: JsonObject): ToolOutcome {

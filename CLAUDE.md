@@ -261,6 +261,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **配套：`read_diary` 支持 `id` 参数**取单条**完整正文不截断**（列表里的 `CONTENT_CAP` 200→600）；编号格式从 `#123` 改成显式 **`#id=123`**（原来模型容易把编号与日期/标签看串）；截断时明确提示"要修改请先 read_diary(id=N) 取完整正文"
   - **配套：改完立刻回传新状态**——`update_diary` 成功时把该条改写后的正文（≤300 字）直接放进 feedback，模型不必再读一次，也就不会读到旧结果
   - **配套：只读工具不再复用旧结果**（用户问的"缓存让模型无法立刻看到修改结果"的根因）：`Agent.chatReplyFlow` 的 `successMemo`（同参数调用结果复用）原来对所有工具生效，模型 `read_diary → update_diary → read_diary`（参数一模一样）时第二次 read 拿到的是**改动前**的备忘结果，于是判断"没改成功"。现在 `AssistantTool` 加 `readOnly` 标记（read_diary / list_reminders / read_webpage / web_search 为 true），只读工具既不复用也不写入备忘
+  - **speak 工具的动作描述不再截断**（用户要求"看到完整注入 TTS 的文字"）：`actionLabel` 原来 `text.take(10)`，现在返回完整文本 `朗读「…」`——它同时出现在流式期的「🔧 …」状态行、消息时间线的工具行、以及结尾「🔧 已执行：…」页脚。`TtsManager.speak()` 只做 `trim()` 后原样交给引擎，所以 args.text 就是真正注入语音引擎的内容
   - **测试**：新增 `app/src/test/.../SessionAndDiaryGuardTest.kt`（11 例）覆盖 keep=0/1/-1 与文本轮接续、正文核对（精确/去空白/长前缀/错条目/过短/空白），全套 30 例通过
   - **装机**：`adb install -r` 覆盖安装（保留数据），启动无 FATAL，进程存活
 - [ ] P7 真·唤醒词（可选）
