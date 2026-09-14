@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 class WebSearchTool(private val searchClient: SearchClient) : AssistantTool {
 
     override val name = "web_search"
+    override val readOnly = true
     override val description =
         "web_search(query)：联网搜索实时信息（新闻、价格、天气、版本动态等）。" +
         "args 示例：{\"query\":\"华为 新品 发布\"}。搜索摘要不够时可再用 read_webpage 深读某个来源。"

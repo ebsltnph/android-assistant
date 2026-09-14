@@ -1448,8 +1448,9 @@ private fun ChatContextPage(vm: SettingsViewModel, onBack: () -> Unit) {
                         }
                     }
                     Text(
-                        "只在新图片加入时把更早的图从上下文里换成文字（一次性的缓存失效）；" +
-                            "当前轮的图片永远会发给模型。",
+                        "图片每轮都要重新上传，保留越少越省 token 与流量。当前轮的图片**永远**会发给模型；" +
+                            "「仅当前轮」= 下一轮开始（哪怕只是文字）这张图就不再发送；" +
+                            "改小保留张数只会把更早的图换成文字，造成一次性缓存失效。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

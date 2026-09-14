@@ -126,15 +126,28 @@ class Session {
     )
 
     /**
-     * 历史图片保留策略（设置页可调）：
-     * 只保留最近 [keep] 张带图轮的图片，更早的把 imagePath 置空（请求里就只剩文字占位）。
-     * keep < 0 = 全部保留（命中率最高、最贵）；0 = 只保留当前轮（最省）。
+     * 历史图片保留策略（设置页可调）：把太老的带图轮的 imagePath 置空（请求里就只剩文字）。
+     *
+     * - `keep < 0`：全部保留（缓存命中率最高、也最贵）
+     * - `keep = 0`：只保留**当前这一轮**的图片——下一轮（哪怕只是文字）开始时这张图就不再发送
+     * - `keep ≥ 1`：保留最近 keep 张带图轮
+     *
+     * ⚠️ 无论 keep 取多少，**当前轮的图片永远保留**。原实现直接 `dropLast(keep)`，
+     * keep=0 时 `dropLast(0)` 返回整个列表 ⇒ 连刚加进来的当前轮图片也被置空，
+     * 用户实测"设成仅当前轮反而一张图都发不出去"就是这里。
      */
     fun enforceImageRetention(keep: Int) {
         if (keep < 0) return
         val withImage = turns.filter { it.imagePath != null }
-        if (withImage.size <= keep) return
-        withImage.dropLast(keep).forEach { old ->
+        if (withImage.isEmpty()) return
+        // keep=0：只有"最近一轮恰好就是带图轮"时才保留它，否则一张都不留
+        val keepCount = if (keep == 0) {
+            if (withImage.last().id == turns.lastOrNull()?.id) 1 else 0
+        } else {
+            keep
+        }
+        if (withImage.size <= keepCount) return
+        withImage.dropLast(keepCount).forEach { old ->
             val idx = turns.indexOfFirst { it.id == old.id }
             if (idx >= 0) turns[idx] = turns[idx].copy(imagePath = null)
         }

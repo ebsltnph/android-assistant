@@ -219,12 +219,15 @@ class Agent(
             val sb = StringBuilder("[结果]")
             uniqueCalls.forEachIndexed { i, call ->
                 val sig = call.tool.name + "|" + call.args.toString()
-                val cachedFeedback = successMemo[sig]
+                // 只读工具（read_diary/list_reminders/read_webpage/web_search）**不复用旧结果**：
+                // 它们不产生副作用，而且别的工具可能刚改过数据——复用会让模型看到改动前的旧数据，
+                // 误以为"没改成功"（用户实测：连续用同样参数读日记拿到的是上一次的结果）
+                val cachedFeedback = if (call.tool.readOnly) null else successMemo[sig]
                 val outcome = if (cachedFeedback != null) {
                     ToolOutcome.Success(cachedFeedback + "\n（与此前一次调用参数完全相同，以上为复用的结果）")
                 } else {
                     val o = toolRegistry.execute(call)
-                    if (o is ToolOutcome.Success) successMemo[sig] = o.feedback
+                    if (o is ToolOutcome.Success && !call.tool.readOnly) successMemo[sig] = o.feedback
                     o
                 }
                 sb.append("\n\n").append(i + 1).append(". tool=").append(call.tool.name)

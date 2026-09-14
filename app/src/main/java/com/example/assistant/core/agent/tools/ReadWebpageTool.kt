@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonObject
 class ReadWebpageTool(private val pageReader: PageReader) : AssistantTool {
 
     override val name = "read_webpage"
+    override val readOnly = true
     override val description =
         "read_webpage(url)：读取指定网页的正文全文（适合搜索摘要不够、需要某个页面详细内容时）。" +
         "args 示例：{\"url\":\"https://example.com/article\"}"

@@ -31,6 +31,15 @@ interface AssistantTool {
     /** 执行状态提示 / 回答页脚用的人话动作描述（如「搜索：xxx」） */
     fun actionLabel(args: JsonObject): String = name
 
+    /**
+     * 只读工具（查询类：读日记 / 读提醒 / 读网页 / 搜索）——**不产生副作用**。
+     *
+     * Agent 的「同参数调用结果复用」备忘对这类工具必须关掉：模型先 read 再改再 read
+     * （参数一模一样）时，如果复用第一次的旧结果，模型看到的就是改动前的数据，
+     * 会误判"没改成功"（用户实测到的困惑来源）。只读工具重跑一次成本很低，正确性优先。
+     */
+    val readOnly: Boolean get() = false
+
     /** 执行工具；抛出的异常会被 ToolRegistry 捕获转为 Failure */
     suspend fun execute(args: JsonObject): ToolOutcome
 }

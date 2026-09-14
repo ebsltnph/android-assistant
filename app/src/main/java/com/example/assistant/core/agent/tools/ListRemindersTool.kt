@@ -18,6 +18,7 @@ class ListRemindersTool(
 ) : AssistantTool {
 
     override val name = "list_reminders"
+    override val readOnly = true
     override val description =
         "list_reminders(scope?, limit?)：读取用户的提醒列表，返回每条的时间、重复规则、状态与 #id。" +
         "scope 可选：\"pending\"（默认，只看还没触发的）或 \"all\"（含已触发/已取消）；" +

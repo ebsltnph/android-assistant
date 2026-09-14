@@ -438,8 +438,7 @@ class ChatViewModel(
         // 没写要求时给一句默认指令（否则模型只看到一张图，不知道要做什么）
         val instruction = text.ifBlank { DEFAULT_IMAGE_INSTRUCTION }
         val turnId = session.beginTurn(instruction, path)
-        // 历史图片保留策略（默认只留最近 1 张；更早的图只留文字，省 token 与上传体积）
-        session.enforceImageRetention(imageRetention)
+        // 历史图片保留策略在 runTurn 里统一执行（对当前轮的图永远放行）
         _messages.update {
             it + ChatUiMessage(
                 id = counter++, turnId = turnId, role = "user", text = text,
@@ -478,6 +477,10 @@ class ChatViewModel(
      * @param preferVision 本轮带图片 → 用「识屏（视觉）」指派的档案（同一条通道，只换模型）
      */
     private suspend fun runTurn(turnId: Long, rawText: String, preferVision: Boolean = false) {
+        // 历史图片保留策略：统一在这里执行（所有请求都从这里发出：发送/带图/重做/面板）。
+        // keep=0「仅当前轮」= 只有最近一轮的图会发出去，下一轮（哪怕只是文字）起这张图就不再发送；
+        // keep≥1 保留最近 N 张；keep<0 全留。当前轮的图永远保留（见 Session.enforceImageRetention）。
+        session.enforceImageRetention(imageRetention)
         val ctx = session.buildContext(minTurns, maxTurns, charLimit)
         _contextStatus.update { it.withContext(ctx, minTurns, maxTurns, charLimit) }
         val memoryText = memoryRepository.memoryContextText()
