@@ -1405,7 +1405,9 @@ private fun ChatContextPage(vm: SettingsViewModel, onBack: () -> Unit) {
                     Text("会话记录保留", style = MaterialTheme.typography.titleSmall)
                     Text(
                         "对话内容只存在本机一个文件里（不进备份、不上传）。" +
-                            "超过保留天数会在下次启动时清空；填 0 = 不留存，保存后**立即清空**当前会话记录。",
+                            "超过保留天数**且已不在模型上下文里**的对话会自动删除（还在上下文窗口里的先留着，" +
+                            "否则下一次请求的提示词前缀会变、厂商缓存整段失效）；" +
+                            "填 0 = 不留存（只停止写文件，屏幕上的对话继续保留，要清空用聊天页的删除按钮）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

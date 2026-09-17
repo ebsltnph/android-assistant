@@ -33,7 +33,9 @@ data class StoredTurn(
     /** 附带图片的本机路径（可为空） */
     val imagePath: String? = null,
     /** 该轮的助手侧消息（工具调用原文 / [结果] 回传 / 最终回答），按顺序 */
-    val assistant: List<String> = emptyList()
+    val assistant: List<String> = emptyList(),
+    /** 该轮创建时刻（按保留天数清理用；旧快照没有此字段时回退到 userText 时间戳/保存时刻） */
+    val createdAt: Long = 0L
 )
 
 @Serializable
@@ -44,7 +46,9 @@ data class StoredUiMessage(
     val text: String,
     val thinking: String = "",
     val regenerable: Boolean = false,
-    val segments: List<StoredSegment> = emptyList()
+    val segments: List<StoredSegment> = emptyList(),
+    /** 该条界面消息的创建时刻（清理判定用；0 = 未知，一律不删） */
+    val createdAt: Long = 0L
 )
 
 @Serializable
@@ -125,5 +129,22 @@ class ChatSessionStore(private val context: Context) {
 
         /** 单次最多保留的会话轮数 */
         const val MAX_TURNS = 60
+
+        private val STAMP = Regex("""^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})]""")
+
+        /**
+         * 从用户消息的 `[yyyy-MM-dd HH:mm]` 前缀解析创建时刻。
+         * 旧快照没有 createdAt 字段时用它回退；解析不出来返回 0 = 未知（清理逻辑一律保留，宁可不删）。
+         */
+        fun parseStampedAt(userText: String?): Long {
+            val m = STAMP.find(userText ?: return 0L) ?: return 0L
+            return try {
+                java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA)
+                    .apply { isLenient = false }
+                    .parse(m.groupValues[1])?.time ?: 0L
+            } catch (_: Exception) {
+                0L
+            }
+        }
     }
 }

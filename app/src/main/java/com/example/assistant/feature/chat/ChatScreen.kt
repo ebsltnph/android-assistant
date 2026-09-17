@@ -350,7 +350,8 @@ private fun ContextStatusChip(status: ContextStatus) {
     val summary = buildString {
         append("上下文 ").append(status.turns).append('/').append(status.maxTurns).append(" 轮")
         append(" · 约 ").append(formatCharCount(status.chars))
-        if (pct != null) append(" · 命中 ").append(pct).append('%')
+        // 命中率按「本轮对话」的多次请求合计（不是最后一次请求），点开有明细
+        if (pct != null) append(" · 本轮命中 ").append(pct).append('%')
     }
     Column(horizontalAlignment = Alignment.End) {
         Text(
@@ -371,12 +372,16 @@ private fun ContextStatusChip(status: ContextStatus) {
                     if (status.charLimit <= 0) append("已关闭")
                     else append(status.charLimit).append(" 字")
                     if (status.trimmedBySoftCap) append("（已触发裁剪）")
-                    append("\n最近一次请求：")
+                    append("\n最近一轮对话：")
+                    if (status.requests > 0) append(status.requests).append(" 次请求合计｜")
                     if (status.promptTokens == null) append("厂商未返回用量")
                     else {
                         append(status.promptTokens).append(" tokens")
                         status.cachedTokens?.let { append(" · 缓存命中 ").append(it) }
+                        status.cacheHitPercent?.let { append("（").append(it).append("%）") }
                     }
+                    // 窗口为什么从这里起算：前缀变了/到上限/到字符上限（缓存的重置点）
+                    status.windowReset?.let { append("\n窗口回落：").append(it) }
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

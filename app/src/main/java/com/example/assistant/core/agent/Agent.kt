@@ -45,12 +45,23 @@ class Agent(
         /** 正在执行一批工具调用（界面显示「🔧 …」状态） */
         data class ToolsRunning(val labels: List<String>) : ReplyEvent
 
-        /** 最终回答（answer 已含执行页脚）；toolNames = 成功执行过的工具名；exchanges = 工具中间轮；usage = 本次回复最后一次请求的用量（含缓存命中，可能为 null） */
+        /**
+         * 最终回答。
+         * @param answer 上屏用：正文 + 系统页脚「🔧 已执行：…」
+         * @param body 进会话历史用：**只有正文**，不带页脚——页脚是界面装饰，
+         *        写进历史后模型会模仿它在正文里自己编"已执行"清单（2026-09-14 修的 bug）
+         * @param toolNames 成功执行过的工具名
+         * @param exchanges 工具中间轮：(模型输出原文, 回传的结果消息)
+         * @param usage **本轮全部请求的用量合计**（不是最后一次请求；界面显示的缓存命中率按整轮算）
+         * @param requests 本轮发出的模型请求次数（工具回路每转一圈多一次）
+         */
         data class Final(
             val answer: String,
             val toolNames: List<String>,
             val exchanges: List<Pair<String, String>>,
-            val usage: Usage? = null
+            val usage: Usage? = null,
+            val requests: Int = 0,
+            val body: String = answer
         ) : ReplyEvent
     }
 
@@ -101,6 +112,14 @@ class Agent(
     /** 当前「识屏（视觉）」档案是否勾选了"支持图片输入"（带图轮失败时的排查提示用） */
     suspend fun visionModelSupportsImages(): Boolean =
         providerRegistry.profileFor(Capability.VISION)?.supportsVision == true
+
+    /**
+     * 静态前缀指纹（系统提示词 / 工具手册 / 日记标签 / 长期记忆）。
+     * 供会话层判断"这一轮的前缀是不是和上一轮一样"——不一样就说明厂商缓存的前缀全废了，
+     * 窗口该回落到下限重新起跑（见 Session.buildContext）。
+     */
+    suspend fun cachePrefixSignature(memoryText: String?, diaryTags: List<String>): String =
+        promptBuilder.prefixSignature(memoryText, toolRegistry.manual(), diaryTags)
 
     /** 组装对话回路的初始请求消息 */
     private suspend fun chatRequested(
@@ -167,10 +186,15 @@ class Agent(
         val usedLabels = LinkedHashSet<String>()              // 成功执行过的动作描述（页脚）
         val exchanges = mutableListOf<Pair<String, String>>() // (模型输出原文, 回传的结果消息)
         val successMemo = HashMap<String, String>()           // 本回复内成功调用备忘（签名→feedback），重复调用直接复用
-        var lastUsage: Usage? = null                          // 最后一次请求的用量（含缓存命中）
+        var usageSum: Usage? = null                           // 本轮**全部请求**的用量合计（见 accumulateUsage）
+        var requests = 0                                      // 本轮发出的模型请求次数
 
+        /**
+         * 各轮保留正文的累加。顺带剥掉模型仿写的机器清单行
+         * （历史里的系统页脚会让它学着在正文里编「🔧 已执行：…」，一条回复里出现好几条）。
+         */
         fun absorbProse(prose: String) {
-            val p = prose.trim()
+            val p = toolRegistry.stripMachineLines(prose)
             if (p.isEmpty()) return
             if (finalized.isNotEmpty()) finalized.append("\n\n")
             finalized.append(p)
@@ -183,8 +207,10 @@ class Agent(
             // ---- 一轮流式收集（开头标记缓冲：疑似"[调用"时不上屏）----
             var acc = ""
             var released = false
+            var reqUsage: Usage? = null                 // 本次请求的用量（流式厂商在最后一个 chunk 带）
+            requests++
             chatStream(messages, capability).collect { chunk ->
-                chunk.usage?.let { lastUsage = it }   // 流式：厂商在最后一个 chunk 带用量
+                chunk.usage?.let { reqUsage = it }
                 val delta = chunk.choices.firstOrNull()?.delta
                 val t = delta?.textContent.orEmpty()
                 val th = delta?.reasoningContent.orEmpty()
@@ -196,19 +222,27 @@ class Agent(
                     emit(ReplyEvent.Delta(t, th))
                 }
             }
+            usageSum = accumulateUsage(usageSum, reqUsage)
 
             // ---- 判定这一轮是否发起工具调用 ----
             val calls = toolRegistry.parseCalls(acc)
             val act = !forcedFinal && toolRounds < ToolRegistry.MAX_TOOL_ROUNDS && calls.isNotEmpty()
             if (!act) {
-                absorbProse(toolRegistry.stripCallLines(acc))
-                emit(finish(finalized, usedToolNames, usedLabels, exchanges, lastUsage))
+                val finalProse = toolRegistry.stripCallLines(acc)
+                absorbProse(finalProse)
+                // 最后一轮也要发一次"轮结束"：界面据此把流式原文替换成干净正文。
+                // 否则模型仿写的「🔧 已执行：…」行、以及工具轮数用尽时残留的调用行，
+                // 会永远留在最终气泡里（界面渲染的是分段内容，不是 answer 文本）——2026-09-14
+                emit(ReplyEvent.RoundSettled(toolRegistry.stripMachineLines(finalProse)))
+                emit(finish(finalized, usedToolNames, usedLabels, exchanges, usageSum, requests))
                 return@flow
             }
 
             toolRounds++
             val pure = toolRegistry.isPureCallTurn(acc)
-            val roundProse = if (pure) "" else toolRegistry.stripCallLines(acc).trim()
+            // 中间轮也一样：回传给模型的"自己说过的话"里不保留仿写的清单行
+            val cleanAcc = toolRegistry.stripMachineLines(acc)
+            val roundProse = if (pure) "" else toolRegistry.stripCallLines(cleanAcc).trim()
             absorbProse(roundProse)
             emit(ReplyEvent.RoundSettled(roundProse))
 
@@ -244,8 +278,8 @@ class Agent(
             sb.append("\n\n请根据以上结果继续：信息足够就直接给出正式回答；有失败可修正参数重新调用（剩余次数有限），或如实告知用户。")
             val resultsMsg = sb.toString()
 
-            messages = messages + ChatMessage("assistant", acc) + ChatMessage("user", resultsMsg)
-            exchanges += acc to resultsMsg
+            messages = messages + ChatMessage("assistant", cleanAcc) + ChatMessage("user", resultsMsg)
+            exchanges += cleanAcc to resultsMsg
 
             if (toolRounds >= ToolRegistry.MAX_TOOL_ROUNDS && !forcedFinal) {
                 messages += ChatMessage("user", ToolRegistry.FORCED_FINAL_NOTE)
@@ -254,21 +288,33 @@ class Agent(
         }
 
         // guard 兜底出口（正常流程到不了这里）
-        emit(finish(finalized, usedToolNames, usedLabels, exchanges, lastUsage))
+        emit(finish(finalized, usedToolNames, usedLabels, exchanges, usageSum, requests))
     }
 
-    /** 组装最终回答：正文 + 已执行动作页脚；toolNames/usage 随事件外传（记录兜底判断、缓存命中展示用） */
+    /**
+     * 组装最终回答：正文 + 已执行动作页脚。
+     * `answer` 给界面（含页脚），`body` 给会话历史（**不含页脚**——页脚进历史会被模型模仿）。
+     * toolNames/usage/requests 随事件外传（记录兜底判断、缓存命中展示用）。
+     */
     private fun finish(
         finalized: StringBuilder,
         usedToolNames: Set<String>,
         usedLabels: Set<String>,
         exchanges: List<Pair<String, String>>,
-        usage: Usage?
+        usage: Usage?,
+        requests: Int
     ): ReplyEvent.Final {
         val body = finalized.toString().ifBlank { "（模型没有返回内容，请重试或换个说法）" }
         val answer = if (usedLabels.isEmpty()) body
-        else body + "\n\n🔧 已执行：" + usedLabels.joinToString("、")
-        return ReplyEvent.Final(answer, usedToolNames.toList(), exchanges.toList(), usage)
+        else body + "\n\n" + FOOTER_PREFIX + usedLabels.joinToString("、")
+        return ReplyEvent.Final(
+            answer = answer,
+            toolNames = usedToolNames.toList(),
+            exchanges = exchanges.toList(),
+            usage = usage,
+            requests = requests,
+            body = body
+        )
     }
 
     /** 发送流式对话请求（单次请求；工具回路由 chatReplyFlow 编排多次调用本方法） */
@@ -365,6 +411,9 @@ class Agent(
         /** 循环保险丝：正常最多 纯答/多轮工具+强制收尾 轮 */
         private const val GUARD_LIMIT = 10
 
+        /** 界面上的系统页脚前缀（不进会话历史；正文里出现即视为模型仿写） */
+        const val FOOTER_PREFIX = "🔧 已执行："
+
         /** 目标模型不支持图片时，历史图片替换成的文字占位 */
         const val HISTORICAL_IMAGE_PLACEHOLDER = "[（历史图片：当前模型不支持图片输入，已省略）]"
 
@@ -375,4 +424,24 @@ class Agent(
                 "并在编辑该提供商时打开「支持图片输入」开关——建议把「对话」与「识屏」指派成同一个" +
                 "带图模型，这样两种轮次共用同一套提示词缓存。"
     }
+}
+
+/**
+ * 累计本轮的用量（**整轮合计**，2026-09-14）：
+ * 工具回路里"一轮对话"可能发出多次请求（每转一圈多发一次），界面上的缓存命中率要按整轮算，
+ * 只看最后一次请求会误导（最后一次请求的前缀最长、命中率天然最高）。
+ * 任何一个请求没带用量就按 0 计（厂商未报告），累计结果里缓存字段全无则保持 null = 未报告。
+ */
+internal fun accumulateUsage(sum: Usage?, next: Usage?): Usage? {
+    if (next == null) return sum
+    if (sum == null) return next
+    val cached = if (sum.cachedTokens == null && next.cachedTokens == null) null
+    else (sum.cachedTokens ?: 0) + (next.cachedTokens ?: 0)
+    return Usage(
+        promptTokens = (sum.promptTokens ?: 0) + (next.promptTokens ?: 0),
+        completionTokens = (sum.completionTokens ?: 0) + (next.completionTokens ?: 0),
+        totalTokens = (sum.totalTokens ?: 0) + (next.totalTokens ?: 0),
+        promptCacheHitTokens = cached,
+        promptCacheMissTokens = sum.promptCacheMissTokens?.plus(next.promptCacheMissTokens ?: 0)
+    )
 }

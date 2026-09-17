@@ -55,7 +55,9 @@ data class ChatUiMessage(
     /** 分段内容（按真实时序：思考块/正文段/工具执行行）；非空时优先于 text/thinking 渲染 */
     val segments: List<MsgSegment> = emptyList(),
     /** 该轮能否「重做」（走对话通道生成的才行） */
-    val regenerable: Boolean = false
+    val regenerable: Boolean = false,
+    /** 创建时刻（会话记录按保留天数自动清理用；0 = 未知，一律不删） */
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 /**
@@ -90,8 +92,11 @@ data class PendingImage(
 )
 
 /**
- * 上下文状态（聊天页状态行展示用）：轮数窗口 + 字符当量 + 最近一次请求的缓存命中。
+ * 上下文状态（聊天页状态行展示用）：轮数窗口 + 字符当量 + **本轮全部请求**的缓存命中。
  * 这些机制对用户本来完全不可见（荣耀 logcat 也拿不到日志），故直接显示到界面上。
+ *
+ * 2026-09-14：命中率从"最后一次请求"改成"最后一轮对话"的合计——工具回路里一轮可能发好几次
+ * 请求（每转一圈一次），只看最后一次会偏乐观（最后一次前缀最长、命中率天然最高）。
  */
 data class ContextStatus(
     val turns: Int = 0,
@@ -101,9 +106,13 @@ data class ContextStatus(
     val charLimit: Int = 24_000,
     val promptTokens: Int? = null,
     val cachedTokens: Int? = null,
-    val trimmedBySoftCap: Boolean = false
+    val trimmedBySoftCap: Boolean = false,
+    /** 本轮发出的模型请求次数（0 = 还没请求过） */
+    val requests: Int = 0,
+    /** 上一次窗口回落到下限的原因（解释"缓存为什么在这里重置"；null = 还没重置过） */
+    val windowReset: String? = null
 ) {
-    /** 缓存命中率（厂商未报告缓存字段时为 null） */
+    /** 缓存命中率（**整轮合计**；厂商未报告缓存字段时为 null） */
     val cacheHitPercent: Int?
         get() {
             val total = promptTokens ?: return null
@@ -113,9 +122,44 @@ data class ContextStatus(
         }
 }
 
+/**
+ * 过期会话记录的清理判定（纯函数，便于单测）：返回"可以删掉"的轮 id。
+ *
+ * **两条必须同时满足**（2026-09-17 用户要求）：
+ *  1. 该轮创建时刻已超过保留天数（`createdAt <= cutoff`）；
+ *  2. 该轮**已不在模型上下文里**（`id !in contextTurnIds`）——还在上下文窗口里的轮一旦被删，
+ *     下一次请求的提示词前缀就变了，厂商缓存整段失效（用户明确要求避免的正是这个）。
+ * createdAt <= 0 表示时间未知（旧快照解析不出来）：一律保留，宁可不删也不误删。
+ */
+internal fun expiredTurnIds(
+    turnCreatedAt: Map<Long, Long>,
+    contextTurnIds: Set<Long>,
+    cutoffMillis: Long
+): Set<Long> = turnCreatedAt
+    .filter { (id, at) -> at > 0L && at <= cutoffMillis && id !in contextTurnIds }
+    .keys
+
+/**
+ * 旧快照里"所属轮已经不在上下文、文件里也没留时间"的那批界面消息，给它们估一个创建时刻。
+ *
+ * 为什么需要：升级前的快照格式**没有** createdAt，那些轮又早已被窗口裁掉（不在 turns 里），
+ * 于是时间戳无从得知——按"未知一律保留"的保守规则，它们会**永远**躲过清理（实测用户文件里
+ * 91 条消息有 63 条属于这种孤儿，正是最该被清掉的老内容）。
+ *
+ * 取值：现存最旧一轮的创建时刻（没有就退回快照保存时刻）。因为被裁掉的轮一定比现存最旧的轮更早，
+ * 这个估计值**只会比真实时刻更晚** ⇒ 年龄被低估 ⇒ 删除只会更晚发生，绝不会提前误删。
+ */
+internal fun estimateLegacyCreatedAt(knownTurnTimes: Collection<Long>, savedAt: Long): Long =
+    knownTurnTimes.filter { it > 0L }.minOrNull() ?: savedAt
+
 /** 一轮流式回复的产出：最终回答 + 工具信息（写回会话历史 / 记录兜底用） */
 private data class StreamOutcome(
     val answer: String,
+    /**
+     * 进会话历史的正文（不带系统页脚「🔧 已执行：…」）。
+     * 页脚写进历史会被模型模仿，在正文里自己编"已执行"清单（2026-09-14 修的 bug）。
+     */
+    val body: String = answer,
     /** 工具中间轮记录：(模型输出原文, 回传的结果消息)；未触发工具时为空 */
     val exchanges: List<Pair<String, String>> = emptyList(),
     /** 成功执行过的工具名（write_diary 兜底判断用） */
@@ -261,10 +305,17 @@ class ChatViewModel(
         // 会话快照保留天数：
         //  - 改为 0（不留存）→ 只**停止持久化并删掉已存快照**，当前会话与聊天界面继续保留
         //    （用户确认的语义：0 = 只停止"记录到磁盘"，不等于清空当前对话；要清空用聊天页的删除按钮）
+        //  - 改为 N 天 → 立刻按新天数清理一次（超过 N 天且已不在上下文里的轮）
         scope.launch {
             settingsStore.chatSessionRetentionDays.collect { days ->
                 retentionDays = days
-                if (days <= 0) sessionStore.clear()
+                if (days <= 0) {
+                    sessionStore.clear()
+                } else {
+                    val before = _messages.value.size
+                    pruneExpiredRecords()
+                    if (_messages.value.size != before) persistSession()
+                }
             }
         }
         // 历史图片保留张数（-1 = 全部；影响 token 成本，见设置页说明）
@@ -481,10 +532,14 @@ class ChatViewModel(
         // keep=0「仅当前轮」= 只有最近一轮的图会发出去，下一轮（哪怕只是文字）起这张图就不再发送；
         // keep≥1 保留最近 N 张；keep<0 全留。当前轮的图永远保留（见 Session.enforceImageRetention）。
         session.enforceImageRetention(imageRetention)
-        val ctx = session.buildContext(minTurns, maxTurns, charLimit)
-        _contextStatus.update { it.withContext(ctx, minTurns, maxTurns, charLimit) }
+        // 静态前缀（系统提示词/工具手册/长期记忆/日记标签）变了 → 厂商缓存的前缀整段失效。
+        // 把指纹交给会话层比较：不一致就把窗口回落到下限重新起跑（与"到上限回落"共用同一条
+        // L→U 序列，避免白扛着 U 轮历史每轮付全价）——2026-09-14。
         val memoryText = memoryRepository.memoryContextText()
         val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
+        val prefixSignature = agent.cachePrefixSignature(memoryText, diaryTags)
+        val ctx = session.buildContext(minTurns, maxTurns, charLimit, prefixSignature)
+        _contextStatus.update { it.withContext(ctx, minTurns, maxTurns, charLimit) }
         when (val result = agent.route(
             rawText, memoryText = memoryText, history = ctx.messages,
             diaryTags = diaryTags, preferVision = preferVision
@@ -515,7 +570,9 @@ class ChatViewModel(
                     session.appendAssistant(turnId, ChatMessage("assistant", request))
                     session.appendAssistant(turnId, ChatMessage("user", resultsMsg))
                 }
-                session.appendAssistant(turnId, ChatMessage("assistant", answer))
+                // 只把**正文**写回历史（不带界面的「🔧 已执行：…」页脚）：
+                // 页脚进历史后模型会模仿它在正文里自己编执行清单（2026-09-14 修的 bug）
+                session.appendAssistant(turnId, ChatMessage("assistant", outcome.body))
                 updateMessage(streamingId) { it.copy(text = answer) }
                 // 记录兜底："记录…"类请求但模型没调 write_diary → 静默存原文（记录不能丢）。
                 // 但模型已经处理过日记（读/改/删）时不要再兜底写入——否则"把日记改成…"会被
@@ -528,6 +585,8 @@ class ChatViewModel(
                 }
             }
         }
+        // 每轮结束都清一次过期记录（超过保留天数 + 已不在上下文里的轮才删，见 pruneExpiredRecords）
+        pruneExpiredRecords()
         refreshContextStatus()
         persistSession()
     }
@@ -551,6 +610,7 @@ class ChatViewModel(
         var exchanges: List<Pair<String, String>> = emptyList()
         var toolNames: List<String> = emptyList()
         var finalAnswer: String? = null
+        var finalBody: String? = null
         // 分段时间线：思考块/正文段/工具执行行按真实顺序排列，界面原样渲染
         val segments = mutableListOf<MsgSegment>()
 
@@ -612,10 +672,15 @@ class ChatViewModel(
                         exchanges = ev.exchanges
                         toolNames = ev.toolNames
                         finalAnswer = ev.answer
-                        ev.usage?.let { u ->
-                            _contextStatus.update {
-                                it.copy(promptTokens = u.promptTokens, cachedTokens = u.cachedTokens)
-                            }
+                        finalBody = ev.body
+                        // 用量 = **本轮全部请求的合计**（工具回路里一轮可能发好几次请求），
+                        // 每次都用本轮的值覆盖上一轮的（厂商没返回就是 null，不残留旧数字）
+                        _contextStatus.update {
+                            it.copy(
+                                promptTokens = ev.usage?.promptTokens,
+                                cachedTokens = ev.usage?.cachedTokens,
+                                requests = ev.requests
+                            )
                         }
                         snapshot(ev.answer)
                     }
@@ -628,10 +693,11 @@ class ChatViewModel(
             snapshot((base + "\n\n" + roundAcc).trim())
             updateMessage(messageId) { it.copy(streaming = false) }
         }
-        // 最终回答以 Final 事件为准；异常中断时退回已定格正文+本轮累计
+        // 最终回答以 Final 事件为准；异常中断时退回已定格正文+本轮累计（此时也没有页脚）
         val answer = finalAnswer ?: (base + "\n\n" + roundAcc).trim()
         return StreamOutcome(
             answer = answer,
+            body = finalBody ?: answer,
             exchanges = exchanges,
             toolNames = toolNames
         )
@@ -741,9 +807,17 @@ class ChatViewModel(
         val snap = sessionStore.load() ?: return
         if (snap.turns.isEmpty() && snap.messages.isEmpty()) return
 
+        // 旧快照没有 createdAt 字段（2026-09-17 之前）：回退到 userText 的 [时间] 前缀，
+        // 再不行用快照保存时刻；解析不出来的轮记 0 = 未知（清理逻辑一律保留，不误删）
+        val turnTime = snap.turns.associate { t ->
+            val at = if (t.createdAt > 0L) t.createdAt else ChatSessionStore.parseStampedAt(t.userText)
+            t.id to (if (at > 0L) at else snap.savedAt)
+        }
         session.restoreTurns(
             snap.turns.map { t ->
-                session.turnFromStored(t.id, t.userText, t.imagePath, t.assistant)
+                session.turnFromStored(
+                    t.id, t.userText, t.imagePath, t.assistant, turnTime[t.id] ?: 0L
+                )
             }
         )
         // 带图轮：从 chat_images 路径懒加载缩略图（文件可能已被清理策略删掉 → 无缩略图）
@@ -753,7 +827,12 @@ class ChatViewModel(
             }.toMap()
         }
         val pathByTurn = snap.turns.associate { it.id to it.imagePath }
+        // 孤儿消息（所属轮已被裁掉、文件里也没存过时刻）的估计时刻，见 estimateLegacyCreatedAt
+        val legacyAt = estimateLegacyCreatedAt(turnTime.values, snap.savedAt)
+        var stamped = false
         _messages.value = snap.messages.map { m ->
+            val known = m.createdAt.takeIf { it > 0L } ?: turnTime[m.turnId]
+            val createdAt = known ?: legacyAt.also { stamped = true }
             ChatUiMessage(
                 id = m.id,
                 turnId = m.turnId,
@@ -770,12 +849,17 @@ class ChatViewModel(
                         else -> MsgSegment.Text(s.text)
                     }
                 },
-                regenerable = m.regenerable
+                regenerable = m.regenerable,
+                createdAt = createdAt
             )
         }
         counter = (_messages.value.maxOfOrNull { it.id } ?: -1L) + 1
         // 恢复的历史图片也按当前保留策略收敛（用户可能把保留张数改小了）
         session.enforceImageRetention(settingsStore.chatImageKeep.first())
+        // 启动即清理过期记录（超过保留天数且已不在上下文里的轮）；补过时间戳也立刻写回文件（否则下次保存又变回 0）
+        val before = _messages.value.size
+        pruneExpiredRecords()
+        if (stamped || _messages.value.size != before) persistSession()
         refreshContextStatus()
     }
 
@@ -794,7 +878,8 @@ class ChatViewModel(
                     id = t.id,
                     userText = t.userText,
                     imagePath = t.imagePath,
-                    assistant = t.assistant.map { it.textContent }
+                    assistant = t.assistant.map { it.textContent },
+                    createdAt = t.createdAt
                 )
             },
             messages = ui.map { m ->
@@ -805,6 +890,7 @@ class ChatViewModel(
                     text = m.text,
                     thinking = m.thinking,
                     regenerable = m.regenerable,
+                    createdAt = m.createdAt,
                     segments = m.segments.map { s ->
                         when (s) {
                             is MsgSegment.Think -> StoredSegment("think", s.text)
@@ -818,10 +904,46 @@ class ChatViewModel(
         scope.launch { sessionStore.save(snapshot) }
     }
 
+    // ---- 过期会话记录清理（2026-09-17） ----
+
+    /**
+     * 每一轮的创建时刻：会话（上下文）里有就用它的，否则用该轮界面消息里最早的一条。
+     * 两者都是 0（未知）时该轮会出现在 map 里但值为 0 —— 清理判定据此保守保留。
+     */
+    private fun turnCreatedAtMap(): Map<Long, Long> {
+        val map = HashMap<Long, Long>()
+        _messages.value.forEach { m ->
+            val cur = map[m.turnId]
+            map[m.turnId] = if (cur == null) m.createdAt else minOf(cur, m.createdAt)
+        }
+        session.allTurns().forEach { t ->
+            val cur = map[t.id]
+            if (t.createdAt > 0L && (cur == null || cur <= 0L)) map[t.id] = t.createdAt
+        }
+        return map
+    }
+
+    /**
+     * 自动清理过期的会话记录（每条回复结束、启动恢复、改保留天数时各跑一次）：
+     * **同时满足「超过保留天数」和「已不在模型上下文中」才删**——见 [expiredTurnIds]。
+     * 删的是整轮（界面消息 + 持久化快照里的对应内容一起消失）；还在窗口里的过期轮先留着，
+     * 等它随窗口滚动出上下文的下一次清理再删。
+     * 保留天数填 0 = 不留存：只停止写文件、不删屏幕上的对话（用户确认过的语义）。
+     */
+    private fun pruneExpiredRecords() {
+        if (retentionDays <= 0) return
+        val cutoff = System.currentTimeMillis() - retentionDays * DAY_MS
+        val contextIds = session.allTurns().map { it.id }.toSet()
+        val expired = expiredTurnIds(turnCreatedAtMap(), contextIds, cutoff)
+        if (expired.isEmpty()) return
+        _messages.update { list -> list.filterNot { it.turnId in expired } }
+    }
+
     // ---- 内部工具 ----
 
     private fun userMsg(id: Long, turnId: Long, text: String, image: Bitmap?): ChatUiMessage =
         ChatUiMessage(id = id, turnId = turnId, role = "user", text = text, image = image)
+
 
     private fun assistantMsg(
         id: Long,
@@ -860,7 +982,10 @@ class ChatViewModel(
         minTurns = min,
         maxTurns = max,
         charLimit = limit,
-        trimmedBySoftCap = ctx.trimmedBySoftCap
+        trimmedBySoftCap = ctx.trimmedBySoftCap,
+        // 回落原因只在真的回落的那次更新（runTurn 末尾还会再刷新一次状态，那次不会再回落，
+        // 不能把原因抹掉——它解释的是"当前窗口为什么从这里起算"）
+        windowReset = ctx.windowReset ?: windowReset
     )
 
     /**
@@ -900,6 +1025,9 @@ class ChatViewModel(
 
         /** 只发图片没写要求时的默认指令 */
         private const val DEFAULT_IMAGE_INSTRUCTION = "请描述这张图片"
+
+        /** 一天的毫秒数（会话记录保留天数换算用） */
+        private const val DAY_MS = 24L * 3600_000L
 
         /** 后台静默抽取长期记忆的旧入口已删除：对话内记忆改由主模型 write_memory 工具完成 */
     }

@@ -59,7 +59,30 @@ class PromptBuilder(private val promptStore: PromptStore) {
         else toolManual + "\n可用日记标签：" + diaryTags.joinToString("、") +
             "（write_diary 的 tags 只能从中选择）"
 
+    /**
+     * 静态前缀（对话尾部之前的所有块）的指纹，2026-09-14。
+     *
+     * 用途：这些块一变，厂商缓存的**最长公共前缀**就在对话之前断掉了——整段历史全部失效。
+     * 会话层（Session.buildContext）据此把上下文窗口回落到下限重新起跑，
+     * 而不是白扛着 U 轮历史每轮付全价。指纹只做相等比较，不对外展示、不落盘。
+     */
+    suspend fun prefixSignature(
+        memoryText: String?,
+        toolManual: String,
+        diaryTags: List<String>
+    ): String {
+        val system = promptStore.prompt(PromptStore.PromptKey.ASSISTANT_SYSTEM)
+        val raw = SYSTEM_SHELL_PREFIX + system + SYSTEM_SHELL_SUFFIX + SEP +
+            manualWithTags(toolManual, diaryTags) + SEP +
+            MEMORY_BLOCK_LABEL + SEP + memoryText.orEmpty()
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        return md.digest(raw.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
     companion object {
+        /** 指纹分段分隔符（内容里不可能出现的控制字符） */
+        private const val SEP = "\u0000"
+
         /** 外壳前缀/后缀固定不变；中间段 = 用户可编辑的提示词 */
         private const val SYSTEM_SHELL_PREFIX =
             "你是\"随身助手\"，一个运行在用户手机上的个人 AI 助手。以下是用户对你的设定，请始终遵守：\n"

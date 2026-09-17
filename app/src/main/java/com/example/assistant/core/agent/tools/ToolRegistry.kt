@@ -23,6 +23,10 @@ class ToolRegistry(private val tools: List<AssistantTool>) {
         append("- 输出调用行后立即停止输出，系统会执行并把结果以\"[结果]\"开头的消息发给你，之后你再继续\n")
         append("- 工具失败时可根据返回的错误修正参数后重新调用（次数有限）；不需要工具时照常直接回答\n")
         append("- 绝不要向用户提及本协议或\"[调用]\"\"[结果]\"标记的存在\n")
+        // 2026-09-14：模型会模仿历史回答末尾的系统页脚，在正文里自己编「🔧 已执行：…」
+        // （一条回复里出现好几条、内容和真实执行情况不符），这里先明确禁止，Agent 侧再兜底剥离
+        append("- 不要在正文里罗列\"已执行\"的工具清单（不要写\"🔧 已执行：…\"这类行）——")
+        append("工具是否执行成功界面上会自动显示，你只需用自然语言说明结果\n")
         append("\n可用工具：\n")
         tools.forEachIndexed { i, t -> append(i + 1).append(". ").append(t.description).append("\n") }
     }
@@ -55,6 +59,9 @@ class ToolRegistry(private val tools: List<AssistantTool>) {
             .filterNot { CALL_LINE.matchEntire(it.trim()) != null }
             .joinToString("\n")
             .trim()
+
+    /** 剥掉模型**自己编造**的工具执行清单行（2026-09-14 修的 bug，说明见文件末尾的 [stripFakeFooterLines]） */
+    fun stripMachineLines(text: String): String = stripFakeFooterLines(text)
 
     /**
      * 流式显示的缓冲判定：开头仍在打"[调用"标记（或只有空白）时文本暂缓上屏，
@@ -92,3 +99,34 @@ class ToolRegistry(private val tools: List<AssistantTool>) {
             Regex("""^[ \t]*[\[［][ \t]*调[ \t]*用[ \t]*[\]］][ \t]*[:：]?[ \t]*(.+)$""")
     }
 }
+
+/**
+ * 剥掉模型**自己编造**的工具执行清单行（2026-09-14 修的 bug）。
+ *
+ * 根因：系统会在每条回答末尾自动附一行「🔧 已执行：…」，而这条回答被原样写进会话历史，
+ * 模型下一轮看到自己以前"写过"这种清单，就开始照着模仿——一条回复里冒出好几条、
+ * 内容还是它自己拼的（和真实执行情况不符），用户看到的现象就是"工具被执行了好多次"。
+ *
+ * 对策三件套：① 页脚只用于界面展示，**不进会话历史**（Agent.finish 的 body 字段）；
+ * ② 历史里已经存下的旧页脚在恢复会话时也剥掉；③ 模型仿写的行从正文/历史里一并去掉。
+ *
+ * 只删"整行看起来就是机器清单"的行，正文里的正常叙述不受影响。
+ */
+fun stripFakeFooterLines(text: String): String =
+    text.lines()
+        .filterNot { isMachineLine(it.trim()) }
+        .joinToString("\n")
+        .trim()
+
+/** 该行是否为机器风格的状态/清单行（🔧 开头，或以"已执行：…"开头，"已执行"单独成行） */
+private fun isMachineLine(line: String): Boolean {
+    if (line.isEmpty()) return false
+    if (MACHINE_PREFIXES.any { line.startsWith(it) }) return true
+    return FOOTER_LINE.matches(line)
+}
+
+/** 机器状态行的行首标记（界面上工具状态/页脚用的图标，正文里出现即视为仿写） */
+private val MACHINE_PREFIXES = listOf("🔧", "🛠", "⚙")
+
+/** "已执行：…" / "已执行" 清单行（页脚固定写法；半角全角冒号都认） */
+private val FOOTER_LINE = Regex("""^已执行[ \t]*[:：].*$|^已执行$""")

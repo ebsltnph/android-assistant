@@ -41,7 +41,9 @@ class Session {
         val userText: String?,
         val assistant: MutableList<ChatMessage> = mutableListOf(),
         /** 该轮附带图片的本机文件路径（null = 无图或已被保留策略丢弃） */
-        val imagePath: String? = null
+        val imagePath: String? = null,
+        /** 这一轮的创建时刻（会话记录按保留天数自动清理用；0 = 未知，一律不删） */
+        val createdAt: Long = 0L
     ) {
         /** 该轮的全部消息（按发送顺序） */
         fun messages(): List<ChatMessage> = buildList {
@@ -77,11 +79,16 @@ class Session {
         val turns: Int,
         val chars: Int,
         /** 是否因字符软上限而在下限之外又丢掉了轮 */
-        val trimmedBySoftCap: Boolean
+        val trimmedBySoftCap: Boolean,
+        /** 本次把窗口**回落到下限**的原因（null = 这一轮窗口没动）；状态行展示用 */
+        val windowReset: String? = null
     )
 
     private val turns = ArrayDeque<Turn>()
     private var seq = 0L
+
+    /** 上一次请求用的静态前缀指纹（null = 还没发过请求）——变了说明厂商缓存前缀整段失效 */
+    private var lastPrefixSignature: String? = null
 
     val turnCount: Int get() = turns.size
 
@@ -101,7 +108,9 @@ class Session {
      */
     fun beginTurn(userText: String?, imagePath: String? = null): Long {
         val id = seq++
-        turns.addLast(Turn(id, userText?.let { stamp(it) }, mutableListOf(), imagePath))
+        turns.addLast(
+            Turn(id, userText?.let { stamp(it) }, mutableListOf(), imagePath, System.currentTimeMillis())
+        )
         return id
     }
 
@@ -112,17 +121,27 @@ class Session {
         seq = (restored.maxOfOrNull { it.id } ?: -1L) + 1
     }
 
-    /** 持久化恢复用：由快照内容重建一轮（用户文本已含时间戳，不再补） */
+    /**
+     * 持久化恢复用：由快照内容重建一轮（用户文本已含时间戳，不再补）。
+     * 旧快照里的助手消息带着系统页脚「🔧 已执行：…」——那是界面装饰，写进上下文会被模型模仿
+     * （用户实测到"一条回复里好几个已执行"），这里恢复时顺手剥掉（2026-09-14）。
+     */
     fun turnFromStored(
         id: Long,
         userText: String?,
         imagePath: String?,
-        assistantTexts: List<String>
+        assistantTexts: List<String>,
+        createdAt: Long = 0L
     ): Turn = Turn(
         id = id,
         userText = userText,
-        assistant = assistantTexts.map { ChatMessage("assistant", it) }.toMutableList(),
-        imagePath = imagePath
+        assistant = assistantTexts
+            .map { com.example.assistant.core.agent.tools.stripFakeFooterLines(it) }
+            .filter { it.isNotBlank() }
+            .map { ChatMessage("assistant", it) }
+            .toMutableList(),
+        imagePath = imagePath,
+        createdAt = createdAt
     )
 
     /**
@@ -195,24 +214,63 @@ class Session {
 
     /**
      * 组装本次请求的对话尾部，并顺带按上下限做**物理裁剪**（方法名带 build 以示有副作用）。
-     * 顺序：先按轮数上限/下限裁，再按字符软上限兜底。
+     * 顺序：先看静态前缀有没有变 → 再按轮数上限/下限裁 → 最后按字符软上限兜底。
+     *
+     * **回落到下限（= 重置窗口）的三种触发条件（2026-09-14 补第 1、3 条）**：
+     *  1. 静态前缀变了（系统提示词/工具手册/日记标签/长期记忆被改）——厂商缓存的公共前缀
+     *     在对话之前就断了，整段历史全部失效，再扛着 U 轮只是白付全价；
+     *  2. 轮数到上限 U（原有的 L→L+1→…→U→L 循环）；
+     *  3. 字符软上限被触发（原来只丢"刚好超出的那几轮"，前缀从头就变了同样全失效）。
+     * 三种情况都统一裁到下限 L，之后每轮继续延长 → 只有在重置点付一次全价。
+     *
+     * @param prefixSignature 静态前缀指纹（Agent.cachePrefixSignature）；null = 不做前缀变更检测
      */
-    fun buildContext(minTurns: Int, maxTurns: Int, softCharLimit: Int): BuiltContext {
+    fun buildContext(
+        minTurns: Int,
+        maxTurns: Int,
+        softCharLimit: Int,
+        prefixSignature: String? = null
+    ): BuiltContext {
         val lo = minTurns.coerceAtLeast(1)
         val hi = maxTurns.coerceAtLeast(lo)
+        var reset: String? = null
+
+        fun trimTo(target: Int) {
+            while (turns.size > target) turns.removeFirst()
+        }
+
+        // 0) 静态前缀变了 → 之前缓存的前缀全部作废，直接回落到下限重新起跑
+        if (prefixSignature != null && prefixSignature != lastPrefixSignature) {
+            val hadBefore = lastPrefixSignature != null
+            lastPrefixSignature = prefixSignature
+            if (hadBefore && turns.size > lo) {
+                trimTo(lo)
+                reset = RESET_PREFIX
+            }
+        }
 
         // 1) 轮数窗口：超过上限就裁到下限（这一步定义了"缓存区间"的边界）
         if (turns.size > hi) {
-            while (turns.size > lo) turns.removeFirst()
+            trimTo(lo)
+            reset = reset ?: RESET_MAX_TURNS
         }
 
-        // 2) 字符软上限：优先于下限，但从最旧的轮开始丢，至少保留最近 1 轮
+        // 2) 字符软上限：**同样回落到下限**（前缀已经被破坏，留着中间几轮没有缓存收益），
+        //    若下限轮数自身仍超限，再继续从最旧的丢（至少保留最近 1 轮）
         var trimmedBySoft = false
         if (softCharLimit > 0) {
             var total = turns.sumOf { it.charWeight() }
-            while (total > softCharLimit && turns.size > 1) {
-                total -= turns.removeFirst().charWeight()
+            if (total > softCharLimit) {
                 trimmedBySoft = true
+                if (turns.size > lo) {
+                    trimTo(lo)
+                    reset = reset ?: RESET_SOFT_CAP
+                    total = turns.sumOf { it.charWeight() }
+                }
+                while (total > softCharLimit && turns.size > 1) {
+                    total -= turns.removeFirst().charWeight()
+                    reset = reset ?: RESET_SOFT_CAP
+                }
             }
         }
 
@@ -221,7 +279,8 @@ class Session {
             messages = messages,
             turns = turns.size,
             chars = turns.sumOf { it.charWeight() },
-            trimmedBySoftCap = trimmedBySoft
+            trimmedBySoftCap = trimmedBySoft,
+            windowReset = reset
         )
     }
 
@@ -235,6 +294,15 @@ class Session {
     companion object {
         /** 图片的字符当量（字符软上限的粗略折算：图片 token 与分辨率有关，这里只做量级估计） */
         const val IMAGE_CHAR_EQUIVALENT = 1_500
+
+        /** 窗口回落原因：静态前缀（提示词/长期记忆/标签）变了 */
+        const val RESET_PREFIX = "长期记忆或提示词有更新"
+
+        /** 窗口回落原因：轮数到上限（正常的 L→U→L 循环） */
+        const val RESET_MAX_TURNS = "轮数达到上限"
+
+        /** 窗口回落原因：字符数到软上限 */
+        const val RESET_SOFT_CAP = "字符数达到上限"
 
         /**
          * 把本机图片文件转成请求用的 image part（base64）。
