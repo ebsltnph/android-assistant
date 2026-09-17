@@ -286,6 +286,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **注意因果**：清理的是"界面消息"这条线；`persistSession` 会按 `uiTurnIds` 过滤要存的轮，所以"上下文里还在的轮"永远不会被清（第②条同时保护了"存进文件的上下文"）；反之被删的轮本来就已被窗口裁掉，删它**不影响任何请求的前缀**（提示词只由 `Session.turns` 组装）
   - **0 = 不留存**语义不变（用户确认过）：只停止写文件、屏幕上的对话继续保留（要清空用聊天页删除按钮）。设置页与使用说明的文案同步改成"超过天数、且已不在上下文里的对话会自动删除"
   - **测试**：新增 `app/src/test/.../feature/chat/SessionRetentionTest.kt`（6 例）：过期且出窗口才删 / 过期但还在上下文里保留 / 出窗口但未过期保留 / 时间未知不删 / 正好卡在截止时刻算过期 / 旧快照时间戳前缀回退解析——全套 **45 例**通过
+- [x] **v1.7.2 发布**（2026-09-17）：版本号 1.7.1 → **1.7.2 / code 14**（PATCH：纯修复 + 行为修正，无新功能）。发布内容 = 三项修正（缓存窗口回落条件补全 / 「已执行」重复显示修复 / 命中率改按整轮算）+ 会话记录保留自动清理重做 + 会话记录时间戳落盘。提交 `2fcc5a5`，GitHub Release **v1.7.2**（Latest）已附 `app-release.apk`（**14,261,992 字节**，sha256 `8489cb4f3377e7c749c09f6ba798aa343679b2280c13774cf0e2591d024a2f9c`，与本地构建产物逐字节一致；target = `2fcc5a5ab71f2ea6feb5fee2d3fb65c36f5b9183`）。**发布坑复现**：`gh release create --target <短SHA>` 报 `HTTP 422 Release.target_commitish is invalid`——必须传**完整 40 位 SHA**（v1.7.1 时踩过同一个坑）；`git push` 仍需 `-c http.sslBackend=openssl` + socks5 + **danger-full-access 提权**
 - [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
