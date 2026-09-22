@@ -148,6 +148,7 @@ class BackupManager(
                 db.memoryDao().clearAll()
                 db.reminderDao().clearAll()
                 db.summaryDao().clearAll()
+                db.bufferItemDao().clearAll()
                 // 写入：父表在前（FK 顺序）
                 db.diaryDao().insertAllBooks(data.diaryBooks)
                 db.diaryDao().insertAllEntries(data.diaryEntries)
@@ -157,6 +158,7 @@ class BackupManager(
                 db.memoryDao().insertAll(data.memories)
                 db.reminderDao().insertAll(data.reminders)
                 db.summaryDao().insertAll(data.dailySummaries)
+                db.bufferItemDao().insertAll(data.bufferItems)
             }
 
             // 6. DataStore / 加密存储恢复（事务外）
@@ -289,7 +291,11 @@ class BackupManager(
             panelAutoVoiceEnabled = settingsStore.panelAutoVoiceEnabled.first(),
             voiceSilenceMs = settingsStore.voiceSilenceMs.first(),
             autoBackupEnabled = settingsStore.autoBackupEnabled.first(),
-            autoBackupIntervalDays = settingsStore.autoBackupIntervalDays.first()
+            autoBackupIntervalDays = settingsStore.autoBackupIntervalDays.first(),
+            bufferEnabled = settingsStore.bufferEnabled.first(),
+            bufferInjectCharLimit = settingsStore.bufferInjectCharLimit.first(),
+            bufferInjectMaxItems = settingsStore.bufferInjectMaxItems.first(),
+            bufferCompactMinChars = settingsStore.bufferCompactMinChars.first()
         )
         // 提示词：只导出用户自定义过的组
         val prompts = PromptStore.PromptKey.entries
@@ -302,6 +308,7 @@ class BackupManager(
         val diaryEntries = db.diaryDao().allEntries()
         val diaryImages = db.diaryDao().allImages()
         val memories = db.memoryDao().allMemoriesFull()
+        val bufferItems = db.bufferItemDao().all()
         val reminders = db.reminderDao().all()
         val events = db.eventDao().allEvents()
         val hits = db.eventDao().allHits()
@@ -325,6 +332,7 @@ class BackupManager(
             diaryEntries = diaryEntries,
             diaryImages = diaryImages,
             memories = memories,
+            bufferItems = bufferItems,
             reminders = reminders,
             monitoredEvents = events,
             eventHits = hits,
@@ -429,6 +437,10 @@ class BackupManager(
         settingsStore.setVoiceSilenceMs(s.voiceSilenceMs)
         settingsStore.setAutoBackupEnabled(s.autoBackupEnabled)
         settingsStore.setAutoBackupIntervalDays(s.autoBackupIntervalDays)
+        settingsStore.setBufferEnabled(s.bufferEnabled)
+        settingsStore.setBufferInjectCharLimit(s.bufferInjectCharLimit)
+        settingsStore.setBufferInjectMaxItems(s.bufferInjectMaxItems)
+        settingsStore.setBufferCompactMinChars(s.bufferCompactMinChars)
     }
 
     /** 提示词恢复：备份有值 setPrompt，没有则 resetPrompt（回默认，同时清掉目标机自定义） */

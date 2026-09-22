@@ -22,7 +22,12 @@ data class StoredChat(
     val savedAt: Long = 0L,
     val turns: List<StoredTurn> = emptyList(),
     /** 界面消息（含思考块/工具行分段），用于恢复聊天页显示 */
-    val messages: List<StoredUiMessage> = emptyList()
+    val messages: List<StoredUiMessage> = emptyList(),
+    /**
+     * 压缩水位线（2026-09-17「进行中的事」）：**已折进缓冲区的最大轮 id**。
+     * 未覆盖的轮（id 大于它）不会被动清理删除，留到下次上下文整理一起补（自愈）。
+     */
+    val coveredThroughTurnId: Long = 0L
 )
 
 @Serializable
@@ -35,7 +40,12 @@ data class StoredTurn(
     /** 该轮的助手侧消息（工具调用原文 / [结果] 回传 / 最终回答），按顺序 */
     val assistant: List<String> = emptyList(),
     /** 该轮创建时刻（按保留天数清理用；旧快照没有此字段时回退到 userText 时间戳/保存时刻） */
-    val createdAt: Long = 0L
+    val createdAt: Long = 0L,
+    /**
+     * 粘性通知（用户手动改长期记忆/「进行中的事」时追加的 [系统] 行）。
+     * **必须持久化**：它的位置是缓存前缀的一部分，重启后位置变了就等于把前缀改了。
+     */
+    val notices: List<String> = emptyList()
 )
 
 @Serializable

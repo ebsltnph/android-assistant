@@ -2,6 +2,7 @@ package com.example.assistant.di
 
 import android.content.Context
 import com.example.assistant.core.agent.Agent
+import com.example.assistant.core.agent.ContextCompactor
 import com.example.assistant.core.agent.DailyBriefingGenerator
 import com.example.assistant.core.agent.DailySummaryGenerator
 import com.example.assistant.core.agent.EventHitJudge
@@ -17,6 +18,7 @@ import com.example.assistant.core.agent.tools.ReadWebpageTool
 import com.example.assistant.core.agent.tools.ScreenSenseTool
 import com.example.assistant.core.agent.tools.SpeakTool
 import com.example.assistant.core.agent.tools.UpdateDiaryTool
+import com.example.assistant.core.agent.tools.UpdateBufferTool
 import com.example.assistant.core.speech.TtsManager
 import com.example.assistant.core.agent.tools.SetReminderTool
 import com.example.assistant.core.agent.tools.ToolRegistry
@@ -35,12 +37,14 @@ import com.example.assistant.data.db.entity.parseDiaryTags
 import com.example.assistant.core.quiet.QuietHours
 import com.example.assistant.core.storage.ConversationLog
 import com.example.assistant.core.storage.ChatSessionStore
+import com.example.assistant.core.storage.PrefixSnapshotStore
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
 import com.example.assistant.core.storage.SummaryStore
 import com.example.assistant.core.vision.ScreenSenseController
 import com.example.assistant.data.db.AppDatabase
+import com.example.assistant.data.repo.BufferRepository
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.EventRepository
 import com.example.assistant.data.repo.MemoryRepository
@@ -100,6 +104,13 @@ class AppContainer(context: Context) {
     /** 会话快照（轻量持久化：一个 JSON 文件，不进备份；按保留天数定时清理） */
     val chatSessionStore: ChatSessionStore by lazy { ChatSessionStore(appContext) }
 
+    /**
+     * 注入前缀的**冻结快照**（2026-09-17「进行中的事」）：
+     * 记忆块与状态块的文本只在"合并点"（窗口回落流程）重渲染一次，
+     * 两次合并之间前缀逐字节不变 → 厂商提示词缓存全程命中。
+     */
+    val prefixSnapshotStore: PrefixSnapshotStore by lazy { PrefixSnapshotStore(appContext) }
+
     // ---- 秘密功能：对话历史记录（数字分身素材） ----
     val conversationLog: ConversationLog by lazy { ConversationLog(appContext, settingsStore) }
 
@@ -123,6 +134,11 @@ class AppContainer(context: Context) {
     val reminderRepository: ReminderRepository by lazy { ReminderRepository(database.reminderDao()) }
     val eventRepository: EventRepository by lazy { EventRepository(database.eventDao()) }
     val summaryRepository: SummaryRepository by lazy { SummaryRepository(database.summaryDao()) }
+
+    /** 「进行中的事」缓冲区（第三层记忆：一段时间内成立、会过期的状态） */
+    val bufferRepository: BufferRepository by lazy {
+        BufferRepository(database.bufferItemDao()) { id -> diaryRepository.entryById(id) != null }
+    }
 
     // ---- 网络 ----
     val providerRegistry: ProviderRegistry by lazy {
@@ -152,12 +168,24 @@ class AppContainer(context: Context) {
                 // 可用标签随设置变化，用惰性提供者每次执行时现读
                 WriteDiaryTool(diaryRepository) { parseDiaryTags(settingsStore.diaryTagsCsv.first()) },
                 MonitorEventTool(eventRepository),
-                ScreenSenseTool(screenSenseController)
+                ScreenSenseTool(screenSenseController),
+                // 「进行中的事」维护：**只有上下文整理（窗口回落）时允许调用**，
+                // 普通轮会被工具内部硬拦截（description 里也写死了不许主动调用）
+                UpdateBufferTool(bufferRepository)
             )
         )
     }
     val agent: Agent by lazy {
         Agent(providerRegistry, promptBuilder, intentRouter, toolRegistry)
+    }
+
+    /**
+     * 上下文整理（2026-09-17）：窗口回落到下限时，把即将离开上下文的对话蒸馏进
+     * 「进行中的事」。走**对话同一链路**（复用缓存前缀）+ 尾部【上下文整理】指令 + 工具调用，
+     * 所以它的输入几乎全部命中缓存，成本只有那条指令。
+     */
+    val contextCompactor: ContextCompactor by lazy {
+        ContextCompactor(agent, promptBuilder, toolRegistry)
     }
     /** 记忆抽取仅保留给日记页手动保存用（对话内记忆改由 write_memory 工具完成） */
     val memoryExtractor: MemoryExtractor by lazy { MemoryExtractor(providerRegistry, promptStore) }
@@ -217,7 +245,10 @@ class AppContainer(context: Context) {
             screenSenseController = screenSenseController,
             conversationLog = conversationLog,
             ttsManager = ttsManager,
-            sessionStore = chatSessionStore
+            sessionStore = chatSessionStore,
+            bufferRepository = bufferRepository,
+            compactor = contextCompactor,
+            snapshotStore = prefixSnapshotStore
         )
     }
 }

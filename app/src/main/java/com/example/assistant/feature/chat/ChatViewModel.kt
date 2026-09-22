@@ -6,12 +6,15 @@ import android.net.Uri
 import com.example.assistant.core.agent.Agent
 import com.example.assistant.core.agent.Agent.AgentResult
 import com.example.assistant.core.agent.AssistantIntent
+import com.example.assistant.core.agent.ContextCompactor
 import com.example.assistant.core.agent.IntentRouter
 import com.example.assistant.core.agent.Session
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.speech.TtsManager
 import com.example.assistant.core.storage.ConversationLog
 import com.example.assistant.core.storage.ChatSessionStore
+import com.example.assistant.core.storage.PrefixSnapshot
+import com.example.assistant.core.storage.PrefixSnapshotStore
 import com.example.assistant.core.storage.SettingsStore
 import com.example.assistant.core.storage.StoredChat
 import com.example.assistant.core.storage.StoredSegment
@@ -20,6 +23,7 @@ import com.example.assistant.core.storage.StoredUiMessage
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.core.vision.ScreenSenseController
 import com.example.assistant.data.db.entity.parseDiaryTags
+import com.example.assistant.data.repo.BufferRepository
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.MemoryRepository
 import kotlinx.coroutines.CoroutineScope
@@ -110,7 +114,14 @@ data class ContextStatus(
     /** 本轮发出的模型请求次数（0 = 还没请求过） */
     val requests: Int = 0,
     /** 上一次窗口回落到下限的原因（解释"缓存为什么在这里重置"；null = 还没重置过） */
-    val windowReset: String? = null
+    val windowReset: String? = null,
+    /**
+     * 上下文整理（压缩轮）的用量：**单列展示、不计入上面的"最近一轮对话"合计**。
+     * 它不属于用户那一轮对话，混进去会让命中率数字失真。
+     */
+    val compactRequests: Int = 0,
+    val compactPromptTokens: Int? = null,
+    val compactCachedTokens: Int? = null
 ) {
     /** 缓存命中率（**整轮合计**；厂商未报告缓存字段时为 null） */
     val cacheHitPercent: Int?
@@ -120,23 +131,44 @@ data class ContextStatus(
             if (total <= 0) return null
             return (hit * 100 / total).coerceIn(0, 100)
         }
+
+    /** 上下文整理的缓存命中率（单独一行；null = 厂商未报告） */
+    val compactHitPercent: Int?
+        get() {
+            val total = compactPromptTokens ?: return null
+            val hit = compactCachedTokens ?: return null
+            if (total <= 0) return null
+            return (hit * 100 / total).coerceIn(0, 100)
+        }
 }
+
+/**
+ * 上下文整理失败时给用户的可操作提示（**非阻塞**：回答照常，这里只留一条提示）。
+ * 重试/放弃都只影响水位线，不影响对话。
+ */
+data class CompactionNotice(val message: String)
 
 /**
  * 过期会话记录的清理判定（纯函数，便于单测）：返回"可以删掉"的轮 id。
  *
- * **两条必须同时满足**（2026-09-17 用户要求）：
+ * **三条必须同时满足**：
  *  1. 该轮创建时刻已超过保留天数（`createdAt <= cutoff`）；
  *  2. 该轮**已不在模型上下文里**（`id !in contextTurnIds`）——还在上下文窗口里的轮一旦被删，
- *     下一次请求的提示词前缀就变了，厂商缓存整段失效（用户明确要求避免的正是这个）。
+ *     下一次请求的提示词前缀就变了，厂商缓存整段失效（用户明确要求避免的正是这个）；
+ *  3. 该轮**已被压缩水位线覆盖**（`id <= coveredThroughTurnId`，2026-09-17 补）——
+ *     离开窗口但还没折进「进行中的事」的轮如果先被清理删掉，那段内容就**永久消失**了
+ *     （压缩失败/放弃过的批次正属此类，要留到下次上下文整理一起补）。
  * createdAt <= 0 表示时间未知（旧快照解析不出来）：一律保留，宁可不删也不误删。
  */
 internal fun expiredTurnIds(
     turnCreatedAt: Map<Long, Long>,
     contextTurnIds: Set<Long>,
-    cutoffMillis: Long
+    cutoffMillis: Long,
+    coveredThroughTurnId: Long
 ): Set<Long> = turnCreatedAt
-    .filter { (id, at) -> at > 0L && at <= cutoffMillis && id !in contextTurnIds }
+    .filter { (id, at) ->
+        at > 0L && at <= cutoffMillis && id !in contextTurnIds && id <= coveredThroughTurnId
+    }
     .keys
 
 /**
@@ -185,7 +217,13 @@ class ChatViewModel(
     private val screenSenseController: ScreenSenseController,
     private val conversationLog: ConversationLog,
     private val ttsManager: TtsManager,
-    private val sessionStore: ChatSessionStore
+    private val sessionStore: ChatSessionStore,
+    /** 「进行中的事」缓冲区（页面与压缩写入） */
+    private val bufferRepository: BufferRepository,
+    /** 上下文整理（窗口回落时把即将丢弃的对话蒸馏进缓冲区） */
+    private val compactor: ContextCompactor,
+    /** 注入前缀的冻结快照（只在合并点重渲染，保证两次合并之间前缀逐字节不变） */
+    private val snapshotStore: PrefixSnapshotStore
 ) {
 
     /** 协程域：进程级共享，用 SupervisorJob 防止单个任务失败影响其他任务 */
@@ -244,6 +282,33 @@ class ChatViewModel(
 
     /** 历史图片保留张数（-1 = 全部保留；0 = 只当前轮；默认 1） */
     private var imageRetention = SettingsStore.DEFAULT_CHAT_IMAGE_KEEP
+
+    // ---- 「进行中的事」缓冲区（2026-09-17）----
+
+    /** 缓冲区总开关（关 = 不注入状态块、窗口回落时不做上下文整理） */
+    private var bufferEnabled = true
+    private var bufferCharLimit = SettingsStore.DEFAULT_BUFFER_CHAR_LIMIT
+    private var bufferMaxItems = SettingsStore.DEFAULT_BUFFER_MAX_ITEMS
+
+    /** 触发上下文整理的最小批次（字符当量；小于它就跳过整理，水位线照常推进） */
+    private var compactMinChars = SettingsStore.DEFAULT_BUFFER_COMPACT_MIN_CHARS
+
+    /**
+     * 压缩水位线：**已折进缓冲区的最大轮 id**（随会话快照持久化）。
+     * 用途：① 不重复整理同一批；② 整理失败/放弃的批次不被删除，留到下次一起补（自愈）；
+     * ③ 配合 [expiredTurnIds] 的第三条件，避免"还没整理就被保留天数删掉"。
+     */
+    private var coveredThroughTurnId = 0L
+
+    /** 冷启动恢复时快照里还有未合并的通知 → 第一轮请求前先合并一次（前缀反正要断，早付早好） */
+    private var restoredWithPendingNotices = false
+
+    /** 整理失败时记住的待整理轮（「重试」用；进程重启后由磁盘自愈兜底） */
+    private var failedCompactionBatch: List<Session.Turn> = emptyList()
+
+    /** 上下文整理失败的可操作提示（非阻塞：回答照常，这里只留一条提示让用户重试/放弃） */
+    private val _compactionNotice = MutableStateFlow<CompactionNotice?>(null)
+    val compactionNotice: StateFlow<CompactionNotice?> = _compactionNotice
 
     /**
      * 识屏流程被触发的事件：浮动界面订阅它直接走自己的识图流程。
@@ -322,6 +387,11 @@ class ChatViewModel(
         scope.launch {
             settingsStore.chatImageKeep.collect { imageRetention = it }
         }
+        // 「进行中的事」设置（实时生效；注入上限只在合并点起作用）
+        scope.launch { settingsStore.bufferEnabled.collect { bufferEnabled = it } }
+        scope.launch { settingsStore.bufferInjectCharLimit.collect { bufferCharLimit = it } }
+        scope.launch { settingsStore.bufferInjectMaxItems.collect { bufferMaxItems = it } }
+        scope.launch { settingsStore.bufferCompactMinChars.collect { compactMinChars = it } }
         // 启动恢复（轻量持久化；超过保留天数视为过期直接丢掉）
         scope.launch { restoreSession() }
     }
@@ -532,17 +602,34 @@ class ChatViewModel(
         // keep=0「仅当前轮」= 只有最近一轮的图会发出去，下一轮（哪怕只是文字）起这张图就不再发送；
         // keep≥1 保留最近 N 张；keep<0 全留。当前轮的图永远保留（见 Session.enforceImageRetention）。
         session.enforceImageRetention(imageRetention)
-        // 静态前缀（系统提示词/工具手册/长期记忆/日记标签）变了 → 厂商缓存的前缀整段失效。
+        // 静态前缀（系统提示词/工具手册/记忆快照/标签/状态快照）变了 → 厂商缓存的前缀整段失效，
         // 把指纹交给会话层比较：不一致就把窗口回落到下限重新起跑（与"到上限回落"共用同一条
-        // L→U 序列，避免白扛着 U 轮历史每轮付全价）——2026-09-14。
-        val memoryText = memoryRepository.memoryContextText()
+        // L→U 序列，避免白扛着 U 轮历史每轮付全价）。
         val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
-        val prefixSignature = agent.cachePrefixSignature(memoryText, diaryTags)
-        val ctx = session.buildContext(minTurns, maxTurns, charLimit, prefixSignature)
+        var snapshot = snapshotStore.load() ?: rebuildSnapshotFromDb()
+        var signature = prefixSignatureOf(snapshot, diaryTags)
+        var plan = session.planWindow(minTurns, maxTurns, charLimit, signature)
+
+        // ---- 合并点（2026-09-17）----
+        // 窗口回落（或冷启动带着未合并通知）时：① 把即将离开的对话蒸馏进「进行中的事」；
+        // ② 用数据库重渲染冻结快照（记忆 + 状态）；③ 清掉会话里的粘性通知。
+        // ⚠️ 必须在 buildContext（物理裁剪）**之前**：压缩要用那些马上要被删掉的轮。
+        var reasonOverride: String? = null
+        if (plan.trigger != Session.WindowTrigger.NONE || restoredWithPendingNotices) {
+            val compacted = compactAtResetPoint(plan, snapshot, diaryTags)
+            snapshot = mergePrefixSnapshot()
+            signature = prefixSignatureOf(snapshot, diaryTags)
+            restoredWithPendingNotices = false
+            if (compacted) reasonOverride = Session.RESET_COMPACTED
+        }
+
+        val memoryText = snapshot.memoryText.ifBlank { null }
+        val bufferText = snapshot.bufferText.ifBlank { null }
+        val ctx = session.buildContext(minTurns, maxTurns, charLimit, signature, plan, reasonOverride)
         _contextStatus.update { it.withContext(ctx, minTurns, maxTurns, charLimit) }
         when (val result = agent.route(
             rawText, memoryText = memoryText, history = ctx.messages,
-            diaryTags = diaryTags, preferVision = preferVision
+            diaryTags = diaryTags, preferVision = preferVision, bufferText = bufferText
         )) {
             is AgentResult.Command -> {
                 // 目前只有识屏关键词直连会走到这里
@@ -588,6 +675,200 @@ class ChatViewModel(
         // 每轮结束都清一次过期记录（超过保留天数 + 已不在上下文里的轮才删，见 pruneExpiredRecords）
         pruneExpiredRecords()
         refreshContextStatus()
+        persistSession()
+    }
+
+    // ---- 「进行中的事」：冻结快照 / 上下文整理 / 粘性通知（2026-09-17）----
+
+    private suspend fun prefixSignatureOf(snapshot: PrefixSnapshot, diaryTags: List<String>): String =
+        agent.cachePrefixSignature(
+            snapshot.memoryText.ifBlank { null },
+            diaryTags,
+            snapshot.bufferText.ifBlank { null }
+        )
+
+    /** 从数据库现渲染一份冻结快照（首装 / 文件损坏 / 恢复备份后重建） */
+    private suspend fun rebuildSnapshotFromDb(): PrefixSnapshot = PrefixSnapshot(
+        memoryText = memoryRepository.memoryContextText().orEmpty(),
+        // 设置值现读，避免启动时收集器还没跑完拿到默认值
+        bufferText = if (settingsStore.bufferEnabled.first()) {
+            bufferRepository.renderSnapshotText(
+                settingsStore.bufferInjectCharLimit.first(),
+                settingsStore.bufferInjectMaxItems.first()
+            )
+        } else {
+            ""
+        },
+        savedAt = System.currentTimeMillis()
+    )
+
+    /** 重渲染并写回冻结快照（不含通知清理） */
+    private suspend fun rebuildAndSaveSnapshot(): PrefixSnapshot {
+        val snapshot = rebuildSnapshotFromDb()
+        snapshotStore.save(snapshot)
+        return snapshot
+    }
+
+    /**
+     * 合并：重渲染冻结快照（记忆 + 状态）+ 清掉会话里的粘性通知，并写回文件。
+     * **只在合并点调用**——那一刻前缀无论如何都要重建，所以这些变化不产生额外缓存代价。
+     */
+    private suspend fun mergePrefixSnapshot(): PrefixSnapshot {
+        val snapshot = rebuildAndSaveSnapshot()
+        session.stripNotices()
+        persistSession()
+        return snapshot
+    }
+
+    /**
+     * 窗口回落点的上下文整理。返回是否真的跑了压缩轮（状态行显示「上下文已整理」用）。
+     *
+     * 以下情况不跑压缩，但**照常推进水位线**（否则保留天数清理会被永久卡住，同一批也会被反复重试）：
+     *  - 缓冲区总开关关闭；批次太小（小于 compactMinChars，视为不值得整理）；没有待整理的轮。
+     * 只有**调用失败**才不推进：批次留在磁盘上，下次回落点由 [collectLeftovers] 一起补（自愈）。
+     */
+    private suspend fun compactAtResetPoint(
+        plan: Session.WindowPlan,
+        snapshot: PrefixSnapshot,
+        diaryTags: List<String>
+    ): Boolean {
+        val leaving = plan.willDrop.filter { it.id > coveredThroughTurnId }
+        val leftovers = collectLeftovers()
+        val covers = (leaving + leftovers).distinctBy { it.id }.sortedBy { it.id }
+        if (covers.isEmpty()) return false
+        if (!bufferEnabled) {
+            advanceWatermark(covers)
+            return false
+        }
+        if (covers.sumOf { it.charWeight() } < compactMinChars) {
+            advanceWatermark(covers)
+            return false
+        }
+        return runCompaction(snapshot, diaryTags, session.allTurns(), plan.willDrop.size, leftovers, covers)
+    }
+
+    /**
+     * 真正发起一次压缩请求并处理结果。
+     * @param covers 本次"整理了就算覆盖"的轮（成功 → 推进水位线；失败 → 记住待重试）
+     */
+    private suspend fun runCompaction(
+        snapshot: PrefixSnapshot,
+        diaryTags: List<String>,
+        windowTurns: List<Session.Turn>,
+        leavingCount: Int,
+        leftovers: List<Session.Turn>,
+        covers: List<Session.Turn>
+    ): Boolean {
+        if (windowTurns.isEmpty()) {
+            advanceWatermark(covers)
+            return false
+        }
+        val out = compactor.compact(
+            memoryText = snapshot.memoryText.ifBlank { null },
+            bufferText = snapshot.bufferText.ifBlank { null },
+            conversationTurns = windowTurns,
+            leavingCount = leavingCount,
+            leftoverTurns = leftovers,
+            diaryTags = diaryTags
+        )
+        _contextStatus.update {
+            it.copy(
+                compactRequests = out.requests,
+                compactPromptTokens = out.usage?.promptTokens,
+                compactCachedTokens = out.usage?.cachedTokens
+            )
+        }
+        return if (out.error != null) {
+            // 失败：不推进水位线（内容留着下次补），给用户一条可操作提示，回答照常
+            failedCompactionBatch = covers
+            _compactionNotice.value = CompactionNotice(
+                "📦 上下文整理失败（${out.error}）：最早的 ${covers.size} 轮还没整理。"
+            )
+            false
+        } else {
+            advanceWatermark(covers)
+            true
+        }
+    }
+
+    /** 推进压缩水位线（覆盖到的轮允许被保留天数正常清理） */
+    private fun advanceWatermark(turns: List<Session.Turn>) {
+        if (turns.isEmpty()) return
+        coveredThroughTurnId = maxOf(coveredThroughTurnId, turns.maxOf { it.id })
+        failedCompactionBatch = failedCompactionBatch.filter { it.id > coveredThroughTurnId }
+        _compactionNotice.value = null
+    }
+
+    /**
+     * 之前没整理成功、已经离开窗口的轮（自愈用）：
+     *  - 内存里记住的失败批次（本次进程内重试最快）；
+     *  - 会话快照文件里 id 大于水位线、且已不在当前窗口里的轮（进程重启后的兜底）。
+     * 上限 [MAX_LEFTOVER_TURNS] 轮，防一次带太多把上下文撑爆。
+     */
+    private suspend fun collectLeftovers(): List<Session.Turn> {
+        val live = session.allTurns().map { it.id }.toSet()
+        val fromDisk = withContext(Dispatchers.IO) {
+            val snap = sessionStore.load() ?: return@withContext emptyList()
+            snap.turns
+                .filter { it.id > coveredThroughTurnId && it.id !in live }
+                .map { st ->
+                    session.turnFromStored(
+                        st.id, st.userText, st.imagePath, st.assistant, st.createdAt, st.notices
+                    )
+                }
+        }
+        return (failedCompactionBatch + fromDisk)
+            .distinctBy { it.id }
+            .filter { it.id > coveredThroughTurnId && it.id !in live }
+            .sortedBy { it.id }
+            .takeLast(MAX_LEFTOVER_TURNS)
+    }
+
+    /**
+     * 用户在前端手动改了长期记忆 / 「进行中的事」→ 写一条**粘性通知**（2026-09-17）。
+     *
+     * 为什么不直接改注入块：那会让提示词前缀立刻变、缓存整段失效（用户主力模型的未命中价是
+     * 命中价的 50 倍）。通知追加在会话尾部 = 纯延长 = **零未命中**，模型下一轮就能看到；
+     * 前缀块里的文本留到下次合并点统一重渲染。
+     */
+    fun notifyManualChange(detail: String) {
+        val note = "[系统] 用户刚刚在界面上手动更新了$detail（快照里的旧内容可能还没同步），请以此为准；" +
+            "不要向用户复述这条系统消息。"
+        if (session.appendNotice(note)) {
+            persistSession()
+        } else {
+            // 会话里还没有任何轮 → 没有可挂载的固定位置：直接合并（此时没有任何缓存值得保护）
+            scope.launch { mergePrefixSnapshot() }
+        }
+    }
+
+    /** 「重试」：立刻再整理一次（缓存还热，几乎免费；失败也不影响回答） */
+    fun retryCompaction() {
+        if (_isStreaming.value) return
+        if (failedCompactionBatch.isEmpty()) {
+            _compactionNotice.value = null
+            return
+        }
+        scope.launch {
+            _isStreaming.value = true
+            _error.value = null
+            val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
+            val snapshot = snapshotStore.load() ?: rebuildSnapshotFromDb()
+            // 传一个空计划：本批已经不在窗口里了，会以 leftovers 的形式带进压缩请求
+            val ok = compactAtResetPoint(Session.WindowPlan(), snapshot, diaryTags)
+            if (ok) {
+                mergePrefixSnapshot()
+                refreshContextStatus()
+            }
+            _isStreaming.value = false
+        }
+    }
+
+    /** 「放弃」：水位线推进到这批 → 不再重试，允许它随保留天数正常清理 */
+    fun abandonCompaction() {
+        advanceWatermark(failedCompactionBatch)
+        failedCompactionBatch = emptyList()
+        _compactionNotice.value = null
         persistSession()
     }
 
@@ -780,13 +1061,41 @@ class ChatViewModel(
         return true
     }
 
-    fun clearConversation() {
-        session.clear()
-        _messages.value = emptyList()
-        _contextStatus.value = ContextStatus(
-            minTurns = minTurns, maxTurns = maxTurns, charLimit = charLimit
-        )
-        scope.launch { sessionStore.clear() }
+    /**
+     * 清空对话。
+     *
+     * @param alsoCompact 是否顺带把要点整理进「进行中的事」（确认弹窗里的勾选项，默认勾上）——
+     *        由用户显式选择，所以**不受"批次太小就跳过"的限制**。
+     *        无论是否整理都会合并一次快照（记忆/状态的界面改动要落进注入块）。
+     */
+    fun clearConversation(alsoCompact: Boolean = false) {
+        if (_isStreaming.value) return
+        scope.launch {
+            val all = session.allTurns()
+            if (alsoCompact && all.isNotEmpty() && settingsStore.bufferEnabled.first()) {
+                _isStreaming.value = true
+                _error.value = null
+                try {
+                    val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
+                    val snapshot = snapshotStore.load() ?: rebuildSnapshotFromDb()
+                    runCompaction(snapshot, diaryTags, all, all.size, emptyList(), all)
+                } catch (_: Exception) {
+                    // 整理失败不影响清空
+                }
+                _isStreaming.value = false
+            }
+            session.clear()
+            _messages.value = emptyList()
+            _contextStatus.value = ContextStatus(
+                minTurns = minTurns, maxTurns = maxTurns, charLimit = charLimit
+            )
+            coveredThroughTurnId = 0L
+            failedCompactionBatch = emptyList()
+            _compactionNotice.value = null
+            // 会话已空：快照按数据库最新内容重渲染（没有轮可挂通知），并清掉会话文件
+            rebuildAndSaveSnapshot()
+            sessionStore.clear()
+        }
     }
 
     // ---- 会话轻量持久化（随时可丢的内容：只存一个 JSON，不进备份） ----
@@ -796,6 +1105,10 @@ class ChatViewModel(
      * 恢复的历史如果前缀一致，服务端提示词缓存可能仍在有效期内（也可能顺带命中）。
      */
     private suspend fun restoreSession() {
+        // 冻结快照与会话保留是两码事：即使不留存会话记录，注入前缀的冻结快照也要就位
+        // （缺失说明首装/升级/文件损坏 → 从数据库渲染一次；文本与旧行为一致，不额外断前缀）
+        if (snapshotStore.load() == null) rebuildAndSaveSnapshot()
+
         val days = settingsStore.chatSessionRetentionDays.first()
         retentionDays = days
         if (days <= 0) {
@@ -806,6 +1119,7 @@ class ChatViewModel(
         if (sessionStore.pruneIfExpired(days)) return
         val snap = sessionStore.load() ?: return
         if (snap.turns.isEmpty() && snap.messages.isEmpty()) return
+        coveredThroughTurnId = snap.coveredThroughTurnId
 
         // 旧快照没有 createdAt 字段（2026-09-17 之前）：回退到 userText 的 [时间] 前缀，
         // 再不行用快照保存时刻；解析不出来的轮记 0 = 未知（清理逻辑一律保留，不误删）
@@ -816,10 +1130,13 @@ class ChatViewModel(
         session.restoreTurns(
             snap.turns.map { t ->
                 session.turnFromStored(
-                    t.id, t.userText, t.imagePath, t.assistant, turnTime[t.id] ?: 0L
+                    t.id, t.userText, t.imagePath, t.assistant, turnTime[t.id] ?: 0L, t.notices
                 )
             }
         )
+        // 快照里还留着未合并的粘性通知（用户上次改记忆/状态后没触发过回落）：
+        // 第一轮请求前先合并一次——此刻前缀无论如何都要断，早付早好
+        restoredWithPendingNotices = session.hasNotices()
         // 带图轮：从 chat_images 路径懒加载缩略图（文件可能已被清理策略删掉 → 无缩略图）
         val thumbs = withContext(Dispatchers.IO) {
             snap.turns.mapNotNull { t ->
@@ -873,13 +1190,15 @@ class ChatViewModel(
             .takeLast(ChatSessionStore.MAX_TURNS)
         val snapshot = StoredChat(
             savedAt = System.currentTimeMillis(),
+            coveredThroughTurnId = coveredThroughTurnId,
             turns = turns.map { t ->
                 StoredTurn(
                     id = t.id,
                     userText = t.userText,
                     imagePath = t.imagePath,
                     assistant = t.assistant.map { it.textContent },
-                    createdAt = t.createdAt
+                    createdAt = t.createdAt,
+                    notices = t.notices.toList()
                 )
             },
             messages = ui.map { m ->
@@ -934,7 +1253,7 @@ class ChatViewModel(
         if (retentionDays <= 0) return
         val cutoff = System.currentTimeMillis() - retentionDays * DAY_MS
         val contextIds = session.allTurns().map { it.id }.toSet()
-        val expired = expiredTurnIds(turnCreatedAtMap(), contextIds, cutoff)
+        val expired = expiredTurnIds(turnCreatedAtMap(), contextIds, cutoff, coveredThroughTurnId)
         if (expired.isEmpty()) return
         _messages.update { list -> list.filterNot { it.turnId in expired } }
     }
@@ -1028,6 +1347,9 @@ class ChatViewModel(
 
         /** 一天的毫秒数（会话记录保留天数换算用） */
         private const val DAY_MS = 24L * 3600_000L
+
+        /** 一次上下文整理最多补带多少"漏掉的历史片段"轮（防上下文爆炸） */
+        private const val MAX_LEFTOVER_TURNS = 30
 
         /** 后台静默抽取长期记忆的旧入口已删除：对话内记忆改由主模型 write_memory 工具完成 */
     }

@@ -8,15 +8,20 @@ import org.junit.Test
 /**
  * 「会话记录保留」自动清理的判定（2026-09-17 用户要求）。
  *
- * 用户拍板的规则：**同时满足两条才删**——
+ * 用户拍板的规则：**同时满足三条才删**——
  *  ① 该轮创建时刻超过保留天数；
  *  ② 该轮已经不在给模型的上下文里（还在窗口里的先留着，否则下一次请求的提示词前缀就变了，
- *     厂商缓存整段失效）。
+ *     厂商缓存整段失效）；
+ *  ③ 该轮已被**压缩水位线**覆盖（2026-09-17「进行中的事」补）——离开窗口但还没折进缓冲区的轮
+ *     如果先被清理删掉，那段内容就永久消失了（压缩失败/放弃过的批次正属此类）。
  */
 class SessionRetentionTest {
 
     private val now = 1_700_000_000_000L
     private val day = 24L * 3600_000L
+
+    /** 默认水位线取"全部覆盖"（老用例只关心前两条） */
+    private val allCovered = Long.MAX_VALUE
 
     @Test
     fun `expired and out of context is deleted`() {
@@ -24,7 +29,10 @@ class SessionRetentionTest {
             1L to now - 9 * day,   // 过期 + 已不在上下文 → 删
             2L to now - 2 * day    // 未过期
         )
-        val ids = expiredTurnIds(created, contextTurnIds = setOf(2L), cutoffMillis = now - 7 * day)
+        val ids = expiredTurnIds(
+            created, contextTurnIds = setOf(2L), cutoffMillis = now - 7 * day,
+            coveredThroughTurnId = allCovered
+        )
         assertEquals(setOf(1L), ids)
     }
 
@@ -32,14 +40,20 @@ class SessionRetentionTest {
     fun `expired but still in context is kept`() {
         val created = mapOf(1L to now - 30 * day)
         // 还在上下文窗口里（用户明确要求：不得为了清理而破坏缓存前缀）
-        val ids = expiredTurnIds(created, contextTurnIds = setOf(1L), cutoffMillis = now - 7 * day)
+        val ids = expiredTurnIds(
+            created, contextTurnIds = setOf(1L), cutoffMillis = now - 7 * day,
+            coveredThroughTurnId = allCovered
+        )
         assertTrue(ids.isEmpty())
     }
 
     @Test
     fun `out of context but not expired is kept`() {
         val created = mapOf(1L to now - day)
-        val ids = expiredTurnIds(created, contextTurnIds = emptySet(), cutoffMillis = now - 7 * day)
+        val ids = expiredTurnIds(
+            created, contextTurnIds = emptySet(), cutoffMillis = now - 7 * day,
+            coveredThroughTurnId = allCovered
+        )
         assertTrue(ids.isEmpty())
     }
 
@@ -47,15 +61,47 @@ class SessionRetentionTest {
     fun `unknown timestamp is never deleted`() {
         // createdAt = 0（旧快照解析不出时间）→ 宁可留着也不误删
         val created = mapOf(1L to 0L, 2L to -1L)
-        val ids = expiredTurnIds(created, contextTurnIds = emptySet(), cutoffMillis = now)
+        val ids = expiredTurnIds(
+            created, contextTurnIds = emptySet(), cutoffMillis = now,
+            coveredThroughTurnId = allCovered
+        )
         assertTrue(ids.isEmpty())
     }
 
     @Test
     fun `exact cutoff boundary is expired`() {
         val created = mapOf(1L to now - 7 * day)
-        val ids = expiredTurnIds(created, contextTurnIds = emptySet(), cutoffMillis = now - 7 * day)
+        val ids = expiredTurnIds(
+            created, contextTurnIds = emptySet(), cutoffMillis = now - 7 * day,
+            coveredThroughTurnId = allCovered
+        )
         assertEquals(setOf(1L), ids)
+    }
+
+    @Test
+    fun `expired and out of context but not yet compressed is kept`() {
+        // 第三条件：压缩水位线还没覆盖到（比如上次整理失败了）→ 先留着，等下次整理补上
+        val created = mapOf(
+            1L to now - 20 * day,
+            2L to now - 20 * day,
+            3L to now - 20 * day
+        )
+        val ids = expiredTurnIds(
+            created, contextTurnIds = emptySet(), cutoffMillis = now - 7 * day,
+            coveredThroughTurnId = 2L
+        )
+        assertEquals(setOf(1L, 2L), ids)
+    }
+
+    @Test
+    fun `nothing is deleted when the watermark never advanced`() {
+        // 缓冲区关闭且从未整理过（水位线 = 0）→ 保留天数清理不会删任何东西
+        val created = mapOf(1L to now - 90 * day)
+        val ids = expiredTurnIds(
+            created, contextTurnIds = emptySet(), cutoffMillis = now - 7 * day,
+            coveredThroughTurnId = 0L
+        )
+        assertTrue(ids.isEmpty())
     }
 
     @Test

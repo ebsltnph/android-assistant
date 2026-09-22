@@ -39,6 +39,12 @@ data class BackupFile(
     val monitoredEvents: List<com.example.assistant.data.db.entity.MonitoredEventEntity> = emptyList(),
     val eventHits: List<com.example.assistant.data.db.entity.EventHitEntity> = emptyList(),
     val dailySummaries: List<com.example.assistant.data.db.entity.DailySummaryEntity> = emptyList(),
+    /**
+     * 「进行中的事」缓冲区（2026-09-17）。
+     * **要进备份**：会话不进备份，而缓冲区是从会话蒸馏出来的唯一留存物，恢复后不可再生。
+     * 冻结快照（prefix_snapshot.json）不进备份——它可以从这里的条目重新渲染。
+     */
+    val bufferItems: List<com.example.assistant.data.db.entity.BufferItemEntity> = emptyList(),
     /** zip 里是否有 secret_log/chat_history.txt */
     val secretLogIncluded: Boolean = false,
     /** SummaryStore 最近一份小结（App 内展示的缓存，与 dailySummaries 历史表重复，低优先级） */
@@ -86,7 +92,15 @@ data class BackupSettings(
     val voiceSilenceMs: Int = 2500,
     /** 定期自动备份开关与间隔（天） */
     val autoBackupEnabled: Boolean = false,
-    val autoBackupIntervalDays: Int = 7
+    val autoBackupIntervalDays: Int = 7,
+    /** 「进行中的事」缓冲区开关键（2026-09-17） */
+    val bufferEnabled: Boolean = true,
+    /** 缓冲区注入字符上限 */
+    val bufferInjectCharLimit: Int = 1200,
+    /** 缓冲区注入最大条数 */
+    val bufferInjectMaxItems: Int = 15,
+    /** 触发上下文整理的最小批次（字符当量） */
+    val bufferCompactMinChars: Int = 2000
 )
 
 /**

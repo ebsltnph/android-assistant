@@ -6,11 +6,13 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.assistant.data.db.dao.BufferItemDao
 import com.example.assistant.data.db.dao.DiaryDao
 import com.example.assistant.data.db.dao.EventDao
 import com.example.assistant.data.db.dao.MemoryDao
 import com.example.assistant.data.db.dao.ReminderDao
 import com.example.assistant.data.db.dao.SummaryDao
+import com.example.assistant.data.db.entity.BufferItemEntity
 import com.example.assistant.data.db.entity.DailySummaryEntity
 import com.example.assistant.data.db.entity.DiaryBookEntity
 import com.example.assistant.data.db.entity.DiaryEntryEntity
@@ -36,9 +38,10 @@ import com.example.assistant.data.db.entity.ReminderEntity
         MonitoredEventEntity::class,
         EventHitEntity::class,
         DailySummaryEntity::class,
-        PeriodSummaryEntity::class
+        PeriodSummaryEntity::class,
+        BufferItemEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -48,13 +51,14 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun reminderDao(): ReminderDao
     abstract fun eventDao(): EventDao
     abstract fun summaryDao(): SummaryDao
+    abstract fun bufferItemDao(): BufferItemDao
 
     companion object {
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "assistant.db")
                 .addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
-                    MIGRATION_6_7, MIGRATION_7_8
+                    MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
                 )
                 .build()
 
@@ -183,6 +187,28 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE `diary_entries` ADD COLUMN `tags` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        /**
+         * v8 → v9：「进行中的事」缓冲区条目表（2026-09-17）。
+         * 纯新增表，旧数据零影响。列定义必须与 Room 生成的 schema 逐字一致
+         * （**不加 DEFAULT 子句**，否则 Room 校验 schema 会失败）。
+         */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `buffer_items` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`kind` TEXT NOT NULL, " +
+                        "`title` TEXT NOT NULL, " +
+                        "`body` TEXT NOT NULL, " +
+                        "`diaryIds` TEXT NOT NULL, " +
+                        "`status` TEXT NOT NULL, " +
+                        "`source` TEXT NOT NULL, " +
+                        "`createdAtEpochMillis` INTEGER NOT NULL, " +
+                        "`updatedAtEpochMillis` INTEGER NOT NULL)"
                 )
             }
         }

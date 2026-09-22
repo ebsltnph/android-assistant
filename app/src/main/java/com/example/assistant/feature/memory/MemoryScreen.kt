@@ -52,8 +52,16 @@ import kotlinx.coroutines.launch
  * 长期记忆管理页（v1.4 从日记页移到首页入口）：
  * 查看 / 手动添加 / 单条编辑 / 删除 / 清空。
  * 只负责记忆，不掺入日记内容。
+ *
+ * 2026-09-17：记忆块的注入文本改为**冻结快照**（只在窗口回落时重渲染），
+ * 所以这里的改动不会立刻改提示词前缀（那会让厂商缓存整段失效），
+ * 而是通过 [notify] 写一条"粘性通知"追加到会话尾部——模型下一轮就能看到，零缓存代价。
  */
-class MemoryViewModel(private val memoryRepository: MemoryRepository) : ViewModel() {
+class MemoryViewModel(
+    private val memoryRepository: MemoryRepository,
+    /** 改动 → 粘性通知（由 ChatViewModel.notifyManualChange 实现） */
+    private val notify: (String) -> Unit
+) : ViewModel() {
 
     val memories: StateFlow<List<MemoryEntity>> = memoryRepository.memories
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -65,6 +73,7 @@ class MemoryViewModel(private val memoryRepository: MemoryRepository) : ViewMode
         if (text.isEmpty()) return
         viewModelScope.launch {
             memoryRepository.addFact(text)
+            notify("长期记忆：新增了一条「$text」")
             message.value = "🧠 已添加长期记忆"
         }
     }
@@ -74,17 +83,23 @@ class MemoryViewModel(private val memoryRepository: MemoryRepository) : ViewMode
         if (text.isEmpty()) return
         viewModelScope.launch {
             memoryRepository.update(id, text)
+            notify("长期记忆：#id=$id 已被修改为「$text」")
             message.value = "✏️ 记忆已更新"
         }
     }
 
     fun deleteMemory(id: Long) {
-        viewModelScope.launch { memoryRepository.delete(id) }
+        val fact = memories.value.firstOrNull { it.id == id }?.fact.orEmpty()
+        viewModelScope.launch {
+            memoryRepository.delete(id)
+            notify("长期记忆：#id=$id「$fact」已被删除，请勿再使用快照里的这条")
+        }
     }
 
     fun clearMemories() {
         viewModelScope.launch {
             memoryRepository.clearAll()
+            notify("长期记忆：已被全部清空，请不要再使用快照里的任何记忆")
             message.value = "🧹 记忆已清空"
         }
     }
@@ -102,7 +117,10 @@ fun MemoryScreen(
     val context = LocalContext.current
     val app = context.applicationContext as AssistantApplication
     val vm: MemoryViewModel = viewModel {
-        MemoryViewModel(app.container.memoryRepository)
+        MemoryViewModel(
+            memoryRepository = app.container.memoryRepository,
+            notify = { detail -> app.container.chatViewModel.notifyManualChange(detail) }
+        )
     }
     val memories by vm.memories.collectAsState()
     val message by vm.message.collectAsState()

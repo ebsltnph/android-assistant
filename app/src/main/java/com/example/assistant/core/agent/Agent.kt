@@ -93,12 +93,13 @@ class Agent(
         memoryText: String? = null,
         history: List<ChatMessage> = emptyList(),
         diaryTags: List<String> = emptyList(),
-        preferVision: Boolean = false
+        preferVision: Boolean = false,
+        bufferText: String? = null
     ): AgentResult {
         // 关键词只保留识屏直连
         val keyword = intentRouter.keywordRoute(text)
         if (keyword != null) return AgentResult.Command(keyword)
-        return chatRequested(text, memoryText, history, diaryTags, preferVision)
+        return chatRequested(text, memoryText, history, diaryTags, preferVision, bufferText)
     }
 
     /**
@@ -114,12 +115,52 @@ class Agent(
         providerRegistry.profileFor(Capability.VISION)?.supportsVision == true
 
     /**
-     * 静态前缀指纹（系统提示词 / 工具手册 / 日记标签 / 长期记忆）。
+     * 静态前缀指纹（系统提示词 / 工具手册 / 日记标签 / 长期记忆 / 「进行中的事」状态块）。
      * 供会话层判断"这一轮的前缀是不是和上一轮一样"——不一样就说明厂商缓存的前缀全废了，
-     * 窗口该回落到下限重新起跑（见 Session.buildContext）。
+     * 窗口该回落到下限重新起跑（见 Session.planWindow）。
+     *
+     * ⚠️ 记忆与状态块走**冻结快照**（PrefixSnapshotStore）：它们的文本只在合并点变，
+     * 合并后调用方会 Session.markPrefixSignature() 对齐基线，不会重复砍窗口。
      */
-    suspend fun cachePrefixSignature(memoryText: String?, diaryTags: List<String>): String =
-        promptBuilder.prefixSignature(memoryText, toolRegistry.manual(), diaryTags)
+    suspend fun cachePrefixSignature(
+        memoryText: String?,
+        diaryTags: List<String>,
+        bufferText: String? = null
+    ): String = promptBuilder.prefixSignature(memoryText, toolRegistry.manual(), diaryTags, bufferText)
+
+    /**
+     * 一次性非流式对话请求（**上下文整理压缩轮**用，2026-09-17）。
+     *
+     * 与 chatStream 的关键差别：不流式（压缩轮不需要逐字上屏）、temperature 更低
+     * （整理要求稳定、不要发挥）、maxTokens 更小。工具回路不在这里——压缩轮只要
+     * "一次请求 + 解析调用行 + 执行"，由 ContextCompactor 自己编排。
+     */
+    suspend fun chatOnce(
+        messages: List<ChatMessage>,
+        capability: Capability = Capability.CHAT,
+        maxTokens: Int = 2048
+    ): OnceResult {
+        val profile = providerRegistry.profileFor(capability)
+            ?: throw IllegalStateException("未配置对话提供商")
+        val api = providerRegistry.apiFor(profile)
+        val effort = providerRegistry.reasoningEffortFor(profile)
+        val request = ChatRequest(
+            model = profile.model,
+            messages = messages,
+            temperature = 0.2,
+            maxTokens = maxTokens,
+            reasoningEffort = effort
+        )
+        val header = providerRegistry.authHeader(profile.apiKey)
+        val response = providerRegistry.chatCompat(profile, request, header, api)
+        return OnceResult(
+            text = response.choices.firstOrNull()?.message?.textContent.orEmpty(),
+            usage = response.usage
+        )
+    }
+
+    /** 一次性请求的结果：正文 + 用量（压缩轮的用量单独统计，见 ContextStatus.compactUsage） */
+    data class OnceResult(val text: String, val usage: Usage? = null)
 
     /** 组装对话回路的初始请求消息 */
     private suspend fun chatRequested(
@@ -127,7 +168,8 @@ class Agent(
         memoryText: String?,
         history: List<ChatMessage>,
         diaryTags: List<String>,
-        preferVision: Boolean
+        preferVision: Boolean,
+        bufferText: String? = null
     ): AgentResult {
         val capability = if (preferVision) Capability.VISION else Capability.CHAT
         val profile = providerRegistry.profileFor(capability)
@@ -140,7 +182,8 @@ class Agent(
             memoryText = memoryText,
             conversation = conversation,
             toolManual = toolRegistry.manual(),
-            diaryTags = diaryTags
+            diaryTags = diaryTags,
+            bufferText = bufferText
         )
         // 目标模型不支持图片输入时：历史里的图片会直接 400，替换为文字占位
         // （当前轮的图片始终保留——那是用户的明确意图，不支持就让 API 报错并给出提示）

@@ -41,6 +41,7 @@ import com.example.assistant.core.ui.GlassCard
 import com.example.assistant.data.db.entity.DailySummaryEntity
 import com.example.assistant.data.db.entity.MonitoredEventEntity
 import com.example.assistant.data.db.entity.ReminderEntity
+import com.example.assistant.feature.buffer.BufferScreen
 import com.example.assistant.feature.memory.MemoryScreen
 import com.example.assistant.service.FloatingBallService
 import com.example.assistant.ui.theme.ChampagneGold
@@ -74,6 +75,7 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     val events by vm.events.collectAsState()
     val ballEnabled by vm.floatingBallEnabled.collectAsState()
     val memories by app.container.memoryRepository.memories.collectAsState(initial = emptyList())
+    val bufferItems by app.container.bufferRepository.items.collectAsState(initial = emptyList())
 
     // 首页子页：长期记忆管理（从首页进入，不占底部导航）
     var showMemoryPage by rememberSaveable { mutableStateOf(false) }
@@ -82,6 +84,17 @@ fun HomeScreen(modifier: Modifier = Modifier) {
         MemoryScreen(
             modifier = modifier,
             onBack = { showMemoryPage = false }
+        )
+        return
+    }
+
+    // 首页子页：「进行中的事」缓冲区（2026-09-17）
+    var showBufferPage by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = showBufferPage) { showBufferPage = false }
+    if (showBufferPage) {
+        BufferScreen(
+            modifier = modifier,
+            onBack = { showBufferPage = false }
         )
         return
     }
@@ -178,6 +191,33 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                     }
                     Text(
                         "管理 →",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // ---- 「进行中的事」入口（2026-09-17：缓冲区，助手自动维护 + 手动可改） ----
+        item {
+            GlassCard(
+                onClick = { showBufferPage = true },
+                containerAlpha = 0.06f
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("📌", style = MaterialTheme.typography.titleLarge)
+                    Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                        Text("进行中的事", style = MaterialTheme.typography.titleMedium)
+                        val activeCount = bufferItems.count { it.isActive() }
+                        Text(
+                            if (activeCount > 0) "$activeCount 条 · 助手每次整理对话时更新"
+                            else "助手会在这里记住你在做的事、需要盯一阵子的事",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        "查看 →",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -46,6 +46,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -93,11 +94,16 @@ fun ChatScreen(modifier: Modifier = Modifier) {
     val speakingMsgId by vm.speakingMsgId.collectAsState()
     val pendingImage by vm.pendingImage.collectAsState()
     val contextStatus by vm.contextStatus.collectAsState()
+    // 上下文整理失败的可操作提示（非阻塞：回答照常，只是留一条让用户重试/放弃）
+    val compactionNotice by vm.compactionNotice.collectAsState()
+    val bufferEnabled by app.container.settingsStore.bufferEnabled.collectAsState(initial = true)
 
     // 删除单条对话（需求 3）：待确认的轮 id（null = 无弹窗）
     var pendingDeleteTurnId by remember { mutableStateOf<Long?>(null) }
     // 清空全部对话：二次确认（与删除单条一致，防误触）
     var pendingClearAll by remember { mutableStateOf(false) }
+    // 清空时是否顺带把要点整理进「进行中的事」（默认勾上；缓冲关闭时不显示该选项）
+    var clearAlsoCompact by remember { mutableStateOf(true) }
 
     // 相册选图（Photo Picker，免存储权限）
     val pickImageLauncher = rememberLauncherForActivityResult(
@@ -128,6 +134,32 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             ContextStatusChip(contextStatus)
             IconButton(onClick = { pendingClearAll = true }) {
                 Icon(Icons.Filled.Delete, contentDescription = "清空对话")
+            }
+        }
+
+        // 上下文整理失败：非阻塞提示 + 重试/放弃（失败不影响回答，也不会丢内容——
+        // 那批轮留在磁盘上，下次整理会一起补）
+        compactionNotice?.let { notice ->
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        notice.message,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.weight(1f).padding(start = 10.dp, top = 6.dp, bottom = 6.dp)
+                    )
+                    TextButton(onClick = { vm.retryCompaction() }) {
+                        Text("重试", style = MaterialTheme.typography.labelMedium)
+                    }
+                    TextButton(onClick = { vm.abandonCompaction() }) {
+                        Text("放弃", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
             }
         }
 
@@ -319,14 +351,34 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             onDismissRequest = { pendingClearAll = false },
             title = { Text("清空全部对话？") },
             text = {
-                Text(
-                    "所有聊天记录与上下文都会被删除，本机保存的会话快照也会一起清掉。\n\n" +
-                        "注意：日记、长期记忆、提醒与事件监控不受影响，已执行的工具副作用不会回滚。"
-                )
+                Column {
+                    Text(
+                        "所有聊天记录与上下文都会被删除，本机保存的会话快照也会一起清掉。\n\n" +
+                            "注意：日记、长期记忆、提醒与事件监控不受影响，已执行的工具副作用不会回滚。"
+                    )
+                    if (bufferEnabled) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .clickable { clearAlsoCompact = !clearAlsoCompact }
+                        ) {
+                            Checkbox(
+                                checked = clearAlsoCompact,
+                                onCheckedChange = { clearAlsoCompact = it }
+                            )
+                            Text(
+                                "同时把要点整理进「进行中的事」",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    vm.clearConversation()
+                    vm.clearConversation(alsoCompact = bufferEnabled && clearAlsoCompact)
                     pendingClearAll = false
                     Toast.makeText(context, "已清空对话", Toast.LENGTH_SHORT).show()
                 }) { Text("清空") }
@@ -382,6 +434,16 @@ private fun ContextStatusChip(status: ContextStatus) {
                     }
                     // 窗口为什么从这里起算：前缀变了/到上限/到字符上限（缓存的重置点）
                     status.windowReset?.let { append("\n窗口回落：").append(it) }
+                    // 上下文整理（压缩轮）的用量：**单独一行**，不计入上面"最近一轮对话"的合计
+                    if (status.compactRequests > 0) {
+                        append("\n📌 整理上下文：").append(status.compactRequests).append(" 次请求｜")
+                        if (status.compactPromptTokens == null) append("厂商未返回用量")
+                        else {
+                            append(status.compactPromptTokens).append(" tokens")
+                            status.compactCachedTokens?.let { append(" · 缓存命中 ").append(it) }
+                            status.compactHitPercent?.let { append("（").append(it).append("%）") }
+                        }
+                    }
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

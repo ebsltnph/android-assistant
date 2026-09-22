@@ -246,6 +246,10 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 vm = vm,
                 onBack = { subPage = null }
             )
+            SettingsSubPage.BUFFER -> BufferPage(
+                vm = vm,
+                onBack = { subPage = null }
+            )
         }
     }
 
@@ -275,7 +279,9 @@ private enum class SettingsSubPage {
     /** 悬浮球语音输入（配置项多，折叠进子页，主页只显示摘要） */
     BALL_VOICE,
     /** 聊天上下文（上下限/字符上限/会话保留/历史图片，同样折叠进子页） */
-    CHAT_CONTEXT
+    CHAT_CONTEXT,
+    /** 「进行中的事」缓冲区（2026-09-17：开关 + 注入上限 + 整理阈值） */
+    BUFFER
 }
 
 // ======================= 顶层列表 =======================
@@ -504,6 +510,14 @@ private fun SettingsMainList(
             ChatContextEntryCard(
                 vm = vm,
                 onOpen = { onOpenSubPage(SettingsSubPage.CHAT_CONTEXT) }
+            )
+        }
+
+        // ---- 7.5 「进行中的事」缓冲区（2026-09-17） ----
+        item {
+            BufferEntryCard(
+                vm = vm,
+                onOpen = { onOpenSubPage(SettingsSubPage.BUFFER) }
             )
         }
 
@@ -1290,6 +1304,168 @@ private fun imageKeepLabel(keep: Int): String = when (keep) {
     -1 -> "全部"
     0 -> "仅当前轮"
     else -> "最近 $keep 张"
+}
+
+/** 主页入口卡：「进行中的事」缓冲区（只显示摘要，详细配置进子页） */
+@Composable
+private fun BufferEntryCard(vm: SettingsViewModel, onOpen: () -> Unit) {
+    val enabled by vm.bufferEnabled.collectAsState()
+    val limit by vm.bufferInjectCharLimit.collectAsState()
+    EntryCard(
+        title = "进行中的事",
+        subtitle = if (enabled) {
+            "已开启 · 每轮注入上限 $limit 字 · 对话窗口回落时自动整理"
+        } else {
+            "已关闭 · 不注入也不自动整理（页面里的内容仍保留）"
+        },
+        onClick = onOpen
+    )
+}
+
+/**
+ * 「进行中的事」子页面（2026-09-17）：
+ * 总开关 + 注入上限 + 最大条数 + 触发整理的最小批次。
+ *
+ * 背景：这是介于「长期记忆」（永久、被动）与「日记」（流水）之间的第三层——
+ * 一段时间内成立、会过期的状态。助手在窗口回落（上下文整理）时把即将遗忘的进展蒸馏进来，
+ * 之后每轮对话都带着它；用户在页面上的改动通过"粘性通知"立刻告知模型，
+ * 并在下次整理时并入注入快照（因此**不会**破坏提示词缓存）。
+ */
+@Composable
+private fun BufferPage(vm: SettingsViewModel, onBack: () -> Unit) {
+    val enabled by vm.bufferEnabled.collectAsState()
+    val limit by vm.bufferInjectCharLimit.collectAsState()
+    val maxItems by vm.bufferInjectMaxItems.collectAsState()
+    val minChars by vm.bufferCompactMinChars.collectAsState()
+
+    var limitText by remember(limit) { mutableStateOf(limit.toString()) }
+    var itemsText by remember(maxItems) { mutableStateOf(maxItems.toString()) }
+    var minCharsText by remember(minChars) { mutableStateOf(minChars.toString()) }
+
+    val limitV = limitText.toIntOrNull()
+    val itemsV = itemsText.toIntOrNull()
+    val minCharsV = minCharsText.toIntOrNull()
+    val valid = limitV != null && itemsV != null && minCharsV != null &&
+        limitV in 200..8000 && itemsV in 1..60 && minCharsV in 0..100_000
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("进行中的事", onBack) }
+
+        item {
+            GlassCard(containerAlpha = 0.08f) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "这是助手用来记住「你正在做什么」的地方：正在推进的事、需要盯一阵子的状态" +
+                            "（比如身体不舒服）。它和长期记忆（永久事实）、日记（流水）是三回事。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "助手**只在对话窗口回落时**整理一次（把即将离开上下文的对话浓缩成条目），" +
+                            "平时不会乱写；你在「进行中的事」页面里的增删改会立刻以一条系统提示告知助手，" +
+                            "但注入文本要到下次整理才刷新——这是为了不打断提示词缓存。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        item {
+            GlassCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("启用「进行中的事」", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            if (enabled) "已开启：注入状态块，并在窗口回落时自动整理"
+                            else "已关闭：不注入、不自动整理（已记录的条目仍保留在页面里）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = enabled, onCheckedChange = { vm.setBufferEnabled(it) })
+                }
+            }
+        }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("注入上限", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "每轮对话都会带上这些条目，所以要有上限。超限时按「最近更新优先」保留，" +
+                            "并在块尾注明还有多少条被省略——**只是不注入，数据一条都不会删**。" +
+                            "条目最多保留最近更新的若干条（默认 15）；更早的可以在页面上手动归档。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = limitText,
+                            onValueChange = { limitText = it.filter(Char::isDigit).take(4) },
+                            label = { Text("字符上限（200-8000）") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = itemsText,
+                            onValueChange = { itemsText = it.filter(Char::isDigit).take(2) },
+                            label = { Text("最多条数（1-60）") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("整理阈值", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "窗口回落时，如果这一批对话太短（小于这个字符当量），就跳过整理（视为不值得记），" +
+                            "省一次模型调用。0 = 每次都整理。默认 2000。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = minCharsText,
+                        onValueChange = { minCharsText = it.filter(Char::isDigit).take(6) },
+                        label = { Text("最小批次（0 = 每次都整理）") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    enabled = valid,
+                    onClick = {
+                        limitV?.let { vm.setBufferInjectCharLimit(it) }
+                        itemsV?.let { vm.setBufferInjectMaxItems(it) }
+                        minCharsV?.let { vm.setBufferCompactMinChars(it) }
+                    }
+                ) { Text("保存") }
+                Text(
+                    "改动在下次窗口回落（或下次打开 App）后生效",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.CenterVertically)
+                )
+            }
+        }
+    }
 }
 
 /** 主页入口卡：只显示当前设定，详细配置进子页 */

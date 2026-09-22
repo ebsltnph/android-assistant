@@ -240,6 +240,49 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setChatImageKeep(v) }
     }
 
+    // ---- 「进行中的事」缓冲区（2026-09-17）----
+
+    /** 总开关（默认开）：关掉后状态块不注入、窗口回落时也不做上下文整理 */
+    val bufferEnabled: StateFlow<Boolean> = settingsStore.bufferEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setBufferEnabled(v: Boolean) {
+        viewModelScope.launch { settingsStore.setBufferEnabled(v) }
+    }
+
+    /** 注入块字符上限（默认 1200；超限只在注入文本里省略，不删数据） */
+    val bufferInjectCharLimit: StateFlow<Int> = settingsStore.bufferInjectCharLimit
+        .stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000),
+            SettingsStore.DEFAULT_BUFFER_CHAR_LIMIT
+        )
+
+    fun setBufferInjectCharLimit(v: Int) {
+        viewModelScope.launch { settingsStore.setBufferInjectCharLimit(v) }
+    }
+
+    /** 注入块最大条数（默认 15） */
+    val bufferInjectMaxItems: StateFlow<Int> = settingsStore.bufferInjectMaxItems
+        .stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000),
+            SettingsStore.DEFAULT_BUFFER_MAX_ITEMS
+        )
+
+    fun setBufferInjectMaxItems(v: Int) {
+        viewModelScope.launch { settingsStore.setBufferInjectMaxItems(v) }
+    }
+
+    /** 触发上下文整理的最小批次（字符当量，默认 2000） */
+    val bufferCompactMinChars: StateFlow<Int> = settingsStore.bufferCompactMinChars
+        .stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000),
+            SettingsStore.DEFAULT_BUFFER_COMPACT_MIN_CHARS
+        )
+
+    fun setBufferCompactMinChars(v: Int) {
+        viewModelScope.launch { settingsStore.setBufferCompactMinChars(v) }
+    }
+
     // ---- 秘密功能：对话历史记录开关 ----
     val secretLogEnabled: StateFlow<Boolean> = settingsStore.secretLogEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)

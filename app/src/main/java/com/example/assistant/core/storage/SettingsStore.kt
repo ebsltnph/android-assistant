@@ -176,6 +176,36 @@ class SettingsStore(context: Context) {
         dataStore.data.map { it[KEY_CHAT_IMAGE_KEEP] ?: DEFAULT_CHAT_IMAGE_KEEP }
     suspend fun setChatImageKeep(v: Int) = dataStore.edit { it[KEY_CHAT_IMAGE_KEEP] = v }
 
+    // ---- 「进行中的事」缓冲区（2026-09-17）----
+
+    /**
+     * 总开关（默认开）。关掉后：状态块不注入、窗口回落时不做上下文整理；
+     * 长期记忆的冻结快照与合并机制照常（那是缓存优化，与开关无关）。
+     */
+    val bufferEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_BUFFER_ENABLED] ?: true }
+    suspend fun setBufferEnabled(v: Boolean) = dataStore.edit { it[KEY_BUFFER_ENABLED] = v }
+
+    /**
+     * 注入块字符上限（默认 1200）。超限只在**注入文本**里按"最近更新优先"省略，
+     * 并附一行「另有 N 条…已省略」——**一条数据都不删**（用户手动管理，不做自动 TTL）。
+     */
+    val bufferInjectCharLimit: Flow<Int> =
+        dataStore.data.map { it[KEY_BUFFER_CHAR_LIMIT] ?: DEFAULT_BUFFER_CHAR_LIMIT }
+    suspend fun setBufferInjectCharLimit(v: Int) = dataStore.edit { it[KEY_BUFFER_CHAR_LIMIT] = v }
+
+    /** 注入块最大条数（默认 15；同样只是省略，不删数据） */
+    val bufferInjectMaxItems: Flow<Int> =
+        dataStore.data.map { it[KEY_BUFFER_MAX_ITEMS] ?: DEFAULT_BUFFER_MAX_ITEMS }
+    suspend fun setBufferInjectMaxItems(v: Int) = dataStore.edit { it[KEY_BUFFER_MAX_ITEMS] = v }
+
+    /**
+     * 触发上下文整理的最小批次（字符当量，默认 2000）。
+     * 批次太小就跳过（留给下次累积）——省一次模型调用；水位线会让它下次一起被整理。
+     */
+    val bufferCompactMinChars: Flow<Int> =
+        dataStore.data.map { it[KEY_BUFFER_COMPACT_MIN_CHARS] ?: DEFAULT_BUFFER_COMPACT_MIN_CHARS }
+    suspend fun setBufferCompactMinChars(v: Int) = dataStore.edit { it[KEY_BUFFER_COMPACT_MIN_CHARS] = v }
+
     // ---- 日记标签词汇表（用户自定义；AI 只能从这份列表里选 0-3 个） ----
     /** 标签列表，逗号分隔。默认：工作、生活、待办、经验 */
     val diaryTagsCsv: Flow<String> = dataStore.data.map { it[KEY_DIARY_TAGS] ?: DEFAULT_DIARY_TAGS_CSV }
@@ -230,6 +260,10 @@ class SettingsStore(context: Context) {
         private val KEY_CONTEXT_CHAR_LIMIT = intPreferencesKey("conversation_context_char_limit")
         private val KEY_CHAT_RETENTION_DAYS = intPreferencesKey("chat_session_retention_days")
         private val KEY_CHAT_IMAGE_KEEP = intPreferencesKey("chat_image_keep")
+        private val KEY_BUFFER_ENABLED = booleanPreferencesKey("buffer_enabled")
+        private val KEY_BUFFER_CHAR_LIMIT = intPreferencesKey("buffer_inject_char_limit")
+        private val KEY_BUFFER_MAX_ITEMS = intPreferencesKey("buffer_inject_max_items")
+        private val KEY_BUFFER_COMPACT_MIN_CHARS = intPreferencesKey("buffer_compact_min_chars")
         private val KEY_DIARY_TAGS = stringPreferencesKey("diary_tags_csv")
         private val KEY_SECRET_LOG = booleanPreferencesKey("secret_log_enabled")
         private val KEY_AUTO_BACKUP = booleanPreferencesKey("auto_backup_enabled")
@@ -254,5 +288,14 @@ class SettingsStore(context: Context) {
 
         /** 历史图片保留张数默认值（-1 = 全部；0 = 只当前轮） */
         const val DEFAULT_CHAT_IMAGE_KEEP = 1
+
+        /** 「进行中的事」注入块字符上限默认值 */
+        const val DEFAULT_BUFFER_CHAR_LIMIT = 1_200
+
+        /** 「进行中的事」注入块最大条数默认值 */
+        const val DEFAULT_BUFFER_MAX_ITEMS = 15
+
+        /** 触发上下文整理的最小批次（字符当量）默认值 */
+        const val DEFAULT_BUFFER_COMPACT_MIN_CHARS = 2_000
     }
 }

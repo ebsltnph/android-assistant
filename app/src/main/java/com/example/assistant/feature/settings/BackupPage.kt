@@ -199,6 +199,7 @@ private fun RestoreConfirmDialog(
     val summary = buildString {
         append("日记 ${data.diaryEntries.size} 条（含图片 ${data.diaryImages.size} 张）")
         append(" · 记忆 ${data.memories.size} 条")
+        append(" · 进行中的事 ${data.bufferItems.size} 条")
         append(" · 提醒 ${data.reminders.size} 条")
         append(" · 事件 ${data.monitoredEvents.size} 个")
         append(" · 小结 ${data.dailySummaries.size} 条")

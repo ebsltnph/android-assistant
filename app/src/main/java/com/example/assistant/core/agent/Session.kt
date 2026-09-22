@@ -26,8 +26,36 @@ import java.util.Locale
  * 因此既给模型提供了"每句话是什么时候说的"和"当前时间"，
  * 又不会因为时间流逝而改动历史（旧实现把"当前时间"放在消息数组中间，
  * 每分钟变一次 → 后面的整段对话历史永远无法命中缓存）。
+ *
+ * **粘性通知（2026-09-17「进行中的事」）**：用户在界面上改动长期记忆/缓冲区时，
+ * 不在前缀块里立刻改文本（那会让整段缓存失效），而是往**当前最后一轮**追加一条
+ * 「[系统] …」通知行——追加在尾部 = 纯延长 = 零未命中，模型下一轮就能看到；
+ * 前缀块里的文本由**冻结快照**在"合并点"（窗口回落流程）统一重渲染。
+ *
+ * ⚠️ 通知**只能追加、之后永不重写/重排**：若每轮把"待合并变更"重新拼在对话末尾，
+ * 它的位置会随轮次后移，导致**每轮都多付「一轮对话 + 通知」的未命中**，永远累积不起来。
  */
 class Session {
+
+    /** 窗口回落的触发原因（2026-09-17 抽出，供 planWindow 只读预测用） */
+    enum class WindowTrigger { NONE, PREFIX, MAX_TURNS, SOFT_CAP }
+
+    /**
+     * 只读的窗口计划：这一轮**将**怎么裁剪（不改任何状态）。
+     *
+     * 存在的理由：回落（裁剪）会把轮从 Session 里**物理删除**，而"上下文整理"（压缩轮）
+     * 恰恰要用那些**即将被删掉的轮**当作压缩输入。所以先 `planWindow()` 拿到 willDrop，
+     * 压缩 + 合并快照做完，再 `buildContext(plan)` 真正执行裁剪。
+     */
+    data class WindowPlan(
+        val trigger: WindowTrigger = WindowTrigger.NONE,
+        val reason: String? = null,
+        /** 本次将离开窗口的轮（压缩输入的依据） */
+        val willDrop: List<Turn> = emptyList(),
+        val keptTurns: Int = 0,
+        val keptChars: Int = 0,
+        val trimmedBySoftCap: Boolean = false
+    )
 
     /**
      * 一轮：userText 为 null 表示只产生了助手消息（浮动面板「记录」提示、识屏结果回填等）。
@@ -43,9 +71,15 @@ class Session {
         /** 该轮附带图片的本机文件路径（null = 无图或已被保留策略丢弃） */
         val imagePath: String? = null,
         /** 这一轮的创建时刻（会话记录按保留天数自动清理用；0 = 未知，一律不删） */
-        val createdAt: Long = 0L
+        val createdAt: Long = 0L,
+        /**
+         * 粘性通知（用户手动改了长期记忆/缓冲区时追加，见类注释）。
+         * **单独一个列表而不是塞进 assistant**：否则"重做"（clearAssistant/replaceLastAssistant）
+         * 会把它清掉，变更信息就静默丢了。
+         */
+        val notices: MutableList<String> = mutableListOf()
     ) {
-        /** 该轮的全部消息（按发送顺序） */
+        /** 该轮的全部消息（按发送顺序；通知渲染在本轮助手消息之后） */
         fun messages(): List<ChatMessage> = buildList {
             userText?.let { t ->
                 val parts = ArrayList<ContentPart>(3)
@@ -59,6 +93,7 @@ class Session {
                 add(ChatMessage("user", parts))
             }
             addAll(assistant)
+            notices.forEach { add(ChatMessage("user", it)) }
         }
 
         /** 该轮的字符当量（图片按固定当量折算，用于字符软上限） */
@@ -131,7 +166,8 @@ class Session {
         userText: String?,
         imagePath: String?,
         assistantTexts: List<String>,
-        createdAt: Long = 0L
+        createdAt: Long = 0L,
+        notices: List<String> = emptyList()
     ): Turn = Turn(
         id = id,
         userText = userText,
@@ -141,7 +177,8 @@ class Session {
             .map { ChatMessage("assistant", it) }
             .toMutableList(),
         imagePath = imagePath,
-        createdAt = createdAt
+        createdAt = createdAt,
+        notices = notices.filter { it.isNotBlank() }.toMutableList()
     )
 
     /**
@@ -185,6 +222,34 @@ class Session {
         return id
     }
 
+    // ---- 粘性通知（用户手动改动长期记忆 / 「进行中的事」时调用）----
+
+    /**
+     * 往**当前最后一轮**追加一条通知（形如 `[系统] 用户手动更新了…`）。
+     *
+     * 为什么挂在轮里而不是单独一个尾部块：挂进去之后它的**位置就固定了**，
+     * 后续轮次都是它的延长（缓存继续命中）；而"每轮重新拼在最后"会让位置逐轮后移，
+     * 每轮都要重算一次（见类注释）。
+     *
+     * @return false = 会话里还没有任何一轮（没有可挂载的位置），调用方应改为立即合并快照
+     */
+    fun appendNotice(text: String): Boolean {
+        val turn = turns.lastOrNull() ?: return false
+        turn.notices += text
+        return true
+    }
+
+    /** 是否存在未合并的通知（冷启动时据此决定要不要立刻合并一次快照） */
+    fun hasNotices(): Boolean = turns.any { it.notices.isNotEmpty() }
+
+    /**
+     * 清除全部通知（合并时调用）。
+     * 合并点必然伴随前缀重建（快照重渲染），所以清通知不会产生额外的缓存代价。
+     */
+    fun stripNotices() {
+        turns.forEach { it.notices.clear() }
+    }
+
     // ---- 删除 / 回退 ----
 
     /** 删除一轮（需求 3：删除单条对话 = 一次删掉该轮的用户消息 + 全部助手消息） */
@@ -213,10 +278,13 @@ class Session {
     // ---- 读取（发送上下文） ----
 
     /**
-     * 组装本次请求的对话尾部，并顺带按上下限做**物理裁剪**（方法名带 build 以示有副作用）。
-     * 顺序：先看静态前缀有没有变 → 再按轮数上限/下限裁 → 最后按字符软上限兜底。
+     * **只读**预测这一轮将怎么裁剪（不改任何状态）。
      *
-     * **回落到下限（= 重置窗口）的三种触发条件（2026-09-14 补第 1、3 条）**：
+     * 存在的理由：回落（裁剪）会把轮从 Session 里**物理删除**，而「上下文整理」（压缩轮）
+     * 恰恰要用那些即将被删掉的轮当输入。所以流程是：
+     * `planWindow()` 拿 willDrop → 压缩 + 合并快照 → `buildContext(plan)` 真正裁剪。
+     *
+     * 触发条件（与历史行为完全一致）：
      *  1. 静态前缀变了（系统提示词/工具手册/日记标签/长期记忆被改）——厂商缓存的公共前缀
      *     在对话之前就断了，整段历史全部失效，再扛着 U 轮只是白付全价；
      *  2. 轮数到上限 U（原有的 L→L+1→…→U→L 循环）；
@@ -225,62 +293,102 @@ class Session {
      *
      * @param prefixSignature 静态前缀指纹（Agent.cachePrefixSignature）；null = 不做前缀变更检测
      */
-    fun buildContext(
+    fun planWindow(
         minTurns: Int,
         maxTurns: Int,
         softCharLimit: Int,
         prefixSignature: String? = null
-    ): BuiltContext {
+    ): WindowPlan {
         val lo = minTurns.coerceAtLeast(1)
         val hi = maxTurns.coerceAtLeast(lo)
-        var reset: String? = null
+        // 一次性算好每轮字符当量（charWeight 会读图片文件，多次调用很贵）
+        val weights = turns.map { it.charWeight() }
+        var size = turns.size
+        var drop = 0
+        var trigger = WindowTrigger.NONE
+        var reason: String? = null
 
-        fun trimTo(target: Int) {
-            while (turns.size > target) turns.removeFirst()
+        fun mark(t: WindowTrigger, r: String) {
+            if (trigger == WindowTrigger.NONE) { trigger = t; reason = r }
         }
+        fun trimTo(target: Int) {
+            if (size > target) { drop += size - target; size = target }
+        }
+        fun keptChars(): Int = weights.drop(drop).sum()
 
         // 0) 静态前缀变了 → 之前缓存的前缀全部作废，直接回落到下限重新起跑
         if (prefixSignature != null && prefixSignature != lastPrefixSignature) {
             val hadBefore = lastPrefixSignature != null
-            lastPrefixSignature = prefixSignature
-            if (hadBefore && turns.size > lo) {
+            if (hadBefore && size > lo) {
                 trimTo(lo)
-                reset = RESET_PREFIX
+                mark(WindowTrigger.PREFIX, RESET_PREFIX)
             }
         }
 
         // 1) 轮数窗口：超过上限就裁到下限（这一步定义了"缓存区间"的边界）
-        if (turns.size > hi) {
+        if (size > hi) {
             trimTo(lo)
-            reset = reset ?: RESET_MAX_TURNS
+            mark(WindowTrigger.MAX_TURNS, RESET_MAX_TURNS)
         }
 
         // 2) 字符软上限：**同样回落到下限**（前缀已经被破坏，留着中间几轮没有缓存收益），
         //    若下限轮数自身仍超限，再继续从最旧的丢（至少保留最近 1 轮）
         var trimmedBySoft = false
         if (softCharLimit > 0) {
-            var total = turns.sumOf { it.charWeight() }
+            var total = keptChars()
             if (total > softCharLimit) {
                 trimmedBySoft = true
-                if (turns.size > lo) {
+                if (size > lo) {
                     trimTo(lo)
-                    reset = reset ?: RESET_SOFT_CAP
-                    total = turns.sumOf { it.charWeight() }
+                    mark(WindowTrigger.SOFT_CAP, RESET_SOFT_CAP)
+                    total = keptChars()
                 }
-                while (total > softCharLimit && turns.size > 1) {
-                    total -= turns.removeFirst().charWeight()
-                    reset = reset ?: RESET_SOFT_CAP
+                while (total > softCharLimit && size > 1) {
+                    total -= weights[drop]
+                    drop++
+                    size--
+                    mark(WindowTrigger.SOFT_CAP, RESET_SOFT_CAP)
                 }
             }
         }
+
+        return WindowPlan(
+            trigger = trigger,
+            reason = reason,
+            willDrop = turns.take(drop).toList(),
+            keptTurns = size,
+            keptChars = keptChars(),
+            trimmedBySoftCap = trimmedBySoft
+        )
+    }
+
+    /**
+     * 组装本次请求的对话尾部，并**执行**裁剪（方法名带 build 以示有副作用）。
+     *
+     * @param plan 已由 [planWindow] 算好的计划（压缩流程必须在裁剪前拿到 willDrop，
+     *        所以支持传入）；null = 内部现算（状态行刷新等只读场景）
+     * @param reasonOverride 覆盖展示用的回落原因（压缩轮显示「上下文已整理」用）
+     */
+    fun buildContext(
+        minTurns: Int,
+        maxTurns: Int,
+        softCharLimit: Int,
+        prefixSignature: String? = null,
+        plan: WindowPlan? = null,
+        reasonOverride: String? = null
+    ): BuiltContext {
+        val p = plan ?: planWindow(minTurns, maxTurns, softCharLimit, prefixSignature)
+        // 指纹基线照旧在"真正发请求"这条路径上更新
+        if (prefixSignature != null) lastPrefixSignature = prefixSignature
+        repeat(p.willDrop.size) { if (turns.isNotEmpty()) turns.removeFirst() }
 
         val messages = turns.flatMap { it.messages() }
         return BuiltContext(
             messages = messages,
             turns = turns.size,
             chars = turns.sumOf { it.charWeight() },
-            trimmedBySoftCap = trimmedBySoft,
-            windowReset = reset
+            trimmedBySoftCap = p.trimmedBySoftCap,
+            windowReset = reasonOverride ?: p.reason
         )
     }
 
@@ -303,6 +411,12 @@ class Session {
 
         /** 窗口回落原因：字符数到软上限 */
         const val RESET_SOFT_CAP = "字符数达到上限"
+
+        /**
+         * 窗口回落原因：本次回落点顺带做了「上下文整理」（压缩轮把即将离开的轮折进缓冲区）。
+         * 展示优先级最高——用户看到"已整理"比看到"轮数达到上限"更贴合实际发生的事。
+         */
+        const val RESET_COMPACTED = "上下文已整理"
 
         /**
          * 把本机图片文件转成请求用的 image part（base64）。
