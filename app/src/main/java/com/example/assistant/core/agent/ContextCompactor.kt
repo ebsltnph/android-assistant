@@ -183,8 +183,13 @@ class ContextCompactor(
         /** 最多两轮（模型可能需要一次结果反馈），防死循环 */
         private const val MAX_ROUNDS = 2
 
-        /** 压缩输出不长（几条条目），2048 足够 */
-        private const val MAX_TOKENS = 2048
+        /**
+         * 压缩输出配额。**必须给足**：这是非流式请求，而推理模型的思考过程也吃这个配额
+         * （CLAUDE.md 踩坑记录：小结曾因 4096→2048 被思考吃光而返回空内容）。
+         * "清空对话"那次要把整段对话一次蒸馏完，输出更长，2048 会被截断成半截调用行。
+         * 给大不吃亏——只有真生成才计费。
+         */
+        private const val MAX_TOKENS = 8192
 
         private val STAMP = Regex("""^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})]\s*""")
     }
