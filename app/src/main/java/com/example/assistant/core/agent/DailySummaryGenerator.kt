@@ -34,21 +34,27 @@ class DailySummaryGenerator(
 ) {
 
     /**
-     * 生成今日小结。窗口内无日记返回 null（调用方静默跳过）。
-     * LLM 不可用时返回简短的兜底统计文本。
+     * 生成今日小结。
+     * - 窗口内无日记 → [GenerationOutcome.NoData]（调用方静默跳过）
+     * - LLM 失败 → [GenerationOutcome.Failed]（**兜底文本里带原因**，Worker 会通知用户并 15 分钟后重试一次）
+     * - 成功 → [GenerationOutcome.Ok]
      */
-    suspend fun generateToday(): String? {
+    suspend fun generateToday(): GenerationOutcome {
         // 24 小时滑动窗口：取「总结时刻往前 24h」的日记。
         // 不用「当天 0 点起」——总结时间设为 0 点时，当天 0 点到 0 点之间没有数据，会漏掉昨天深夜的日记。
         val now = System.currentTimeMillis()
         val entries = diaryRepository.entriesBetween(now - SUMMARY_WINDOW_MS, now)
-        if (entries.isEmpty()) return null
+        if (entries.isEmpty()) return GenerationOutcome.NoData
 
         val profile = providerRegistry.profileFor(Capability.CHAT)
         val fallback = "今天写了 ${entries.size} 条日记，点开「日记」页看看吧"
+        var failedReason: String? = null
+        var retryable = true
         // 兜底文本附上失败原因：MagicOS 屏蔽 App 日志（persist.log.tag=M），
         // 把错误直接显示给用户，比抓 logcat 更可靠
         val result = if (profile == null || !profile.isConfigured()) {
+            failedReason = "未配置对话模型"
+            retryable = false   // 配置不会自己出现，重试没意义
             fallback + "\n（未配置对话模型，请到「设置」添加）"
         } else {
             try {
@@ -71,9 +77,13 @@ class DailySummaryGenerator(
                 val header = providerRegistry.authHeader(profile.apiKey)
                 val response = providerRegistry.chatCompat(profile, request, header, api)
                 response.choices.firstOrNull()?.message?.textContent?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: fallback + "\n（模型返回了空内容，请重试）"
+                    ?: run {
+                        failedReason = "模型返回了空内容"
+                        fallback + "\n（模型返回了空内容）"
+                    }
             } catch (e: Exception) {
                 Log.w(TAG, "每日小结 LLM 调用失败", e)
+                failedReason = e.message ?: e.javaClass.simpleName
                 fallback + "\n（生成失败：${e.message}）"
             }
         }
@@ -87,7 +97,8 @@ class DailySummaryGenerator(
         // 镜像到系统日历。CalendarWriter 的事件日期与删除范围都跟随传入的 date
         // （只删归属日当天的旧小结），归属日期变了也不会误删其他日期的日历事件。
         CalendarWriter.writeDailySummary(appContext, date, datedResult)
-        return datedResult
+        return failedReason?.let { GenerationOutcome.Failed(it, datedResult, retryable) }
+            ?: GenerationOutcome.Ok(datedResult)
     }
 
     /**

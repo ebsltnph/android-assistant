@@ -115,6 +115,22 @@ class Agent(
         providerRegistry.profileFor(Capability.VISION)?.supportsVision == true
 
     /**
+     * 按目标档案能力处理图片：不支持图片输入时，把**历史**图片换成文字占位
+     * （最后一条用户消息里的图保留 —— 那是用户本轮的明确意图）。
+     *
+     * 为什么要抽出来共用：「上下文整理」压缩轮走的是同一条对话链路，必须用**同一套**图片规则，
+     * 否则在纯文本对话模型下，整理请求会带着历史图片直接 HTTP 400、每次都失败
+     * （2026-09-23 审出来的潜在坑；两条路径前缀一致时缓存也才对得上）。
+     */
+    suspend fun messagesForCapability(
+        messages: List<ChatMessage>,
+        capability: Capability
+    ): List<ChatMessage> {
+        val supports = providerRegistry.profileFor(capability)?.supportsVision == true
+        return if (supports) messages else stripHistoricalImages(messages)
+    }
+
+    /**
      * 静态前缀指纹（系统提示词 / 工具手册 / 日记标签 / 长期记忆 / 「进行中的事」状态块）。
      * 供会话层判断"这一轮的前缀是不是和上一轮一样"——不一样就说明厂商缓存的前缀全废了，
      * 窗口该回落到下限重新起跑（见 Session.planWindow）。

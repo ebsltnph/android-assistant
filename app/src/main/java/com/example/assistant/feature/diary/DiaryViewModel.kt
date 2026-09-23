@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.assistant.core.agent.DailySummaryGenerator
+import com.example.assistant.core.agent.GenerationOutcome
 import com.example.assistant.core.agent.MemoryExtractor
 import com.example.assistant.core.agent.PeriodSummaryGenerator
 import com.example.assistant.core.notification.Notifier
@@ -302,12 +303,18 @@ class DiaryViewModel(
     fun generateTodaySummary() {
         viewModelScope.launch {
             message.value = "⏳ 正在整理今日小结…"
-            val summary = summaryGenerator.generateToday()
-            if (summary == null) {
-                message.value = "今天还没写日记，先记几条吧"
-            } else {
-                Notifier.notifyDiarySummary(appContext, summary)
-                message.value = "✅ 今日小结已生成，请看通知"
+            when (val outcome = summaryGenerator.generateToday()) {
+                is GenerationOutcome.NoData ->
+                    message.value = "今天还没写日记，先记几条吧"
+                is GenerationOutcome.Ok -> {
+                    Notifier.notifyDiarySummary(appContext, outcome.text)
+                    message.value = "✅ 今日小结已生成，请看通知"
+                }
+                is GenerationOutcome.Failed -> {
+                    // 手动触发不排自动重试（用户就在旁边，直接告诉他原因、让他点重试）
+                    Notifier.notifyDiarySummary(appContext, outcome.fallback)
+                    message.value = "⚠️ 生成失败：${outcome.reason}（可再点一次重试）"
+                }
             }
         }
     }

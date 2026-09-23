@@ -3,6 +3,7 @@ package com.example.assistant
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import androidx.work.BackoffPolicy
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
@@ -258,6 +259,8 @@ class AssistantApplication : Application() {
     private fun scheduleBriefing(minuteOfDay: Int) {
         val request = PeriodicWorkRequestBuilder<MorningBriefingWorker>(24, TimeUnit.HOURS)
             .setInitialDelay(initialDelayToMinute(minuteOfDay), TimeUnit.MILLISECONDS)
+            // 生成失败时 Worker 走 Result.retry()：15 分钟后自动重试一次（2026-09-23）
+            .setBackoffCriteria(BackoffPolicy.LINEAR, 15, TimeUnit.MINUTES)
             .build()
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             WORK_BRIEFING_NAME,
@@ -320,6 +323,8 @@ class AssistantApplication : Application() {
     private fun scheduleDailySummary(minute: Int) {
         val request = PeriodicWorkRequestBuilder<DailySummaryWorker>(24, TimeUnit.HOURS)
             .setInitialDelay(initialDelayToMinute(minute), TimeUnit.MILLISECONDS)
+            // 生成失败时 Worker 走 Result.retry()：15 分钟后自动重试一次（2026-09-23）
+            .setBackoffCriteria(BackoffPolicy.LINEAR, 15, TimeUnit.MINUTES)
             .build()
         // REPLACE：直接替换同名任务（原子操作）。
         // 不能用 KEEP+cancel——cancel 是异步的，KEEP 会先看到旧任务而拒绝替换（竞态，改时间不生效）。

@@ -26,8 +26,13 @@ class DailyBriefingGenerator(
     private val summaryStore: SummaryStore
 ) {
 
-    /** 生成简报文本（任何失败都返回模板兜底，不打扰用户） */
-    suspend fun generate(): String {
+    /**
+     * 生成简报文本。
+     * - 成功 → [GenerationOutcome.Ok]
+     * - 失败 → [GenerationOutcome.Failed]（**兜底模板照旧落库 + 通知，并在文本里写明原因**；
+     *   Worker 会额外说明 15 分钟后重试一次）
+     */
+    suspend fun generate(): GenerationOutcome {
         val now = System.currentTimeMillis()
         val todayStart = dayStartMillis()
         // 今天 0 点后待触发的提醒
@@ -59,31 +64,43 @@ class DailyBriefingGenerator(
             }
             summary?.let { append("昨日小结：${it.summary.take(200)}") }
         }
-        if (profile == null || !profile.isConfigured()) return dated(dateLabel, template)
 
-        val result = try {
-            val api = providerRegistry.apiFor(profile)
-            var prompt = promptStore.prompt(PromptStore.PromptKey.BRIEFING)
-            prompt = prompt.replace("{reminders}", remindersText).replace("{summary}", summaryText)
-            val effort = providerRegistry.reasoningEffortFor(profile)
-            val request = ChatRequest(
-                model = profile.model,
-                messages = listOf(
-                    ChatMessage("system", prompt),
-                    // 当前时间告诉模型（"今天/昨天"的基准），避免它按知识截止猜日期
-                    ChatMessage("user", "当前时间：$dateLabel ${weekdayText()}\n请生成今天的清晨简报。")
-                ),
-                temperature = 0.7,
-                // 1024：推理模型思考占配额
-                maxTokens = 1024,
-                reasoningEffort = effort
-            )
-            val header = providerRegistry.authHeader(profile.apiKey)
-            val response = providerRegistry.chatCompat(profile, request, header, api)
-            response.choices.firstOrNull()?.message?.textContent?.trim()?.takeIf { it.isNotEmpty() }
-                ?: template
-        } catch (e: Exception) {
-            template
+        var failedReason: String? = null
+        var retryable = true
+        val result = when {
+            profile == null || !profile.isConfigured() -> {
+                failedReason = "未配置对话模型"
+                retryable = false
+                template + "\n\n（未配置对话模型，本次只列出提醒与昨日小结；到「设置」配置后会自动生成）"
+            }
+            else -> try {
+                val api = providerRegistry.apiFor(profile)
+                var prompt = promptStore.prompt(PromptStore.PromptKey.BRIEFING)
+                prompt = prompt.replace("{reminders}", remindersText).replace("{summary}", summaryText)
+                val effort = providerRegistry.reasoningEffortFor(profile)
+                val request = ChatRequest(
+                    model = profile.model,
+                    messages = listOf(
+                        ChatMessage("system", prompt),
+                        // 当前时间告诉模型（"今天/昨天"的基准），避免它按知识截止猜日期
+                        ChatMessage("user", "当前时间：$dateLabel ${weekdayText()}\n请生成今天的清晨简报。")
+                    ),
+                    temperature = 0.7,
+                    // 1024：推理模型思考占配额
+                    maxTokens = 1024,
+                    reasoningEffort = effort
+                )
+                val header = providerRegistry.authHeader(profile.apiKey)
+                val response = providerRegistry.chatCompat(profile, request, header, api)
+                response.choices.firstOrNull()?.message?.textContent?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: run {
+                        failedReason = "模型返回了空内容"
+                        template + "\n\n（简报未由模型润色：模型返回了空内容）"
+                    }
+            } catch (e: Exception) {
+                failedReason = e.message ?: e.javaClass.simpleName
+                template + "\n\n（简报未由模型润色，生成失败：${e.message}）"
+            }
         }
         // 落库：最新一份简报（App 内随时可看，首页入口）
         val today = Calendar.getInstance()
@@ -92,7 +109,8 @@ class DailyBriefingGenerator(
         )
         val dated = dated(dateLabel, result)
         summaryStore.saveBriefing(dated, date)
-        return dated
+        return failedReason?.let { GenerationOutcome.Failed(it, dated, retryable) }
+            ?: GenerationOutcome.Ok(dated)
     }
 
     /** 简报文本前缀日期标签（如「🌅 2026年8月1日 清晨简报」） */

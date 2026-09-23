@@ -76,13 +76,15 @@ class ContextCompactor(
             diaryTags = diaryTags,
             bufferText = bufferText
         )
+        // 与对话主路径完全相同的图片规则：文本模型下不能带历史图片（否则整理请求必然 400）
+        val trimmedBase = agent.messagesForCapability(base, Capability.CHAT)
         // 历史片段作为**尾部追加**的消息：前缀不动 ⇒ 已经缓存的部分照样命中
         val extras = ArrayList<ChatMessage>(2)
         if (leftoverTurns.isNotEmpty()) {
             extras += ChatMessage("user", renderLeftovers(leftoverTurns))
         }
         extras += ChatMessage("user", triggerText(conversationTurns, leavingCount, leftoverTurns.isNotEmpty()))
-        var messages = base + extras
+        var messages = trimmedBase + extras
 
         var requests = 0
         var usage: Usage? = null
