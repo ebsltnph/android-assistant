@@ -19,6 +19,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // 调试包版本号加后缀（安装到手机上时一眼能看出装的是哪个包；
+            // versionCode 与 release 相同 ⇒ `adb install -r` 互相覆盖安装都能保留数据）
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = false
             // 自用正式版：用 debug 签名（不依赖独立 keystore，安装升级与 debug 兼容）

@@ -32,6 +32,8 @@ export JAVA_HOME="<你的 JDK 路径>"   # 例：/c/Users/<用户名>/Tools/jdk-
 ./gradlew lintDebug            # 静态检查
 ADB="<你的 Android SDK 路径>/platform-tools/adb.exe"   # 例：C:/Users/<用户名>/AppData/Local/Android/Sdk/platform-tools/adb.exe
 $ADB install -r app/build/outputs/apk/debug/app-debug.apk   # 装机
+# 调试包版本名带 -debug 后缀（app/build.gradle.kts 的 debug.versionNameSuffix，2026-09-23 起）：
+# dumpsys package 一眼看出装的是哪个包；versionCode 与 release 相同 ⇒ 两者可互相覆盖安装且保留数据
 $ADB logcat --pid=$($ADB shell pidof com.example.assistant) # 看 App 日志
 $ADB shell run-as com.example.assistant cat files/datastore/settings.preferences_pb | od -c  # 查设置值（末字节 10 进制=小时）
 $ADB shell dumpsys jobscheduler | grep -A20 "JOB androidx.work.systemjobscheduler:u0a291" | grep -E "Minimum latency|Enqueue"  # 验证周期任务排程
