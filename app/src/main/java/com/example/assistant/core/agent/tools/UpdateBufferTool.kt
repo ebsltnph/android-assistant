@@ -40,7 +40,7 @@ class UpdateBufferTool(
             "delete_ids：确认没用的条目编号。\n" +
             "- 如果这批对话确实没有任何值得记进「进行中的事」的内容（纯闲聊、没有进展），" +
             "**仍然要调用一次本工具**并传 {\"noop\": true} 明确表示「无需记录」，不要输出别的文字。\n" +
-            "args 示例：{\"items\":[{\"id\":7,\"title\":\"零差探测器搭建\"," +
+            "args 示例：{\"items\":[{\"id\":7,\"title\":\"准备考试\"," +
             "\"body\":\"已完成：…；待办：…\"}],\"archive_ids\":[3]}"
 
     override fun actionLabel(args: JsonObject): String = "整理状态"

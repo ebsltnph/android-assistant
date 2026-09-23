@@ -41,6 +41,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
+ * 系统提示消息的角色（2026-09-23）：用于「上下文整理」这类**只上屏、不进模型上下文**的提示行——
+ * 它存在 `_messages` 里（可持久化、可划词、跟着轮次一起被删除），
+ * 但**绝不写入 Session**，所以模型看不到它，也不会模仿它。
+ */
+const val ROLE_NOTICE = "notice"
+
+/**
  * 聊天界面的一条消息。`turnId` 指向 Session 里的「轮」——
  * 同一轮的用户气泡与助手气泡共享它，删除单条对话（需求 3）以轮为单位整体处理。
  */
@@ -114,29 +121,13 @@ data class ContextStatus(
     /** 本轮发出的模型请求次数（0 = 还没请求过） */
     val requests: Int = 0,
     /** 上一次窗口回落到下限的原因（解释"缓存为什么在这里重置"；null = 还没重置过） */
-    val windowReset: String? = null,
-    /**
-     * 上下文整理（压缩轮）的用量：**单列展示、不计入上面的"最近一轮对话"合计**。
-     * 它不属于用户那一轮对话，混进去会让命中率数字失真。
-     */
-    val compactRequests: Int = 0,
-    val compactPromptTokens: Int? = null,
-    val compactCachedTokens: Int? = null
+    val windowReset: String? = null
 ) {
     /** 缓存命中率（**整轮合计**；厂商未报告缓存字段时为 null） */
     val cacheHitPercent: Int?
         get() {
             val total = promptTokens ?: return null
             val hit = cachedTokens ?: return null
-            if (total <= 0) return null
-            return (hit * 100 / total).coerceIn(0, 100)
-        }
-
-    /** 上下文整理的缓存命中率（单独一行；null = 厂商未报告） */
-    val compactHitPercent: Int?
-        get() {
-            val total = compactPromptTokens ?: return null
-            val hit = compactCachedTokens ?: return null
             if (total <= 0) return null
             return (hit * 100 / total).coerceIn(0, 100)
         }
@@ -750,6 +741,7 @@ class ChatViewModel(
     /**
      * 真正发起一次压缩请求并处理结果。
      * @param covers 本次"整理了就算覆盖"的轮（成功 → 推进水位线；失败 → 记住待重试）
+     * @param showNotice 是否在对话里插一条提示气泡（清空对话时不必插——列表马上会被清空）
      */
     private suspend fun runCompaction(
         snapshot: PrefixSnapshot,
@@ -757,12 +749,27 @@ class ChatViewModel(
         windowTurns: List<Session.Turn>,
         leavingCount: Int,
         leftovers: List<Session.Turn>,
-        covers: List<Session.Turn>
+        covers: List<Session.Turn>,
+        showNotice: Boolean = true
     ): Boolean {
         if (windowTurns.isEmpty()) {
             advanceWatermark(covers)
             return false
         }
+        // 整理要几秒（一次模型请求，用户在等回复），必须在界面上给出运行提示，
+        // 否则"发了消息什么都不发生、过几秒才回"——用户实测反馈过看不到任何动静。
+        val noticeId = if (showNotice) counter++ else -1L
+        if (showNotice) {
+            append(
+                ChatUiMessage(
+                    id = noticeId,
+                    turnId = session.lastTurn()?.id ?: -1L,
+                    role = ROLE_NOTICE,
+                    text = "📦 正在整理上下文…"
+                )
+            )
+        }
+
         val out = compactor.compact(
             memoryText = snapshot.memoryText.ifBlank { null },
             bufferText = snapshot.bufferText.ifBlank { null },
@@ -771,23 +778,49 @@ class ChatViewModel(
             leftoverTurns = leftovers,
             diaryTags = diaryTags
         )
-        _contextStatus.update {
-            it.copy(
-                compactRequests = out.requests,
-                compactPromptTokens = out.usage?.promptTokens,
-                compactCachedTokens = out.usage?.cachedTokens
-            )
-        }
-        return if (out.error != null) {
+
+        if (out.error != null) {
             // 失败：不推进水位线（内容留着下次补），给用户一条可操作提示，回答照常
             failedCompactionBatch = covers
             _compactionNotice.value = CompactionNotice(
                 "📦 上下文整理失败（${out.error}）：最早的 ${covers.size} 轮还没整理。"
             )
-            false
-        } else {
-            advanceWatermark(covers)
-            true
+            if (showNotice) {
+                updateMessage(noticeId) {
+                    it.copy(
+                        text = "⚠️ 上下文整理失败（${out.error}）：这 ${covers.size} 轮先留着，" +
+                            "下次整理会一起补（回答不受影响）"
+                    )
+                }
+            }
+            return false
+        }
+
+        advanceWatermark(covers)
+        if (showNotice) {
+            updateMessage(noticeId) { it.copy(text = compactionDoneText(leavingCount, leftovers.size, out)) }
+        }
+        return true
+    }
+
+    /** 整理完成的提示文案（把用量直接写在气泡里——用户要求不要藏在要展开的状态行里） */
+    private fun compactionDoneText(
+        leavingCount: Int,
+        leftoverCount: Int,
+        out: ContextCompactor.Outcome
+    ): String {
+        val folded = if (leftoverCount > 0) "$leavingCount＋$leftoverCount（补整理）" else "$leavingCount"
+        val hit = out.usage?.let { u ->
+            val total = u.promptTokens ?: return@let null
+            val cached = u.cachedTokens ?: return@let null
+            if (total <= 0) null else (cached * 100 / total).coerceIn(0, 100)
+        }
+        return buildString {
+            append("🧩 上下文整理完成：最早 ").append(folded).append(" 轮已折进「进行中的事」")
+            if (!out.wrote) append("（这批没有值得记录的进展）")
+            append("｜").append(out.requests).append(" 次请求")
+            out.usage?.promptTokens?.let { append(" · ").append(it).append(" tokens") }
+            hit?.let { append(" · 缓存命中 ").append(it).append('%') }
         }
     }
 
@@ -1078,7 +1111,10 @@ class ChatViewModel(
                 try {
                     val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
                     val snapshot = snapshotStore.load() ?: rebuildSnapshotFromDb()
-                    runCompaction(snapshot, diaryTags, all, all.size, emptyList(), all)
+                    // showNotice=false：对话马上要被清空，插提示气泡没意义
+                    runCompaction(
+                        snapshot, diaryTags, all, all.size, emptyList(), all, showNotice = false
+                    )
                 } catch (_: Exception) {
                     // 整理失败不影响清空
                 }

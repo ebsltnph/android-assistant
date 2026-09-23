@@ -90,23 +90,23 @@ class UpdateBufferGuardTest {
         // 新增
         val add = tool.execute(
             args(
-                """{"items":[{"title":"零差探测器搭建","kind":"progress",
-                   "body":"已完成：光路对准；待办：锁腔","diary_ids":[252,260]}]}"""
+                """{"items":[{"title":"准备考试","kind":"progress",
+                   "body":"已完成：报名交费；待办：每天背 50 个单词","diary_ids":[252,260]}]}"""
             )
         )
         assertTrue(add is ToolOutcome.Success)
         val created = repo.all().single()
-        assertEquals("零差探测器搭建", created.title)
+        assertEquals("准备考试", created.title)
         assertEquals(listOf(252L, 260L), created.diaryIdList())
         assertTrue(created.source == BufferItemEntity.SOURCE_AUTO)
 
         // 改写同一条（带 id）：标题/正文更新，创建时间保留
         val edit = tool.execute(
-            args("""{"items":[{"id":${created.id},"title":"零差探测器搭建","body":"已完成：锁腔"}]}""")
+            args("""{"items":[{"id":${created.id},"title":"准备考试","body":"已完成：模考 120 分"}]}""")
         )
         assertTrue(edit is ToolOutcome.Success)
         val after = repo.all().single()
-        assertEquals("已完成：锁腔", after.body)
+        assertEquals("已完成：模考 120 分", after.body)
         assertEquals(created.createdAtEpochMillis, after.createdAtEpochMillis)
         assertEquals(created.id, after.id)
     }

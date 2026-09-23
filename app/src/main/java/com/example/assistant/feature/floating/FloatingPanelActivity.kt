@@ -109,6 +109,8 @@ import com.example.assistant.di.AppContainer
 import com.example.assistant.feature.chat.ChatUiMessage
 import com.example.assistant.feature.chat.ChatViewModel
 import com.example.assistant.feature.chat.MsgSegment
+import com.example.assistant.feature.chat.ROLE_NOTICE
+import androidx.compose.ui.text.style.TextAlign
 import com.example.assistant.ui.theme.AssistantTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -1086,6 +1088,21 @@ private fun MessageBubble(
     onRegenerate: () -> Unit,
     onDeleteTurn: () -> Unit
 ) {
+    // 系统提示行（上下文整理等）：居中淡色小字，与聊天页同款（见 ChatScreen.SystemNoticeRow）
+    if (msg.role == ROLE_NOTICE) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Text(
+                msg.text,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
+        return
+    }
     // （onRegenerate 参数为 () -> Unit，外层已绑定 msg.id）
     val isUser = msg.role == "user"
     val bubbleBg: Brush = if (isUser) PanelUserBubbleBrush else PanelAssistantBubbleBrush

@@ -434,16 +434,6 @@ private fun ContextStatusChip(status: ContextStatus) {
                     }
                     // 窗口为什么从这里起算：前缀变了/到上限/到字符上限（缓存的重置点）
                     status.windowReset?.let { append("\n窗口回落：").append(it) }
-                    // 上下文整理（压缩轮）的用量：**单独一行**，不计入上面"最近一轮对话"的合计
-                    if (status.compactRequests > 0) {
-                        append("\n📌 整理上下文：").append(status.compactRequests).append(" 次请求｜")
-                        if (status.compactPromptTokens == null) append("厂商未返回用量")
-                        else {
-                            append(status.compactPromptTokens).append(" tokens")
-                            status.compactCachedTokens?.let { append(" · 缓存命中 ").append(it) }
-                            status.compactHitPercent?.let { append("（").append(it).append("%）") }
-                        }
-                    }
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -480,6 +470,32 @@ private val AssistantBubbleBrush: Brush = Brush.verticalGradient(
 private val UserBubbleBorderColor = Color(0xFFE4B863).copy(alpha = 0.38f)
 private val AssistantBubbleBorderColor = Color.White.copy(alpha = 0.13f)
 
+/**
+ * 系统提示行（2026-09-23）：上下文整理这类**只上屏、不进模型上下文**的提示。
+ * 居中、淡背景、小字、可划词，不带气泡造型与操作按钮。
+ * 为什么不放状态行：状态行要点一下才展开，用户实测反馈"根本看不到整理发生了"。
+ */
+@Composable
+private fun SystemNoticeRow(text: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        SelectionContainer {
+            Text(
+                text,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.White.copy(alpha = 0.05f))
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            )
+        }
+    }
+}
+
 @Composable
 private fun MessageBubble(
     msg: ChatUiMessage,
@@ -492,6 +508,12 @@ private fun MessageBubble(
     onRegenerate: () -> Unit,
     onDeleteTurn: () -> Unit
 ) {
+    // 系统提示行（上下文整理）：居中淡色小字，不是气泡、没有操作按钮。
+    // 用户在实测里反馈"整理信息藏在要展开的状态行里根本看不到"，所以直接进对话流。
+    if (msg.role == ROLE_NOTICE) {
+        SystemNoticeRow(msg.text)
+        return
+    }
     val isUser = msg.role == "user"
     Row(
         modifier = Modifier.fillMaxWidth(),

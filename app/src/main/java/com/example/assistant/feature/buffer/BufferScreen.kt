@@ -199,7 +199,7 @@ fun BufferScreen(
 
         if (active.isEmpty() && archived.isEmpty()) {
             Text(
-                "这里还是空的。\n聊到持续几天的进展（在做实验、写代码、准备某个东西）时，" +
+                "这里还是空的。\n聊到会持续几天的进展（在准备考试、装修、跟一个项目…）时，" +
                     "助手会在上下文整理时自动记一条；需要盯一阵子的事（比如感冒）也记在这里。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -401,7 +401,7 @@ private fun BufferEditDialog(
                     value = t,
                     onValueChange = { t = it },
                     label = { Text("事项名") },
-                    placeholder = { Text("如：自由空间平衡零差探测器搭建") },
+                    placeholder = { Text("如：准备考试 / 装修进度 / 感冒") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )

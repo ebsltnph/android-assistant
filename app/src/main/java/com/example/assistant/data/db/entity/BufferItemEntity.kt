@@ -25,7 +25,7 @@ data class BufferItemEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     /** 类型：progress = 在办事项；watch = 需要盯一段时间的状态（见 [KIND_PROGRESS]/[KIND_WATCH]） */
     val kind: String = KIND_PROGRESS,
-    /** 事项名（如「自由空间平衡零差探测器搭建」「感冒」） */
+    /** 事项名（通用示例：「准备考试」「感冒」） */
     val title: String = "",
     /** 浓缩正文（已完成 / 待办 / 关键数据；专有名词与数值原样保留） */
     val body: String = "",
