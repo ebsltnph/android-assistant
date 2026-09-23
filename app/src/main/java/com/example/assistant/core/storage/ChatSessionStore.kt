@@ -27,7 +27,15 @@ data class StoredChat(
      * 压缩水位线（2026-09-17「进行中的事」）：**已折进缓冲区的最大轮 id**。
      * 未覆盖的轮（id 大于它）不会被动清理删除，留到下次上下文整理一起补（自愈）。
      */
-    val coveredThroughTurnId: Long = 0L
+    val coveredThroughTurnId: Long = 0L,
+    /**
+     * 离开窗口但**还没折进缓冲区**的轮（2026-09-23 补）。
+     *
+     * 为什么必须单独存：被窗口裁掉的轮会从 [turns] 里消失（turns 每轮按当前会话重建），
+     * 如果这次整理恰好跳过/失败，那批内容下次就再也找不回来了——用户实测踩到过
+     * （6 轮被裁剪后静默丢失）。存这里之后，下次整理会把它们当"补整理片段"一起带上。
+     */
+    val uncoveredTurns: List<StoredTurn> = emptyList()
 )
 
 @Serializable

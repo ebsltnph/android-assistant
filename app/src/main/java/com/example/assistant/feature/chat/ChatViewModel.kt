@@ -297,6 +297,16 @@ class ChatViewModel(
     /** 整理失败时记住的待整理轮（「重试」用；进程重启后由磁盘自愈兜底） */
     private var failedCompactionBatch: List<Session.Turn> = emptyList()
 
+    /**
+     * 离开窗口但**还没折进缓冲区**的轮（2026-09-23 补）。
+     *
+     * 用户实测踩到过一次真丢内容：字符软上限把 6 轮裁掉，但那次整理因"批次太短"跳过，
+     * 旧逻辑还把水位线推进了 → 6 轮既没进缓冲区也永远不会再整理。
+     * 现在：被裁掉且未覆盖的轮一律记在这里（并随会话快照持久化），
+     * 下次整理作为"补整理片段"一起带上；被覆盖后才从列表里移除。
+     */
+    private var uncoveredTurns: List<Session.Turn> = emptyList()
+
     /** 上下文整理失败的可操作提示（非阻塞：回答照常，这里只留一条提示让用户重试/放弃） */
     private val _compactionNotice = MutableStateFlow<CompactionNotice?>(null)
     val compactionNotice: StateFlow<CompactionNotice?> = _compactionNotice
@@ -723,6 +733,9 @@ class ChatViewModel(
         snapshot: PrefixSnapshot,
         diaryTags: List<String>
     ): Boolean {
+        // 先把"即将离开窗口且还没覆盖过"的轮记进待补列表——万一这次整理跳过或失败，
+        // 它们不会随窗口裁剪静默消失（用户实测踩过：6 轮被裁掉后内容永久丢失）
+        rememberUncovered(plan.willDrop)
         val leaving = plan.willDrop.filter { it.id > coveredThroughTurnId }
         val leftovers = collectLeftovers()
         val covers = (leaving + leftovers).distinctBy { it.id }.sortedBy { it.id }
@@ -771,7 +784,13 @@ class ChatViewModel(
                     _error.value = "当前没有对话可以整理"
                     return@launch
                 }
-                val covers = all.filter { it.id > coveredThroughTurnId }
+                val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
+                val snapshot = snapshotStore.load() ?: rebuildSnapshotFromDb()
+                val leftovers = collectLeftovers()
+                // 本次要整理的对象 = 窗口里还没覆盖的轮 + 之前漏掉的片段（补整理）
+                val covers = (all.filter { it.id > coveredThroughTurnId } + leftovers)
+                    .distinctBy { it.id }
+                    .sortedBy { it.id }
                 if (covers.isEmpty()) {
                     append(
                         ChatUiMessage(
@@ -783,9 +802,7 @@ class ChatViewModel(
                     )
                     return@launch
                 }
-                val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
-                val snapshot = snapshotStore.load() ?: rebuildSnapshotFromDb()
-                runCompaction(snapshot, diaryTags, all, all.size, collectLeftovers(), covers)
+                runCompaction(snapshot, diaryTags, all, all.size, leftovers, covers)
                 mergePrefixSnapshot()
                 refreshContextStatus()
             } catch (e: Exception) {
@@ -887,32 +904,74 @@ class ChatViewModel(
         if (turns.isEmpty()) return
         coveredThroughTurnId = maxOf(coveredThroughTurnId, turns.maxOf { it.id })
         failedCompactionBatch = failedCompactionBatch.filter { it.id > coveredThroughTurnId }
+        // 已覆盖的轮从"待补整理"里移除（剩下的继续等下次一起整理）
+        uncoveredTurns = uncoveredTurns.filter { it.id > coveredThroughTurnId }
         _compactionNotice.value = null
     }
 
+    /** 记住"离开窗口但还没整理"的轮（去重、按 id 升序、只留最近 MAX_LEFTOVER_TURNS 轮） */
+    private fun rememberUncovered(turns: List<Session.Turn>) {
+        val add = turns.filter { it.id > coveredThroughTurnId }
+        if (add.isEmpty()) return
+        uncoveredTurns = (uncoveredTurns + add)
+            .distinctBy { it.id }
+            .sortedBy { it.id }
+            .takeLast(MAX_LEFTOVER_TURNS)
+    }
+
     /**
-     * 之前没整理成功、已经离开窗口的轮（自愈用）：
-     *  - 内存里记住的失败批次（本次进程内重试最快）；
-     *  - 会话快照文件里 id 大于水位线、且已不在当前窗口里的轮（进程重启后的兜底）。
+     * 之前没整理成功、已经离开窗口的轮（自愈用），四个来源按优先级合并去重：
+     *  1. 内存里记的待补列表 [uncoveredTurns]（本次进程内最准）；
+     *  2. 内存里记的失败批次 [failedCompactionBatch]；
+     *  3. 会话快照文件里的 uncoveredTurns（进程重启后的兜底）；
+     *  4. **界面消息里能重建出来的轮**——这一条专门捞"旧版本静默丢掉的那些"：
+     *     只要气泡还在聊天界面上（属于同一轮的消息、轮号大于水位线、不在当前窗口里），
+     *     就能把用户消息 + 助手正文重新拼回一轮，交给整理补上。
      * 上限 [MAX_LEFTOVER_TURNS] 轮，防一次带太多把上下文撑爆。
      */
     private suspend fun collectLeftovers(): List<Session.Turn> {
         val live = session.allTurns().map { it.id }.toSet()
         val fromDisk = withContext(Dispatchers.IO) {
             val snap = sessionStore.load() ?: return@withContext emptyList()
-            snap.turns
-                .filter { it.id > coveredThroughTurnId && it.id !in live }
-                .map { st ->
-                    session.turnFromStored(
-                        st.id, st.userText, st.imagePath, st.assistant, st.createdAt, st.notices
-                    )
-                }
+            // 3) 老快照没有 uncoveredTurns 字段 → 退回用 turns 里"已出窗口且未覆盖"的那些
+            (snap.uncoveredTurns + snap.turns.filter { it.id !in live }).map { st ->
+                session.turnFromStored(
+                    st.id, st.userText, st.imagePath, st.assistant, st.createdAt, st.notices
+                )
+            }
         }
-        return (failedCompactionBatch + fromDisk)
+        return (uncoveredTurns + failedCompactionBatch + fromDisk + turnsRebuiltFromUi())
             .distinctBy { it.id }
             .filter { it.id > coveredThroughTurnId && it.id !in live }
             .sortedBy { it.id }
             .takeLast(MAX_LEFTOVER_TURNS)
+    }
+
+    /**
+     * 从聊天界面消息重建"已离开窗口但气泡还在"的轮（第 4 个来源，见 [collectLeftovers]）。
+     * 只用于补整理；时间戳用该轮最早一条界面消息的创建时刻补齐（整理片段里要靠它排序）。
+     */
+    private fun turnsRebuiltFromUi(): List<Session.Turn> {
+        val live = session.allTurns().map { it.id }.toSet()
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA)
+        return _messages.value
+            .filter { it.turnId > coveredThroughTurnId && it.turnId !in live }
+            .groupBy { it.turnId }
+            .map { (turnId, msgs) ->
+                val user = msgs.firstOrNull { it.role == "user" }
+                val at = user?.createdAt ?: msgs.minOf { it.createdAt }
+                val raw = user?.text?.trim().orEmpty()
+                session.turnFromStored(
+                    id = turnId,
+                    userText = raw.ifEmpty { null }?.let { t ->
+                        if (at > 0L) "[" + fmt.format(java.util.Date(at)) + "] " + t else t
+                    },
+                    imagePath = null,
+                    assistantTexts = msgs.filter { it.role == "assistant" }.map { it.spokenBody() },
+                    createdAt = at
+                )
+            }
+            .sortedBy { it.id }
     }
 
     /**
@@ -1169,9 +1228,12 @@ class ChatViewModel(
                 try {
                     val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
                     val snapshot = snapshotStore.load() ?: rebuildSnapshotFromDb()
+                    // 顺带把之前"没整理成功"的片段也一起整理（否则清空会让它们彻底消失）
+                    val leftovers = collectLeftovers()
+                    val covers = (all + leftovers).distinctBy { it.id }.sortedBy { it.id }
                     // showNotice=false：对话马上要被清空，插提示气泡没意义
                     runCompaction(
-                        snapshot, diaryTags, all, all.size, emptyList(), all, showNotice = false
+                        snapshot, diaryTags, all, all.size, leftovers, covers, showNotice = false
                     )
                 } catch (_: Exception) {
                     // 整理失败不影响清空
@@ -1185,6 +1247,7 @@ class ChatViewModel(
             )
             coveredThroughTurnId = 0L
             failedCompactionBatch = emptyList()
+            uncoveredTurns = emptyList()
             _compactionNotice.value = null
             // 会话已空：快照按数据库最新内容重渲染（没有轮可挂通知），并清掉会话文件
             rebuildAndSaveSnapshot()
@@ -1214,6 +1277,10 @@ class ChatViewModel(
         val snap = sessionStore.load() ?: return
         if (snap.turns.isEmpty() && snap.messages.isEmpty()) return
         coveredThroughTurnId = snap.coveredThroughTurnId
+        // 待补整理的轮（离开窗口但还没折进缓冲区）：恢复到内存，下次整理一起带上
+        uncoveredTurns = snap.uncoveredTurns.map { st ->
+            session.turnFromStored(st.id, st.userText, st.imagePath, st.assistant, st.createdAt, st.notices)
+        }
 
         // 旧快照没有 createdAt 字段（2026-09-17 之前）：回退到 userText 的 [时间] 前缀，
         // 再不行用快照保存时刻；解析不出来的轮记 0 = 未知（清理逻辑一律保留，不误删）
@@ -1285,16 +1352,8 @@ class ChatViewModel(
         val snapshot = StoredChat(
             savedAt = System.currentTimeMillis(),
             coveredThroughTurnId = coveredThroughTurnId,
-            turns = turns.map { t ->
-                StoredTurn(
-                    id = t.id,
-                    userText = t.userText,
-                    imagePath = t.imagePath,
-                    assistant = t.assistant.map { it.textContent },
-                    createdAt = t.createdAt,
-                    notices = t.notices.toList()
-                )
-            },
+            uncoveredTurns = uncoveredTurns.takeLast(ChatSessionStore.MAX_TURNS).map { t -> t.toStored() },
+            turns = turns.map { it.toStored() },
             messages = ui.map { m ->
                 StoredUiMessage(
                     id = m.id,
@@ -1409,6 +1468,16 @@ class ChatViewModel(
         val text = turn.userText ?: return null
         return text.replaceFirst(TIMESTAMP_PREFIX, "")
     }
+
+    /** 一轮 → 持久化 DTO（会话轮与"待补整理的轮"共用） */
+    private fun Session.Turn.toStored(): StoredTurn = StoredTurn(
+        id = id,
+        userText = userText,
+        imagePath = imagePath,
+        assistant = assistant.map { it.textContent },
+        createdAt = createdAt,
+        notices = notices.toList()
+    )
 
     /**
      * 执行命令类意图（目前仅识屏关键词直连）。
