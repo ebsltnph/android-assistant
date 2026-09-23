@@ -107,7 +107,13 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     // 点击清晨简报通知进入：直接弹最新简报
     val notifyBriefing by AppSharedState.briefingText.collectAsState()
     var briefingDialog by rememberSaveable { mutableStateOf<String?>(null) }
-    var summaryDialog by rememberSaveable { mutableStateOf<DailySummaryEntity?>(null) }
+    // ⚠️ 这里**不能**用 rememberSaveable：DailySummaryEntity 不是 Bundle 能存的类型
+    // （kotlinx @Serializable 不等于 java.io.Serializable / Parcelable），
+    // 弹窗开着时系统保存状态会抛
+    // "IllegalStateException: MutableState(value=DailySummaryEntity…) cannot be saved using
+    // the current SaveableStateRegistry" 直接崩进程（2026-09-22 08:05 真机 logcat 实锤）。
+    // 弹窗状态不需要跨进程重建保留：用普通 remember。
+    var summaryDialog by remember { mutableStateOf<DailySummaryEntity?>(null) }
     LaunchedEffect(notifyBriefing) {
         if (notifyBriefing != null) {
             briefingDialog = notifyBriefing

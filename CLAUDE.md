@@ -302,7 +302,13 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **⑩ 备份**：`bufferItems` **进备份**（会话不进备份，而它是会话蒸馏后唯一的留存物，恢复后不可再生；冻结快照不进——可从条目重渲染）；`BackupSettings` 增 4 个键；恢复预览显示「进行中的事 N 条」。
   - **行为变化（要写进发布说明）**：模型新写入的记忆/状态**先进对话，下一次上下文整理才并入注入块**（记忆页与「进行中的事」页始终显示最新）；升级后**第一次请求会断一次缓存**（工具手册多了 `update_buffer` 的契约 + 新增状态块 `messages[3]`）。
   - **测试**：新增 `WindowPlanTest`(7) / `NoticeTest`(5) / `BufferRendererTest`(9) / `UpdateBufferGuardTest`(7)，`SessionRetentionTest` 扩到 9 例（含水位线两例）——全套 **76 例**通过。**真机验证清单**见方案文档第 10 节（连续 20+ 轮看命中率与回落点、压缩点出现条目、手动改记忆后模型立刻知道且不回落、断网触发整理失败、备份恢复、冷启动）。
-  - **待办**：真机验证（用户 2026-09-18 测）；版本号按新功能走 **1.8.0 / code 15**（发布时才改）。
+  - **待办**：真机验证（2026-09-23 装机完成，静态验证通过：DB v9 + buffer_items 建表 + 记忆 36/日记 279/提醒 7/会话 15 轮全在 + prefix_snapshot.json 已生成 1762 字记忆快照；**UI 交互测试待用户手测**）；版本号按新功能走 **1.8.0 / code 15**（发布时才改）。
+- [x] **崩溃修复：首页「昨日小结」弹窗状态不能用 `rememberSaveable`**（2026-09-23，真机 logcat 实锤 + 已修复装机）
+  - **现象**：2026-09-22 08:05 用户手机上一次真实崩溃——`IllegalStateException: MutableState(value=DailySummaryEntity(id=70, …))@… cannot be saved using the current SaveableStateRegistry. The default implementation only supports types which can be stored inside the Bundle.`
+  - **根因**：`HomeScreen` 的 `var summaryDialog by rememberSaveable { mutableStateOf<DailySummaryEntity?>(null) }`——`DailySummaryEntity` 虽带 kotlinx `@Serializable`，但**不是** `java.io.Serializable`/`Parcelable`，Bundle 存不了；弹窗开着时系统保存状态（Home 键/ROM 回收重建）即崩进程。
+  - **修复**：改用普通 `remember`（弹窗状态不需要跨进程重建保留）。全项目其余 13 处 `rememberSaveable` 都是 Boolean/Int/String/enum（enum 实现 java.io.Serializable，安全），只有这一处踩雷。
+  - **教训**：`rememberSaveable` 只放 Bundle 能装的类型（基本类型/String/Parcelable/java.io.Serializable/enum）；Room 实体与 kotlinx `@Serializable` 类一律用 `remember`，或退化成存 id/文本。
+- [ ] P7 真·唤醒词（可选）
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细开发计划见本机 `.claude/plans/` 目录（未入库）。
