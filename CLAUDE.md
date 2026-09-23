@@ -287,7 +287,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **0 = 不留存**语义不变（用户确认过）：只停止写文件、屏幕上的对话继续保留（要清空用聊天页删除按钮）。设置页与使用说明的文案同步改成"超过天数、且已不在上下文里的对话会自动删除"
   - **测试**：新增 `app/src/test/.../feature/chat/SessionRetentionTest.kt`（6 例）：过期且出窗口才删 / 过期但还在上下文里保留 / 出窗口但未过期保留 / 时间未知不删 / 正好卡在截止时刻算过期 / 旧快照时间戳前缀回退解析——全套 **45 例**通过
 - [x] **v1.7.2 发布**（2026-09-17）：版本号 1.7.1 → **1.7.2 / code 14**（PATCH：纯修复 + 行为修正，无新功能）。发布内容 = 三项修正（缓存窗口回落条件补全 / 「已执行」重复显示修复 / 命中率改按整轮算）+ 会话记录保留自动清理重做 + 会话记录时间戳落盘。提交 `2fcc5a5`，GitHub Release **v1.7.2**（Latest）已附 `app-release.apk`（**14,261,992 字节**，sha256 `8489cb4f3377e7c749c09f6ba798aa343679b2280c13774cf0e2591d024a2f9c`，与本地构建产物逐字节一致；target = `2fcc5a5ab71f2ea6feb5fee2d3fb65c36f5b9183`）。**发布坑复现**：`gh release create --target <短SHA>` 报 `HTTP 422 Release.target_commitish is invalid`——必须传**完整 40 位 SHA**（v1.7.1 时踩过同一个坑）；`git push` 仍需 `-c http.sslBackend=openssl` + socks5 + **danger-full-access 提权**
-- [x] **「进行中的事」缓冲区 + 粘性通知（前缀冻结与上下文整理）**（2026-09-17 编码完成，编译 + **76 个单测全绿**，**待真机验证**；方案文档 `.claude/plans/2026-09-17-进行中的事-粘性通知与上下文整理.md`）
+- [x] **「进行中的事」缓冲区 + 粘性通知（前缀冻结与上下文整理）**（2026-09-23 真机验证通过，**已随 v1.8.0 / code 15 发布**；方案文档 `.claude/plans/2026-09-17-进行中的事-粘性通知与上下文整理.md`）
   - **一句话设计**：**前缀四块（外壳 / 工具手册 / 记忆 / 状态）只在「窗口回落流程」里重建；其余一切变更都以「追加到会话尾部的通知」表达。** 两次合并之间前缀逐字节不变 ⇒ 提示词缓存全程命中；回落点付的那一次未命中，同时完成「缓冲区更新 + 快照刷新 + 窗口裁剪」。
   - **需求来源**：用户提出「缓冲记忆区」——介于长期记忆（永久、精炼、被动）与日记（流水）之间的第三层：**一段时间内成立、会过期的状态**（在办事项进度、需要盯一阵子的事如感冒）。多轮讨论后定稿（用户逐条拍板：走注入路线、只在回落点更新、同一链路压缩、不做自动 TTL、不做模型侧即时写入、删除/归档同样走通知、压缩用量单列一行）。
   - **① 冻结快照（本方案最关键的新增状态）**：`core/storage/PrefixSnapshotStore.kt` → `filesDir/prefix_snapshot.json` 存 `memoryText` + `bufferText`。原先 `runTurn` 每轮现读 `memoryRepository.memoryContextText()`，用户一改记忆前缀立刻断；现在**注入文本只在"合并点"重渲染**（数据库仍是页面真相）。缺失（首装/升级/损坏）时从数据库渲染一次（文本与旧行为一致，不额外断前缀）。
@@ -302,13 +302,20 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **⑩ 备份**：`bufferItems` **进备份**（会话不进备份，而它是会话蒸馏后唯一的留存物，恢复后不可再生；冻结快照不进——可从条目重渲染）；`BackupSettings` 增 4 个键；恢复预览显示「进行中的事 N 条」。
   - **行为变化（要写进发布说明）**：模型新写入的记忆/状态**先进对话，下一次上下文整理才并入注入块**（记忆页与「进行中的事」页始终显示最新）；升级后**第一次请求会断一次缓存**（工具手册多了 `update_buffer` 的契约 + 新增状态块 `messages[3]`）。
   - **测试**：新增 `WindowPlanTest`(7) / `NoticeTest`(5) / `BufferRendererTest`(9) / `UpdateBufferGuardTest`(7)，`SessionRetentionTest` 扩到 9 例（含水位线两例）——全套 **76 例**通过。**真机验证清单**见方案文档第 10 节（连续 20+ 轮看命中率与回落点、压缩点出现条目、手动改记忆后模型立刻知道且不回落、断网触发整理失败、备份恢复、冷启动）。
-  - **待办**：真机验证（2026-09-23 装机完成，静态验证通过：DB v9 + buffer_items 建表 + 记忆 36/日记 279/提醒 7/会话 15 轮全在 + prefix_snapshot.json 已生成 1762 字记忆快照；**UI 交互测试待用户手测**）；版本号按新功能走 **1.8.0 / code 15**（发布时才改）。
+  - **真机验证（2026-09-23）**：DB v9 迁移成功且原有数据完整（记忆 36 / 日记 279 / 提醒 7）；`prefix_snapshot.json` 正常生成（记忆快照 1762 字）；自动整理在轮数超上限时触发并写入条目（实测 `coveredThroughTurnId` 25→42、条目含 `source=auto` 的自动条目）；手动「立即整理」实测成功（提示行：`🧩 上下文整理完成：最早 1 轮已折进「进行中的事」｜1 次请求 · 4629 tokens · 缓存命中 41%`）。
+  - **实测反馈后的四处收紧（同日）**：① 整理信息原本藏在"要点开才展开"的状态行里 → **移到对话里**（`role=notice` 提示行：正在整理/完成+用量/失败+原因），并补上原先漏做的**运行中提示**；② 提示词加**收录标准**（只记状态不记见闻、body 一两句 100 字内、细节挂 diary_ids）——用户实测模型把参观细节/名录写进了条目；③ **批次太短时不再推进水位线**（否则那批永远不再整理 = 静默丢内容，用户实测丢了 6 轮）；④ 新增**手动触发**入口。
+  - **⚠️ 静默丢内容的完整修复（值得记住）**：老逻辑"批次字符量 < 阈值就跳过"**同时推进了水位线** → 被裁掉的轮既没进缓冲区、也不会再补整理。补完四路来源：内存 `uncoveredTurns` + 随快照持久化 `StoredChat.uncoveredTurns` + 失败批次 + **从聊天界面消息重建**（捞旧版本丢掉的那些轮）；清空对话时也会先整理待补片段。教训：**任何"跳过/失败"都不能推进覆盖水位线**，且被裁掉的轮必须单独留存（`turns` 每轮按当前会话重建，裁掉就没了）。
+  - **行为变化**：模型新写入的记忆/状态先出现在对话里，下一次上下文整理才并入注入块（记忆页与「进行中的事」页始终显示最新）；升级后第一次请求断一次缓存（手册新增 `update_buffer` 契约 + 新增状态块）。
+  - **审出来的并发坑（已修）**：上下文整理请求走对话链路，却没套用"不支持图片时把历史图片换成文字"的规则 → 纯文本对话模型下只要窗口里有历史图，整理请求每次 HTTP 400、永久失败（`Agent.messagesForCapability` 统一两条路径）。
+  - **设置项**（均已进备份）：`buffer_enabled`(true) / `buffer_inject_char_limit`(1200) / `buffer_inject_max_items`(15) / `buffer_compact_min_chars`(2000)。用户偏好：**宁可少回落**（已自行调大上下文上限），因此自动整理更依赖"回落点"，手动按钮是主要补偿手段。
 - [x] **崩溃修复：首页「昨日小结」弹窗状态不能用 `rememberSaveable`**（2026-09-23，真机 logcat 实锤 + 已修复装机）
   - **现象**：2026-09-22 08:05 用户手机上一次真实崩溃——`IllegalStateException: MutableState(value=DailySummaryEntity(id=70, …))@… cannot be saved using the current SaveableStateRegistry. The default implementation only supports types which can be stored inside the Bundle.`
   - **根因**：`HomeScreen` 的 `var summaryDialog by rememberSaveable { mutableStateOf<DailySummaryEntity?>(null) }`——`DailySummaryEntity` 虽带 kotlinx `@Serializable`，但**不是** `java.io.Serializable`/`Parcelable`，Bundle 存不了；弹窗开着时系统保存状态（Home 键/ROM 回收重建）即崩进程。
   - **修复**：改用普通 `remember`（弹窗状态不需要跨进程重建保留）。全项目其余 13 处 `rememberSaveable` 都是 Boolean/Int/String/enum（enum 实现 java.io.Serializable，安全），只有这一处踩雷。
   - **教训**：`rememberSaveable` 只放 Bundle 能装的类型（基本类型/String/Parcelable/java.io.Serializable/enum）；Room 实体与 kotlinx `@Serializable` 类一律用 `remember`，或退化成存 id/文本。
-- [ ] P7 真·唤醒词（可选）
+- [x] **v1.8.0 发布**（2026-09-23）：版本号 1.7.2 → **1.8.0 / code 15**（MINOR：新功能 + 新增数据库表 v9）。发布内容 = 「进行中的事」缓冲区（第三层记忆）+ 上下文整理 + 前缀冻结快照 + 粘性通知 + 手动整理入口 + 独立页面；首页「昨日小结」弹窗崩溃修复；每日小结/清晨简报失败给原因并 15 分钟自动重试一次；整理请求图片规则修复；离窗口未整理内容不再静默丢失。提交 `7977dff`，GitHub Release **v1.8.0**（Latest）已附 `app-release.apk`（**14,360,296 字节**，sha256 `816cf9640d1d6cc785208e43eede679020bfa77a3e48998cee65241681847f52`，与本地构建产物一致；target = `7977dffeab797eccfcceaafc09559dd79aeea706`）。
+  - ⚠️ **上传附件的代理坑（本次踩到，重要）**：`gh release create/upload` **不要设 HTTPS_PROXY**——本地 Clash 代理下 `uploads.github.com` 首字节要 **5.8s**（直连 0.77s），14MB 的 APK 传了 10 分钟没完成（表现为"卡死"）。实测本机 GitHub **直连完全通**（api 0.30s），去掉代理后同一个附件 **14 秒**传完。`git push` 相反：仍要 socks5 代理 + openssl 后端 + 提权（sh.exe 命名管道）。定位这类问题用 **python（urllib 分别走直连/代理）**——Windows 的 `curl.exe` 走 schannel，在沙箱里一律 TLS 失败（code=000），**不能用它判断网络通不通**。
+  - ⚠️ **`gh release create` 被中断会留下「Draft + 空资产」的 Release**：直接 `gh release upload <tag> <apk> --clobber` + `gh release edit <tag> --draft=false --latest` 补完即可（草稿对外不可见，不算半成品上线）。
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细开发计划见本机 `.claude/plans/` 目录（未入库）。
