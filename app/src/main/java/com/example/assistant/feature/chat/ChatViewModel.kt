@@ -731,11 +731,69 @@ class ChatViewModel(
             advanceWatermark(covers)
             return false
         }
-        if (covers.sumOf { it.charWeight() } < compactMinChars) {
-            advanceWatermark(covers)
+        val weight = covers.sumOf { it.charWeight() }
+        if (weight < compactMinChars) {
+            // 太短：视为「不值得现在整理」，但**不推进水位线**——这批会作为"漏掉的片段"
+            // 留到下次整理一起带上（自愈，见 collectLeftovers），内容不会静默丢掉。
+            // 代价：在被覆盖之前，保留天数清理不会删它们（expiredTurnIds 的第三条件）。
+            // 只在真的发生窗口回落时提示，避免冷启动等场景刷屏。
+            if (plan.trigger != Session.WindowTrigger.NONE) {
+                append(
+                    ChatUiMessage(
+                        id = counter++,
+                        turnId = session.lastTurn()?.id ?: -1L,
+                        role = ROLE_NOTICE,
+                        text = "🧩 窗口回落：这 ${covers.size} 轮较短（约 $weight 字），本次跳过整理、" +
+                            "留到下次一起整理（整理阈值可在 设置 → 进行中的事 里调低）"
+                    )
+                )
+            }
             return false
         }
         return runCompaction(snapshot, diaryTags, session.allTurns(), plan.willDrop.size, leftovers, covers)
+    }
+
+    /**
+     * 「立即整理当前对话」：用户手动触发一次上下文整理（2026-09-23 补）。
+     *
+     * 为什么需要：自动整理只在**窗口回落**时发生——轮数超过上限（默认 20）或触发字符软上限；
+     * 而字符软上限那次会把窗口裁到很少几轮，重新累积到 21 轮又要聊很久。
+     * 手动触发不受「批次太短就跳过」的限制（用户明确要求整理），结果照常进缓冲区与注入快照。
+     */
+    fun compactNow() {
+        if (_isStreaming.value) return
+        scope.launch {
+            _isStreaming.value = true
+            _error.value = null
+            try {
+                val all = session.allTurns()
+                if (all.isEmpty()) {
+                    _error.value = "当前没有对话可以整理"
+                    return@launch
+                }
+                val covers = all.filter { it.id > coveredThroughTurnId }
+                if (covers.isEmpty()) {
+                    append(
+                        ChatUiMessage(
+                            id = counter++,
+                            turnId = all.last().id,
+                            role = ROLE_NOTICE,
+                            text = "🧩 当前这段对话已经整理过了（要继续整理请先多聊几轮，或先清空对话）"
+                        )
+                    )
+                    return@launch
+                }
+                val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
+                val snapshot = snapshotStore.load() ?: rebuildSnapshotFromDb()
+                runCompaction(snapshot, diaryTags, all, all.size, collectLeftovers(), covers)
+                mergePrefixSnapshot()
+                refreshContextStatus()
+            } catch (e: Exception) {
+                _error.value = "上下文整理出错：${e.message}"
+            } finally {
+                _isStreaming.value = false
+            }
+        }
     }
 
     /**

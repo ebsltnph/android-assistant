@@ -22,6 +22,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -64,13 +65,21 @@ class BufferViewModel(
     private val bufferRepository: BufferRepository,
     private val diaryRepository: DiaryRepository,
     /** 改动 → 写一条粘性通知（由 ChatViewModel 实现，见 notifyManualChange） */
-    private val notify: (String) -> Unit
+    private val notify: (String) -> Unit,
+    /** 「立即整理当前对话」→ 交给 ChatViewModel 跑一次压缩（结果提示会出现在聊天页） */
+    private val compactNow: () -> Unit
 ) : ViewModel() {
 
     val items: StateFlow<List<BufferItemEntity>> = bufferRepository.items
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val message = MutableStateFlow<String?>(null)
+
+    /** 手动触发一次整理（自动整理要等窗口回落，想立刻看效果就用它） */
+    fun requestCompaction() {
+        compactNow()
+        message.value = "🔄 正在整理当前对话…（结果显示在聊天页）"
+    }
 
     fun add(title: String, body: String, kind: String) {
         val t = title.trim()
@@ -145,7 +154,8 @@ fun BufferScreen(
         BufferViewModel(
             bufferRepository = container.bufferRepository,
             diaryRepository = container.diaryRepository,
-            notify = { detail -> container.chatViewModel.notifyManualChange(detail) }
+            notify = { detail -> container.chatViewModel.notifyManualChange(detail) },
+            compactNow = { container.chatViewModel.compactNow() }
         )
     }
     val all by vm.items.collectAsState()
@@ -194,6 +204,18 @@ fun BufferScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+
+        // 手动整理：自动整理只在对话窗口回落时发生（轮数超过上限，或字符数到软上限），
+        // 想立刻看效果就点这里——结果提示会出现在聊天页
+        OutlinedButton(
+            onClick = { vm.requestCompaction() },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+        ) {
+            Text(
+                "🔄 立即整理当前对话",
+                style = MaterialTheme.typography.labelLarge
             )
         }
 
