@@ -328,6 +328,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **单轮输出加长**：聊天流式 `max_tokens` 4096 → **8192**（`Agent.CHAT_MAX_TOKENS`）；4096 时偶尔 `finish_reason=length` 截断回答。
   - **性能/健壮性**：`Turn.charWeight()` 不再走 `messages()`（原先 `planWindow` 每轮为算字符当量把每张图读盘+base64，现只 `File.exists`）；`Session.imagePartOf` 加**按 mtime 失效、上限 12 条**的缓存；`regenerate` 在 `clearAssistant` **之前**捕获"这一轮是否有图"（含 `assistantImagePaths`），避免带图轮重做走纯文本档案；`ReadDiaryImageTool` 可用性判断含 `isConfigured()`。
   - **测试**：`SessionAndDiaryGuardTest` 扩到覆盖多图/两档保留/工具注入图保留与三表对齐 —— 全套 **84 例**通过。装机：`adb install -r` 覆盖安装，启动无 FATAL。子 agent 审查后按报告修了文件名碰撞、主线程读图、角色漂移、路径校验等，复核确认可发布。
+  - **v1.8.1 发布**（2026-10-05）：版本号 1.8.0 → **1.8.1 / code 16**（PATCH，用户指定；按项目此前"有新功能 = MINOR"的约定严格说该记 MINOR，用户拍板 1.8.1）。提交 `8fdb0a0`，GitHub Release **v1.8.1**（Latest）已附 `app-release.apk`（**14,376,680 字节**，sha256 `f22b25bab98aa461a047135a0139ff861ddaf8c0f680bc25b207d800c5940a97`，与本地构建产物一致；target = `8fdb0a0d9a4bf985333b64777750d6a9a29874af`）。**推送坑复现**：workspace-write 下 `git push` 报 `sh.exe couldn't create signal pipe, Win32 error 5` + `could not read Username`；提权（danger-full-access）+ 仓库级 `credential.helper='!gh auth git-credential'` + `-c http.sslBackend=openssl` + socks5 代理后成功。⚠️ 提权那次 pwsh 会把 git 的 stderr 当成 NativeCommandError 报 **exit code 1**，但输出里有 `e31543f..8fdb0a0 master -> master` 即代表推送成功（别被退出码骗了）。`gh release create` 仍走**直连**（不设 HTTPS_PROXY），11.5s 内完成。
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细开发计划见本机 `.claude/plans/` 目录（未入库）。
