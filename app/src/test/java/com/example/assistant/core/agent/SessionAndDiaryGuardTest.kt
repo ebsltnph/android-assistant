@@ -21,48 +21,85 @@ class SessionAndDiaryGuardTest {
     @Test
     fun `keep 0 keeps the current image`() {
         val s = Session()
-        s.beginTurn("看图", "/tmp/a.jpg")
+        s.beginTurn("看图", listOf("/tmp/a.jpg"))
         s.enforceImageRetention(0)
-        assertEquals("/tmp/a.jpg", s.lastTurn()!!.imagePath)
+        assertEquals(listOf("/tmp/a.jpg"), s.lastTurn()!!.imagePaths)
     }
 
     @Test
-    fun `keep 0 keeps only the newest image`() {
+    fun `keep 0 keeps all images of the current turn`() {
         val s = Session()
-        s.beginTurn("图1", "/tmp/a.jpg")
-        s.beginTurn("图2", "/tmp/b.jpg")
+        s.beginTurn("图1", listOf("/tmp/a.jpg"))
+        s.beginTurn("图2", listOf("/tmp/b.jpg", "/tmp/c.jpg"))
         s.enforceImageRetention(0)
-        assertEquals(null, s.allTurns()[0].imagePath)
-        assertEquals("/tmp/b.jpg", s.allTurns()[1].imagePath)
+        assertEquals(emptyList<String>(), s.allTurns()[0].imagePaths)
+        assertEquals(listOf("/tmp/b.jpg", "/tmp/c.jpg"), s.allTurns()[1].imagePaths)
     }
 
     @Test
     fun `keep 0 drops the image once a text turn starts`() {
         val s = Session()
-        s.beginTurn("图1", "/tmp/a.jpg")
+        s.beginTurn("图1", listOf("/tmp/a.jpg"))
         s.enforceImageRetention(0)
         s.beginTurn("那张图里写了什么")
         s.enforceImageRetention(0)
-        assertEquals(null, s.allTurns()[0].imagePath)
+        assertEquals(emptyList<String>(), s.allTurns()[0].imagePaths)
     }
 
     @Test
-    fun `keep 1 keeps the last image even after a text turn`() {
+    fun `legacy keep 1 is treated as current-turn-only`() {
+        // 旧的"最近 1 张"中间档已删除：任何正数都按「仅当前轮」处理（防止升级后行为错乱）
         val s = Session()
-        s.beginTurn("图1", "/tmp/a.jpg")
+        s.beginTurn("图1", listOf("/tmp/a.jpg"))
         s.beginTurn("那张图里写了什么")
         s.enforceImageRetention(1)
-        assertEquals("/tmp/a.jpg", s.allTurns()[0].imagePath)
+        assertEquals(emptyList<String>(), s.allTurns()[0].imagePaths)
+    }
+
+    @Test
+    fun `keep 0 drops tool-injected images on later turns`() {
+        // 工具注入的日记图片（read_diary_image）与用户图片同一套保留策略
+        val s = Session()
+        val id = s.beginTurn("看看日记里的图")
+        s.appendToolResult(id, "[结果] 图片已附上", listOf("/tmp/d1.jpg", "/tmp/d2.jpg"))
+        s.enforceImageRetention(0)   // 当前轮：保留
+        assertEquals(1, s.lastTurn()!!.assistantImagePaths.count { it.isNotEmpty() })
+        s.beginTurn("下一轮")
+        s.enforceImageRetention(0)   // 历史轮：清空
+        assertEquals(0, s.allTurns()[0].assistantImagePaths.count { it.isNotEmpty() })
+    }
+
+    @Test
+    fun `keep -1 keeps tool-injected images across turns`() {
+        val s = Session()
+        val id = s.beginTurn("看看日记里的图")
+        s.appendToolResult(id, "[结果] 图片已附上", listOf("/tmp/d1.jpg"))
+        s.beginTurn("下一轮")
+        s.enforceImageRetention(-1)
+        assertEquals(1, s.allTurns()[0].assistantImagePaths.count { it.isNotEmpty() })
+    }
+
+    @Test
+    fun `assistant and assistantImagePaths stay aligned`() {
+        val s = Session()
+        val id = s.beginTurn("问题")
+        s.appendAssistant(id, com.example.assistant.core.network.dto.ChatMessage("assistant", "回答"))
+        s.appendToolResult(id, "[结果] 有图", listOf("/tmp/d1.jpg"))
+        s.appendAssistant(id, com.example.assistant.core.network.dto.ChatMessage("assistant", "最终"))
+        val t = s.allTurns().single()
+        assertEquals(t.assistant.size, t.assistantImagePaths.size)
+        assertEquals(3, t.assistant.size)
+        assertEquals(listOf("/tmp/d1.jpg"), t.assistantImagePaths[1])
     }
 
     @Test
     fun `keep -1 keeps everything`() {
         val s = Session()
-        s.beginTurn("图1", "/tmp/a.jpg")
-        s.beginTurn("图2", "/tmp/b.jpg")
-        s.beginTurn("图3", "/tmp/c.jpg")
+        s.beginTurn("图1", listOf("/tmp/a.jpg"))
+        s.beginTurn("图2", listOf("/tmp/b.jpg"))
+        s.beginTurn("图3", listOf("/tmp/c.jpg"))
         s.enforceImageRetention(-1)
-        assertEquals(3, s.allTurns().count { it.imagePath != null })
+        assertEquals(3, s.allTurns().count { it.imagePaths.isNotEmpty() })
     }
 
     // ---- bug 2：改日记前的正文核对 ----

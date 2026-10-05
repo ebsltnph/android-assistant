@@ -11,7 +11,16 @@ import kotlinx.serialization.json.contentOrNull
  * 成功给确认信息与数据，失败给**可纠正的错误原因**（模型可修参数重试）。
  */
 sealed interface ToolOutcome {
-    data class Success(val feedback: String) : ToolOutcome
+    /**
+     * @param images 需要**注入对话**的图片本地路径（目前只有 read_diary_image 用）。
+     *        普通文本工具留空；Agent 检测到非空后会把图片作为 image part 塞进这一轮结果消息，
+     *        并把后续请求切到「识屏（视觉）」档案，让主模型亲眼看（见 Agent.chatReplyFlow）。
+     */
+    data class Success(
+        val feedback: String,
+        val images: List<String> = emptyList()
+    ) : ToolOutcome
+
     data class Failure(val error: String) : ToolOutcome
 }
 

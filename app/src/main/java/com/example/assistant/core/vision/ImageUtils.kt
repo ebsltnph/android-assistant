@@ -20,6 +20,9 @@ object ImageUtils {
     /** 视觉模型输入的最大宽度（等比缩放，超过则缩小） */
     const val MAX_WIDTH = 1280
 
+    /** chat_images 文件名的进程内自增序号（防同一毫秒多张图重名覆盖） */
+    private val chatImageSeq = java.util.concurrent.atomic.AtomicLong(0)
+
     /** 等比缩放：宽 ≤ [MAX_WIDTH]，保持比例 */
     fun scaleBitmap(src: Bitmap): Bitmap {
         if (src.width <= MAX_WIDTH) return src
@@ -33,6 +36,17 @@ object ImageUtils {
     fun bitmapToBase64(bitmap: Bitmap): String {
         val out = java.io.ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    }
+
+    /**
+     * Bitmap → JPEG base64（聊天附件栏多图用）。
+     * PNG base64 对照片能有数 MB/张，多图会把附件栏内存撑爆；JPEG 小一个量级，
+     * 发送时再解码落盘成 chat_images 的 JPEG 文件。
+     */
+    fun bitmapToJpegBase64(bitmap: Bitmap, quality: Int = 90): String {
+        val out = java.io.ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
         return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 
@@ -157,7 +171,9 @@ object ImageUtils {
     fun saveToChatImages(context: Context, bitmap: Bitmap): String? {
         return try {
             val dir = File(context.filesDir, "chat_images").apply { mkdirs() }
-            val file = File(dir, "img_${System.currentTimeMillis()}.jpg")
+            // 时间戳 + 进程内自增序号：一次发多张时连续保存可能落在同一毫秒，
+            // 只用 currentTimeMillis 会互相覆盖（用户以为发了 N 张、实际只剩 1 张）
+            val file = File(dir, "img_${System.currentTimeMillis()}_${chatImageSeq.incrementAndGet()}.jpg")
             FileOutputStream(file).use { out ->
                 bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
             }

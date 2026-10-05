@@ -9,6 +9,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -92,7 +94,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
     val isStreaming by vm.isStreaming.collectAsState()
     val error by vm.error.collectAsState()
     val speakingMsgId by vm.speakingMsgId.collectAsState()
-    val pendingImage by vm.pendingImage.collectAsState()
+    val pendingImages by vm.pendingImages.collectAsState()
     val contextStatus by vm.contextStatus.collectAsState()
     // 上下文整理失败的可操作提示（非阻塞：回答照常，只是留一条让用户重试/放弃）
     val compactionNotice by vm.compactionNotice.collectAsState()
@@ -105,11 +107,11 @@ fun ChatScreen(modifier: Modifier = Modifier) {
     // 清空时是否顺带把要点整理进「进行中的事」（默认勾上；缓冲关闭时不显示该选项）
     var clearAlsoCompact by remember { mutableStateOf(true) }
 
-    // 相册选图（Photo Picker，免存储权限）
+    // 相册多选图（Photo Picker，免存储权限；一次最多 9 张，与附件栏上限一致）
     val pickImageLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        uri?.let { vm.setPendingImageFromUri(it) }
+        ActivityResultContracts.PickMultipleVisualMedia(ChatViewModel.MAX_PENDING_IMAGES)
+    ) { uris ->
+        if (uris.isNotEmpty()) vm.setPendingImagesFromUris(uris)
     }
 
     val listState = rememberLazyListState()
@@ -183,7 +185,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                 Spacer(Modifier.height(16.dp))
                 Text("你好，我是随身助手", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "直接打字提问，或点键盘上的麦克风图标语音输入。\n也可以说「记录…」「提醒我…」「识屏…」，我会自动识别。\n点 + 可以上传图片一起分析。",
+                    "直接打字提问，或点键盘上的麦克风图标语音输入。\n也可以说「记录…」「提醒我…」「识屏…」，我会自动识别。\n点 + 可一次选多张图片一起分析。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -228,35 +230,12 @@ fun ChatScreen(modifier: Modifier = Modifier) {
             )
         }
 
-        // 附件栏：待发送图片（等用户输入文字要求一起发送）
-        pendingImage?.let { p ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Image(
-                    bitmap = p.thumbnail.asImageBitmap(),
-                    contentDescription = "待发送图片",
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                )
-                Column(Modifier.weight(1f)) {
-                    Text("已添加图片", style = MaterialTheme.typography.bodySmall)
-                    Text(
-                        "输入要求后与图片一起发送",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = { vm.removePendingImage() }) {
-                    Icon(Icons.Filled.Close, contentDescription = "移除图片")
-                }
-            }
+        // 附件栏：待发送图片（可多张；等用户输入文字要求后一起发送）
+        if (pendingImages.isNotEmpty()) {
+            PendingImagesBar(
+                images = pendingImages,
+                onRemove = { index -> vm.removePendingImage(index) }
+            )
         }
 
         Row(
@@ -293,7 +272,7 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                 maxLines = 5
             )
             // 发送：有内容时点亮香槟金
-            val canSend = !isStreaming && (input.isNotBlank() || pendingImage != null)
+            val canSend = !isStreaming && (input.isNotBlank() || pendingImages.isNotEmpty())
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = if (canSend) Color(0xFFE4B863)
@@ -387,6 +366,58 @@ fun ChatScreen(modifier: Modifier = Modifier) {
                 TextButton(onClick = { pendingClearAll = false }) { Text("取消") }
             }
         )
+    }
+}
+
+/**
+ * 待发送图片附件栏（多张，横向滚动）：每张右上角一个 ✕ 可单独移除。
+ * 只发图片不写文字也能发送（会附带默认指令「请描述这张图片」）。
+ */
+@Composable
+private fun PendingImagesBar(images: List<PendingImage>, onRemove: (Int) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Text(
+            "已添加 ${images.size} 张图片 · 输入要求后一起发送",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(top = 4.dp)
+        ) {
+            images.forEachIndexed { index, p ->
+                Box {
+                    Image(
+                        bitmap = p.thumbnail.asImageBitmap(),
+                        contentDescription = "待发送图片",
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    )
+                    // 右上角移除按钮（每张独立移除）
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.55f))
+                            .clickable { onRemove(index) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "移除这张图片",
+                            tint = Color.White,
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -538,16 +569,23 @@ private fun MessageBubble(
                     )
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
-                    // 消息附带图片（识屏截图 / 上传图片）
-                    msg.image?.let {
-                        Image(
-                            bitmap = it.asImageBitmap(),
-                            contentDescription = "消息图片",
-                            modifier = Modifier
-                                .width(180.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surface)
-                        )
+                    // 消息附带图片（识屏截图 / 上传图片，可多张 → 横向滚动）
+                    if (msg.images.isNotEmpty()) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(bottom = if (msg.text.isEmpty() && msg.segments.isEmpty()) 0.dp else 6.dp)
+                        ) {
+                            msg.images.forEach { bmp ->
+                                Image(
+                                    bitmap = bmp.asImageBitmap(),
+                                    contentDescription = "消息图片",
+                                    modifier = Modifier
+                                        .width(150.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(MaterialTheme.colorScheme.surface)
+                                )
+                            }
+                        }
                     }
                     if (msg.segments.isNotEmpty()) {
                         // 多轮工具回复：思考块/正文段/工具执行行按真实使用顺序渲染。

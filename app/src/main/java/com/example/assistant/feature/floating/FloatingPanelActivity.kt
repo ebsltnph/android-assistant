@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
@@ -26,6 +27,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,15 +41,18 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubble
@@ -109,6 +114,7 @@ import com.example.assistant.di.AppContainer
 import com.example.assistant.feature.chat.ChatUiMessage
 import com.example.assistant.feature.chat.ChatViewModel
 import com.example.assistant.feature.chat.MsgSegment
+import com.example.assistant.feature.chat.PendingImage
 import com.example.assistant.feature.chat.ROLE_NOTICE
 import androidx.compose.ui.text.style.TextAlign
 import com.example.assistant.ui.theme.AssistantTheme
@@ -360,7 +366,13 @@ private fun FloatingPanelScreen(
     var voicePartial by remember { mutableStateOf("") }   // 实时识别文字预览
     var voiceError by remember { mutableStateOf<String?>(null) } // 听写错误提示（几秒自动消失）
     val voiceMode by vm.panelVoiceMode.collectAsState()
-    val pendingImage by vm.pendingImage.collectAsState()
+    val pendingImages by vm.pendingImages.collectAsState()
+    // 相册多选图片（Photo Picker，免存储权限）：与聊天页共用同一份待发送附件
+    val pickImageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(ChatViewModel.MAX_PENDING_IMAGES)
+    ) { uris ->
+        if (uris.isNotEmpty()) vm.setPendingImagesFromUris(uris)
+    }
     val voice = remember { PanelVoiceController(context) }
     val remoteRecorder = remember { RemoteVoiceRecorder(context) }
     DisposableEffect(Unit) { onDispose { voice.destroy(); remoteRecorder.cancel() } }
@@ -554,15 +566,30 @@ private fun FloatingPanelScreen(
     // 发送：按选中模式走对应逻辑（提醒/记录直接执行；无选中 = 正常对话，自动分类照旧）
     fun send() {
         val text = input.trim()
-        if (text.isEmpty() || isStreaming) return
+        val hasPending = pendingImages.isNotEmpty()
+        if (text.isEmpty() && !hasPending) return
+        if (isStreaming) return
 
         // 识图模式：文字要求 + 截图**一起**作为一轮普通对话发送（图片走聊天通道，见 analyze 注释）
         if (mode == FloatingPanelActivity.PanelMode.SCREEN_SENSE && imagePath != null) {
             input = ""
             scope.launch {
                 val bmp = withContext(Dispatchers.IO) { ImageUtils.decodeThumbnail(imagePath!!) }
-                vm.sendImageMessage(text, imageFilePath = imagePath, thumbnail = bmp)
+                if (bmp != null) {
+                    vm.sendImages(text, extra = listOf(PendingImage(thumbnail = bmp, filePath = imagePath)))
+                } else if (pendingImages.isNotEmpty()) {
+                    vm.sendImages(text)
+                } else {
+                    voiceError = "无法读取截图，请重新识屏"
+                }
             }
+            return
+        }
+
+        // 有附件（相册多选）时统一走带图对话：可只发图不写文字（自动附默认指令）
+        if (hasPending) {
+            input = ""
+            vm.sendImages(text)
             return
         }
 
@@ -600,7 +627,11 @@ private fun FloatingPanelScreen(
                 ScreenSenseStarter.instructionFor(key)
             }
             val bmp = withContext(Dispatchers.IO) { ImageUtils.decodeThumbnail(path) }
-            vm.sendImageMessage(instruction, imageFilePath = path, thumbnail = bmp)
+            if (bmp != null) {
+                vm.sendImages(instruction, extra = listOf(PendingImage(thumbnail = bmp, filePath = path)))
+            } else {
+                voiceError = "无法读取截图，请重新识屏"
+            }
         }
     }
 
@@ -871,40 +902,61 @@ private fun FloatingPanelScreen(
         )
     }
 
-                    // ---- 附件预览（面板原来没有附件栏：编辑重发带图消息时原图会还原到这里）----
-                    pendingImage?.let { p ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        ) {
-                            Image(
-                                bitmap = p.thumbnail.asImageBitmap(),
-                                contentDescription = "待发送图片",
-                                modifier = Modifier
-                                    .height(46.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(Color.White.copy(alpha = 0.06f))
-                                    .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
-                            )
-                            Spacer(Modifier.size(8.dp))
+                    // ---- 附件预览（相册多选 / 编辑重发还原；可多张，横向滚动）----
+                    if (pendingImages.isNotEmpty()) {
+                        Column(modifier = Modifier.padding(bottom = 8.dp)) {
                             Text(
-                                "图片已就绪，输入要求后与它一起发送",
-                                fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.7f),
-                                modifier = Modifier.weight(1f)
+                                "已添加 ${pendingImages.size} 张图片 · 输入要求后一起发送",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.6f)
                             )
-                            IconButton(onClick = { vm.removePendingImage() }) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "移除图片",
-                                    tint = Color.White.copy(alpha = 0.7f),
-                                    modifier = Modifier.size(18.dp)
-                                )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(top = 4.dp)
+                            ) {
+                                pendingImages.forEachIndexed { index, p ->
+                                    Box {
+                                        Image(
+                                            bitmap = p.thumbnail.asImageBitmap(),
+                                            contentDescription = "待发送图片",
+                                            modifier = Modifier
+                                                .height(46.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(Color.White.copy(alpha = 0.06f))
+                                                .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                                        )
+                                        // 右上角移除按钮（每张独立移除）
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .size(18.dp)
+                                                .clip(CircleShape)
+                                                .background(Color.Black.copy(alpha = 0.6f))
+                                                .clickable { vm.removePendingImage(index) },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Close,
+                                                contentDescription = "移除这张图片",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(11.dp)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
                     // ---- 玻璃输入行 ----
+                    // 可发送：有文字 / 有附件 / 识屏模式有截图（只发图也能发，自动附默认指令）
+                    val canSend = !isStreaming && (
+                        input.isNotBlank() || pendingImages.isNotEmpty() ||
+                            (mode == FloatingPanelActivity.PanelMode.SCREEN_SENSE && imagePath != null)
+                        )
                     val placeholder = when (selectedMode) {
                         QuickAction.REMINDER -> "输入提醒内容，如：明天下午3点开会"
                         QuickAction.RECORD -> "输入要记录的内容…"
@@ -961,7 +1013,29 @@ private fun FloatingPanelScreen(
                             ),
                             modifier = Modifier.weight(1f).focusRequester(inputFocus)
                         )
-                        Spacer(Modifier.size(10.dp))
+                        Spacer(Modifier.size(8.dp))
+                        // 添加图片（相册多选）：与聊天页共用同一份待发送附件
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.10f))
+                                .border(1.dp, Color.White.copy(alpha = 0.22f), CircleShape)
+                                .clickable(enabled = !isStreaming) {
+                                    pickImageLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
+                        ) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = "添加图片",
+                                tint = Color.White.copy(alpha = 0.85f),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(Modifier.size(8.dp))
                         // 发送按钮：香槟金强调色（风格唯一强调色）
                         Box(
                             contentAlignment = Alignment.Center,
@@ -974,7 +1048,7 @@ private fun FloatingPanelScreen(
                                     )
                                 )
                                 .shadow(8.dp, CircleShape)
-                                .clickable(enabled = input.isNotBlank() && !isStreaming) { send() }
+                                .clickable(enabled = canSend) { send() }
                         ) {
                             Icon(
                                 Icons.Filled.Send,
@@ -1144,6 +1218,31 @@ private fun MessageBubble(
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
+                // 消息附带图片（可多张，横向滚动）
+                if (msg.images.isNotEmpty()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(
+                                bottom = if (msg.segments.isEmpty() && msg.text.isEmpty() &&
+                                    msg.thinking.isBlank()
+                                ) 0.dp else 6.dp
+                            )
+                    ) {
+                        msg.images.forEach { bmp ->
+                            Image(
+                                bitmap = bmp.asImageBitmap(),
+                                contentDescription = "消息图片",
+                                modifier = Modifier
+                                    .width(110.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color.Black.copy(alpha = 0.25f))
+                            )
+                        }
+                    }
+                }
                 if (msg.segments.isNotEmpty()) {
                     // 多轮工具回复：思考块/正文段/工具执行行按真实使用顺序渲染（与聊天页一致）。
                     // 划词容器整条消息只套一个（原先每个正文段各一个）——2026-09-11 卡顿排查第二轮

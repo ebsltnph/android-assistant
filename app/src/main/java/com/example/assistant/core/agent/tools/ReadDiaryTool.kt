@@ -2,6 +2,7 @@ package com.example.assistant.core.agent.tools
 
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.db.entity.DiaryEntryEntity
+import com.example.assistant.data.db.entity.DiaryImageEntity
 import com.example.assistant.data.db.entity.tagList
 import kotlinx.serialization.json.JsonObject
 import java.text.SimpleDateFormat
@@ -28,6 +29,8 @@ class ReadDiaryTool(
         "query 为关键词（正文包含匹配）；tags 为标签数组（多个标签须同时满足）；" +
         "days 表示只看最近 N 天（不传不限时间）；limit 为最多返回几条（默认 8，最大 20）；" +
         "id 为日记编号——传了就只返回这一条，而且是**完整正文不截断**。" +
+        "每条结果都会标注是否有图片、几张（形如「图片 2 张（#img=31、#img=32）」）；" +
+        "要看图里的内容就用 read_diary_image(id=编号) 把原图调到眼前。" +
         "所有参数都可选，全都不传就是最近的日记。" +
         "要修改或删除某条日记前，务必先 read_diary(id=编号) 读回它的完整正文，" +
         "再把编号和正文原样交给 update_diary（系统会核对，写错会被拒绝）。" +
@@ -54,8 +57,9 @@ class ReadDiaryTool(
                     "没有 #id=$singleId 的日记条目（可能已被删除，或编号记错了）。" +
                         "请不带参数再翻一次最近的日记，用返回里带 #id= 的那一串编号。"
                 )
+            val singleImages = diaryRepository.imagesFor(e.id)
             return ToolOutcome.Success(
-                "日记 #id=" + e.id + "（完整正文）：\n" + render(e, cap = 0)
+                "日记 #id=" + e.id + "（完整正文）：\n" + render(e, cap = 0, images = singleImages)
             )
         }
 
@@ -81,20 +85,32 @@ class ReadDiaryTool(
                 (if (tags.isEmpty()) "无" else tags.joinToString("、")) + "，范围=" + (days?.toString() ?: "全部") + "天）。可以放宽条件再试一次。"
             )
         }
-        val body = matched.joinToString("\n\n") { render(it, cap = CONTENT_CAP) }
+        // 为每条匹配结果带上图片信息：模型据此知道哪条有图、有几张，可调 read_diary_image 看图
+        val withImages = matched.map { e -> e to diaryRepository.imagesFor(e.id) }
+        val anyImages = withImages.any { it.second.isNotEmpty() }
+        val rendered = withImages.map { (e, imgs) -> render(e, cap = CONTENT_CAP, images = imgs) }
+        val hint = if (anyImages) {
+            "\n\n（带图片的日记可以调 read_diary_image(id=编号) 把原图调到眼前，看完再回答用户）"
+        } else {
+            ""
+        }
         return ToolOutcome.Success(
-            "找到 " + matched.size + " 条日记（要改某条：先 read_diary(id=编号) 取完整正文再调 update_diary）：\n" + body
+            "找到 " + matched.size + " 条日记（要改某条：先 read_diary(id=编号) 取完整正文再调 update_diary）：\n" +
+                rendered.joinToString("\n\n") + hint
         )
     }
 
     /**
      * 渲染一条日记。
      * @param cap 正文最多显示多少字；0 = 不截断
+     * @param images 该条的图片（用于标注张数与 #img=编号，供 update_diary 增删）
      */
-    private fun render(e: DiaryEntryEntity, cap: Int): String {
+    private fun render(e: DiaryEntryEntity, cap: Int, images: List<DiaryImageEntity> = emptyList()): String {
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
+        val imageTag = if (images.isEmpty()) "｜图片：无"
+        else "｜图片 " + images.size + " 张（" + images.joinToString("、") { "#img=" + it.id } + "）"
         val head = "#id=" + e.id + "｜" + fmt.format(Date(e.createdAtEpochMillis)) +
-            (if (e.tags.isBlank()) "" else "｜标签：" + e.tagList().joinToString("、"))
+            (if (e.tags.isBlank()) "" else "｜标签：" + e.tagList().joinToString("、")) + imageTag
         val text = if (cap > 0 && e.content.length > cap) {
             e.content.take(cap) + "\n…（正文共 " + e.content.length + " 字，此处只显示前 " + cap +
                 " 字；要修改请先 read_diary(id=" + e.id + ") 取完整正文）"

@@ -59,17 +59,21 @@ class Session {
 
     /**
      * 一轮：userText 为 null 表示只产生了助手消息（浮动面板「记录」提示、识屏结果回填等）。
-     * 用户消息实体在 [messages] 里**按需构造**——图片只留文件路径（imagePath），
-     * 组装请求时才读成 base64。这样"历史图片保留几张"只需把老轮的 imagePath 置空即可，
+     * 用户消息实体在 [messages] 里**按需构造**——图片只留文件路径（imagePaths，一轮可多张），
+     * 组装请求时才读成 base64。这样"历史图片保留几张"只需把老轮的 imagePaths 清空即可，
      * 不用改写历史消息内容。
+     *
+     * [assistantImagePaths] 与 [assistant] **一一对应**：记录工具注入的日记图片（read_diary_image）。
+     * 与用户图片同样只存路径、请求时才读 base64，并遵循同一套历史图片保留策略
+     * （「仅当前轮」下一轮开头清空，「全部」保留）——见 [enforceImageRetention]。
      */
     data class Turn(
         val id: Long,
         /** 用户消息文本（已含创建时刻的时间戳前缀） */
         val userText: String?,
         val assistant: MutableList<ChatMessage> = mutableListOf(),
-        /** 该轮附带图片的本机文件路径（null = 无图或已被保留策略丢弃） */
-        val imagePath: String? = null,
+        /** 该轮附带图片的本机文件路径列表（空 = 无图或已被保留策略丢弃；一轮可多张） */
+        val imagePaths: List<String> = emptyList(),
         /** 这一轮的创建时刻（会话记录按保留天数自动清理用；0 = 未知，一律不删） */
         val createdAt: Long = 0L,
         /**
@@ -77,34 +81,69 @@ class Session {
          * **单独一个列表而不是塞进 assistant**：否则"重做"（clearAssistant/replaceLastAssistant）
          * 会把它清掉，变更信息就静默丢了。
          */
-        val notices: MutableList<String> = mutableListOf()
+        val notices: MutableList<String> = mutableListOf(),
+        /**
+         * 与 [assistant] 一一对应的工具注入图片路径（read_diary_image 看到的日记图；空=该条无图）。
+         * 放在 assistant 之外是为了**保持路径不落 base64**（磁盘/内存都省），
+         * 组装请求时才读成 image part。
+         */
+        val assistantImagePaths: MutableList<List<String>> = mutableListOf()
     ) {
         /** 该轮的全部消息（按发送顺序；通知渲染在本轮助手消息之后） */
         fun messages(): List<ChatMessage> = buildList {
             userText?.let { t ->
-                val parts = ArrayList<ContentPart>(3)
+                val parts = ArrayList<ContentPart>(1 + imagePaths.size * 2)
                 parts += ContentPart.text(t)
-                val img = imagePath?.let { imagePartOf(it) }
-                if (img != null) {
-                    parts += img
+                // 一轮可带多张图：按加入顺序排在同一条用户消息里（视觉模型一次看到全部）
+                val attached = imagePaths.mapNotNull { imagePartOf(it) }
+                parts += attached
+                if (attached.isNotEmpty()) {
                     // 告知本机路径：模型据此调用 write_diary(image_paths=[…])，无需额外静默调用
-                    parts += ContentPart.text("[图片已保存到本机：$imagePath]")
+                    parts += ContentPart.text("[图片已保存到本机：" + imagePaths.joinToString("、") + "]")
                 }
                 add(ChatMessage("user", parts))
             }
-            addAll(assistant)
+            assistant.forEachIndexed { i, m ->
+                val imgs = assistantImagePaths.getOrNull(i).orEmpty().filter { it.isNotBlank() }
+                if (imgs.isEmpty()) {
+                    add(m)
+                } else {
+                    // 工具结果消息带图：文本 + 图片 part 合成同一条 user 消息
+                    // （与回复当次请求里的形态逐字节一致 → 厂商缓存能继续命中）
+                    val parts = ArrayList<ContentPart>(1 + imgs.size)
+                    parts += ContentPart.text(m.textContent)
+                    imgs.mapNotNull { imagePartOf(it) }.forEach { parts += it }
+                    add(ChatMessage(m.role, parts))
+                }
+            }
             notices.forEach { add(ChatMessage("user", it)) }
         }
 
-        /** 该轮的字符当量（图片按固定当量折算，用于字符软上限） */
-        fun charWeight(): Int = messages().sumOf { m ->
-            m.content.sumOf { part ->
-                when {
-                    part.type == "text" -> part.text.orEmpty().length
-                    part.type == "image_url" -> IMAGE_CHAR_EQUIVALENT
-                    else -> 0
+        /**
+         * 该轮的字符当量（图片按固定当量折算，用于字符软上限）。
+         *
+         * ⚠️ **不能走 [messages]**：那会把每张图片都读文件 + base64 编码一遍，
+         * 而 [planWindow] 每轮都会对全部轮调用一次本方法——保留图片越多越亏。
+         * 这里只做 File.exists 轻量判断，与 messages() 的计入口径保持一致。
+         */
+        fun charWeight(): Int {
+            var total = 0
+            userText?.let { t ->
+                total += t.length
+                val existing = imagePaths.filter { java.io.File(it).exists() }
+                if (existing.isNotEmpty()) {
+                    total += existing.size * IMAGE_CHAR_EQUIVALENT
+                    total += ("[图片已保存到本机：" + imagePaths.joinToString("、") + "]").length
                 }
             }
+            assistant.forEachIndexed { i, m ->
+                total += m.content.sumOf { it.text.orEmpty().length }
+                total += assistantImagePaths.getOrNull(i).orEmpty().count {
+                    it.isNotBlank() && java.io.File(it).exists()
+                } * IMAGE_CHAR_EQUIVALENT
+            }
+            notices.forEach { total += it.length }
+            return total
         }
     }
 
@@ -139,12 +178,12 @@ class Session {
     /**
      * 开始一轮对话。用户消息在这里**打时间戳**（创建时刻固定，之后不再变化）。
      * @param userText 用户输入原文（null = 该轮没有用户消息）
-     * @param imagePath 附带图片的本机文件路径（识屏截图/上传图片）
+     * @param imagePaths 附带图片的本机文件路径列表（识屏截图/上传图片，一轮可多张）
      */
-    fun beginTurn(userText: String?, imagePath: String? = null): Long {
+    fun beginTurn(userText: String?, imagePaths: List<String> = emptyList()): Long {
         val id = seq++
         turns.addLast(
-            Turn(id, userText?.let { stamp(it) }, mutableListOf(), imagePath, System.currentTimeMillis())
+            Turn(id, userText?.let { stamp(it) }, mutableListOf(), imagePaths, System.currentTimeMillis())
         )
         return id
     }
@@ -164,48 +203,64 @@ class Session {
     fun turnFromStored(
         id: Long,
         userText: String?,
-        imagePath: String?,
+        imagePaths: List<String> = emptyList(),
         assistantTexts: List<String>,
+        assistantImages: List<List<String>> = emptyList(),
+        assistantRoles: List<String> = emptyList(),
         createdAt: Long = 0L,
         notices: List<String> = emptyList()
-    ): Turn = Turn(
-        id = id,
-        userText = userText,
-        assistant = assistantTexts
-            .map { com.example.assistant.core.agent.tools.stripFakeFooterLines(it) }
-            .filter { it.isNotBlank() }
-            .map { ChatMessage("assistant", it) }
-            .toMutableList(),
-        imagePath = imagePath,
-        createdAt = createdAt,
-        notices = notices.filter { it.isNotBlank() }.toMutableList()
-    )
+    ): Turn {
+        // 文本 / 图片路径 / 角色一一配对后再过滤，保证三个列表不错位。
+        // 角色：新快照按存下来的 role 还原（工具结果是 user）；旧快照没有该字段时，
+        // 退化为"带注入图片的算 user，其余 assistant"（旧的 [结果] 消息会变成 assistant）。
+        val entries = assistantTexts.mapIndexed { i, txt ->
+            val clean = com.example.assistant.core.agent.tools.stripFakeFooterLines(txt)
+            val imgs = assistantImages.getOrNull(i).orEmpty().filter { it.isNotBlank() }
+            val storedRole = assistantRoles.getOrNull(i)
+            val role = if (storedRole == "user" || storedRole == "assistant") storedRole
+            else if (imgs.isNotEmpty()) "user" else "assistant"
+            Triple(clean, imgs, role)
+        }.filter { it.first.isNotBlank() || it.second.isNotEmpty() }
+        return Turn(
+            id = id,
+            userText = userText,
+            assistant = entries.map { ChatMessage(it.third, it.first) }.toMutableList(),
+            imagePaths = imagePaths,
+            createdAt = createdAt,
+            notices = notices.filter { it.isNotBlank() }.toMutableList(),
+            assistantImagePaths = entries.map { it.second }.toMutableList()
+        )
+    }
 
     /**
-     * 历史图片保留策略（设置页可调）：把太老的带图轮的 imagePath 置空（请求里就只剩文字）。
+     * 历史图片保留策略（设置页两档，2026-10-05 起只保留「仅当前轮 / 全部」）：
      *
-     * - `keep < 0`：全部保留（缓存命中率最高、也最贵）
-     * - `keep = 0`：只保留**当前这一轮**的图片——下一轮（哪怕只是文字）开始时这张图就不再发送
-     * - `keep ≥ 1`：保留最近 keep 张带图轮
+     * - `keep < 0`：**全部保留**——历史里所有带图轮每轮都重新上传
+     *   （缓存命中率稳定，但 token 与流量最贵）；
+     * - `keep ≥ 0`：**仅当前轮**——只保留**当前这一轮**的图片，历史轮的图片一律清空。
+     *   下一轮（哪怕只是纯文字）开始时，上一轮的图就不再发送。
      *
-     * ⚠️ 无论 keep 取多少，**当前轮的图片永远保留**。原实现直接 `dropLast(keep)`，
-     * keep=0 时 `dropLast(0)` 返回整个列表 ⇒ 连刚加进来的当前轮图片也被置空，
-     * 用户实测"设成仅当前轮反而一张图都发不出去"就是这里。
+     * **图片包括两类，同一策略**：用户消息附带图（[Turn.imagePaths]）与
+     * 工具注入的日记图（[Turn.assistantImagePaths]，read_diary_image 看过的）。
+     *
+     * ⚠️ 无论哪一档，**当前轮的图片永远保留**（含一轮里的全部图片）。
+     * 旧的"最近 1/3 张"中间档行为已删除——它在带图轮与纯文字轮之间反复增删，
+     * 前缀变动频繁且与用户预期不符。
      */
     fun enforceImageRetention(keep: Int) {
         if (keep < 0) return
-        val withImage = turns.filter { it.imagePath != null }
-        if (withImage.isEmpty()) return
-        // keep=0：只有"最近一轮恰好就是带图轮"时才保留它，否则一张都不留
-        val keepCount = if (keep == 0) {
-            if (withImage.last().id == turns.lastOrNull()?.id) 1 else 0
-        } else {
-            keep
-        }
-        if (withImage.size <= keepCount) return
-        withImage.dropLast(keepCount).forEach { old ->
-            val idx = turns.indexOfFirst { it.id == old.id }
-            if (idx >= 0) turns[idx] = turns[idx].copy(imagePath = null)
+        val lastId = turns.lastOrNull()?.id ?: return
+        turns.forEachIndexed { i, t ->
+            if (t.id == lastId) return@forEachIndexed
+            val hasUserImages = t.imagePaths.isNotEmpty()
+            val hasToolImages = t.assistantImagePaths.any { it.isNotEmpty() }
+            if (hasUserImages || hasToolImages) {
+                turns[i] = t.copy(
+                    imagePaths = emptyList(),
+                    // 保持与 assistant 等长，全部清空
+                    assistantImagePaths = MutableList(t.assistant.size) { emptyList() }
+                )
+            }
         }
     }
 
@@ -213,6 +268,19 @@ class Session {
     fun appendAssistant(turnId: Long, msg: ChatMessage) {
         val turn = turns.firstOrNull { it.id == turnId } ?: return
         turn.assistant += msg
+        // 与 assistant 保持一一对应（普通消息无注入图片）
+        turn.assistantImagePaths.add(emptyList())
+    }
+
+    /**
+     * 追加一条**工具结果**消息（role=user），可携带工具注入的图片路径
+     * （read_diary_image 看过的日记图）。图片路径单独存放，[Turn.messages]
+     * 组装请求时才读成 image part，与回复当次请求的形态完全一致。
+     */
+    fun appendToolResult(turnId: Long, text: String, imagePaths: List<String> = emptyList()) {
+        val turn = turns.firstOrNull { it.id == turnId } ?: return
+        turn.assistant += ChatMessage("user", text)
+        turn.assistantImagePaths.add(imagePaths.filter { it.isNotBlank() })
     }
 
     /** 只有助手消息的一轮（浮动面板记录提示、识屏结果回填） */
@@ -260,7 +328,10 @@ class Session {
 
     /** 清空某一轮的助手消息（重做：重新生成该轮回答） */
     fun clearAssistant(turnId: Long) {
-        turns.firstOrNull { it.id == turnId }?.assistant?.clear()
+        turns.firstOrNull { it.id == turnId }?.let {
+            it.assistant.clear()
+            it.assistantImagePaths.clear()
+        }
     }
 
     /** 替换最后一轮的最终回答（兼容旧调用；正文之外的工具轮保留） */
@@ -268,8 +339,12 @@ class Session {
         val turn = turns.lastOrNull() ?: return
         if (turn.assistant.isEmpty()) {
             turn.assistant += ChatMessage("assistant", text)
+            turn.assistantImagePaths.add(emptyList())
         } else {
             turn.assistant[turn.assistant.lastIndex] = ChatMessage("assistant", text)
+            if (turn.assistantImagePaths.size > turn.assistant.lastIndex) {
+                turn.assistantImagePaths[turn.assistant.lastIndex] = emptyList()
+            }
         }
     }
 
@@ -419,18 +494,44 @@ class Session {
         const val RESET_COMPACTED = "上下文已整理"
 
         /**
+         * 已编码的 image part 缓存（按文件 mtime 失效，最多 [MAX_CACHED_IMAGE_PARTS] 张）。
+         *
+         * 为什么需要：组装一次上下文会对每个带图轮调用 [Turn.messages]，而 keep=全部 +
+         * 一轮多图 + 工具注入图时同一张图可能被编码多次（buildContext / 状态刷新）。
+         * 缓存后同一文件只读盘编码一次；内容变了（mtime 变）自动重算。
+         * 用 LinkedHashMap 而不是 android.util.LruCache：后者在本地单测里是未实现的桩。
+         */
+        private val imagePartCache = object : LinkedHashMap<String, Pair<Long, ContentPart>>(8, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Long, ContentPart>>): Boolean =
+                size > MAX_CACHED_IMAGE_PARTS
+        }
+
+        /**
          * 把本机图片文件转成请求用的 image part（base64）。
          * 文件不存在/读失败返回 null（历史图片已过期时该轮退化为纯文本，不影响其余上下文）。
          */
         fun imagePartOf(path: String): ContentPart? = try {
             val f = java.io.File(path)
             if (!f.exists()) null
-            else ContentPart.image(
-                android.util.Base64.encodeToString(f.readBytes(), android.util.Base64.NO_WRAP),
-                mimeType = if (path.endsWith(".png", true)) "image/png" else "image/jpeg"
-            )
+            else {
+                val mtime = f.lastModified()
+                val cached = synchronized(imagePartCache) { imagePartCache[path] }
+                if (cached != null && cached.first == mtime) {
+                    cached.second
+                } else {
+                    val part = ContentPart.image(
+                        android.util.Base64.encodeToString(f.readBytes(), android.util.Base64.NO_WRAP),
+                        mimeType = if (path.endsWith(".png", true)) "image/png" else "image/jpeg"
+                    )
+                    synchronized(imagePartCache) { imagePartCache[path] = mtime to part }
+                    part
+                }
+            }
         } catch (_: Exception) {
             null
         }
+
+        /** image part 缓存条数（按张计；每张的 base64 可能较大，别开太大） */
+        private const val MAX_CACHED_IMAGE_PARTS = 12
     }
 }

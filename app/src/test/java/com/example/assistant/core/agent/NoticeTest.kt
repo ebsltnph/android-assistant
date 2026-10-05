@@ -81,7 +81,7 @@ class NoticeTest {
         val restored = Session().turnFromStored(
             id = stored.id,
             userText = stored.userText,
-            imagePath = stored.imagePath,
+            imagePaths = stored.imagePaths,
             assistantTexts = stored.assistant.map { it.textContent },
             createdAt = stored.createdAt,
             notices = stored.notices

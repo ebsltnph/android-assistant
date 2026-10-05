@@ -20,6 +20,8 @@ import java.util.Locale
  * 要求重新 read_diary —— 改错条目的代价远高于多读一次。
  *
  * 只处理模型传了的字段（tags 传空数组 = 清空标签）；删除会连图片文件一起清掉。
+ * 2026-10-05：除正文/标签外，还支持**增删图片**——add_image_paths（chat_images 会复制进
+ * diary_images）、remove_image_ids（#img= 编号，只能删这条日记自己的图，文件一并删除）。
  */
 class UpdateDiaryTool(
     private val diaryRepository: DiaryRepository,
@@ -29,17 +31,20 @@ class UpdateDiaryTool(
 
     override val name = "update_diary"
     override val description =
-        "update_diary(id, old_content, content, tags?, delete?)：修改或删除**已存在**的一条日记。" +
+        "update_diary(id, old_content, content?, tags?, add_image_paths?, remove_image_ids?, delete?)：" +
+        "修改或删除**已存在**的一条日记（可改正文 / 标签 / 图片）。" +
         "id 必填，是 read_diary 结果里的 #id= 那串数字（不要自己编）；" +
         "old_content 必填，是这条日记**当前的正文**，必须与 read_diary(id=编号) 返回的完整正文一致" +
         "（系统逐字核对，不一致会直接拒绝并提示你重读——这是防止改错条目的保险）。" +
-        "content 必填（delete=true 时除外），是改后的完整正文；" +
-        "只改标签时把 old_content 原样再填进 content（两者相同 = 正文不变）。" +
-        "tags 覆盖标签（最多 3 个，只能从工具手册给出的可用日记标签里选；传空数组 = 清空标签）；" +
+        "content 可选：改后的完整正文（与 old_content 相同 = 正文不变；只改标签/图片时可省略）。" +
+        "tags 覆盖标签（最多 3 个，只能从工具手册给出的可用日记标签里选；传空数组 = 清空标签）。" +
+        "add_image_paths 为要新增的图片本机路径数组（只在任务说明里给了真实路径时才传，会复制进日记图片目录）；" +
+        "remove_image_ids 为要删除的图片编号数组（#img= 那串数字，来自 read_diary 的「图片 N 张（#img=…）」）。" +
         "delete=true 表示删除整条（此时 content 可省，old_content 仍必填，不可恢复）。" +
         "流程：read_diary 找到目标 → read_diary(id=编号) 取完整正文 → 本工具。" +
         "args 示例：{\"id\":12,\"old_content\":\"…原正文…\",\"content\":\"改后的正文\"} 或 " +
-        "{\"id\":12,\"old_content\":\"…原正文…\",\"content\":\"…原正文…\",\"tags\":[\"工作\"]} 或 " +
+        "{\"id\":12,\"old_content\":\"…原正文…\",\"remove_image_ids\":[31]} 或 " +
+        "{\"id\":12,\"old_content\":\"…原正文…\",\"add_image_paths\":[\"/…/chat_images/img_1.jpg\"]} 或 " +
         "{\"id\":12,\"old_content\":\"…原正文…\",\"delete\":true}"
 
     override fun actionLabel(args: JsonObject): String {
@@ -91,22 +96,26 @@ class UpdateDiaryTool(
             )
         }
 
-        // ---- 修改：content 必填（只改标签就把 old_content 原样填回来） ----
+        // ---- 修改：正文 / 标签 / 图片，至少给一样 ----
         val content = args.argStr("content")
-            ?: return ToolOutcome.Failure(
-                "缺少必填参数 content（改后的完整正文）。只改标签时，请把 old_content 原样再填进 content" +
-                    "（两者相同 = 正文不变，系统不会改动正文）。"
-            )
         val tagsProvided = args.hasArg("tags")
+        val addProvided = args.hasArg("add_image_paths")
+        val removeProvided = args.hasArg("remove_image_ids")
+        if (content == null && !tagsProvided && !addProvided && !removeProvided) {
+            return ToolOutcome.Failure(
+                "没有要改的内容：请至少传 content（改后正文）、tags（改标签）、" +
+                    "add_image_paths（加图片）或 remove_image_ids（删图片）之一。"
+            )
+        }
         // 与 old_content 完全相同 ⇒ 模型只是回填，视为"正文不改"（避免把截断读回的文本误写成新正文）
-        val contentUnchanged = norm(content) == norm(old)
+        val contentUnchanged = content == null || norm(content) == norm(old)
 
         val changed = mutableListOf<String>()
-        if (!contentUnchanged) {
+        var note = ""
+        if (content != null && !contentUnchanged) {
             diaryRepository.updateEntryContent(id, content)
             changed += "正文"
         }
-        var note = ""
         var tags = entry.tagList()
         if (tagsProvided) {
             val vocab = availableTags()
@@ -116,28 +125,64 @@ class UpdateDiaryTool(
             diaryRepository.updateEntryTags(id, tags)
             changed += if (tags.isEmpty()) "标签（已清空）" else "标签（" + tags.joinToString("、") + "）"
             if (rejected.isNotEmpty()) {
-                note = "；以下标签不在可用词汇表中已忽略：" + rejected.joinToString("、")
+                note += "；以下标签不在可用词汇表中已忽略：" + rejected.joinToString("、")
+            }
+        }
+        // ---- 图片：删除指定 #img 编号（只能删这条日记自己的图） ----
+        if (removeProvided) {
+            val ids = args.argStrList("remove_image_ids").mapNotNull { it.toLongOrNull() }
+            val targets = diaryRepository.imagesFor(id).filter { it.id in ids }
+            targets.forEach { img ->
+                try { File(img.path).delete() } catch (_: Exception) {}
+                diaryRepository.deleteImage(img.id)
+            }
+            if (targets.isEmpty()) {
+                note += "；没有找到要删除的图片编号（可用编号见本条末尾的 #img=）"
+            } else {
+                changed += "删除 " + targets.size + " 张图片"
+            }
+        }
+        // ---- 图片：新增（chat_images 下的原图会复制进 diary_images） ----
+        if (addProvided) {
+            val raw = args.argStrList("add_image_paths")
+            val added = raw.mapNotNull { normalizeDiaryImagePath(it) }
+            if (added.isNotEmpty()) {
+                diaryRepository.addImages(id, added)
+                changed += "新增 " + added.size + " 张图片"
+            }
+            if (added.size < raw.size) {
+                note += "；" + (raw.size - added.size) + " 个图片路径无效已忽略（只能传确实存在的本机路径）"
             }
         }
 
+        val finalContent = if (content != null && !contentUnchanged) content else actual
+        val finalImages = diaryRepository.imagesFor(id)
         if (changed.isEmpty()) {
             return ToolOutcome.Success(
-                "日记 #$id 与你要改的内容完全一致，没有需要写入的改动。\n" + render(id, entry.createdAtEpochMillis, tags, actual)
+                "日记 #$id 与你要改的内容完全一致，没有需要写入的改动。\n" +
+                    render(id, entry.createdAtEpochMillis, tags, finalContent, finalImages)
             )
         }
-        val finalContent = if (contentUnchanged) actual else content
         return ToolOutcome.Success(
             "已更新日记 #$id（" + changed.joinToString("、") + "）。它现在的样子是：\n" +
-                render(id, entry.createdAtEpochMillis, tags, finalContent) + note +
+                render(id, entry.createdAtEpochMillis, tags, finalContent, finalImages) + note +
                 "\n（以上已是数据库中的最新内容，不需要再读一次；但不要在回复里向用户重复整篇正文）"
         )
     }
 
     /** 回传改写后的条目，让模型立刻看到结果（省掉一次 read_diary，也就不会读到旧结果） */
-    private fun render(id: Long, createdAt: Long, tags: List<String>, content: String): String {
+    private fun render(
+        id: Long,
+        createdAt: Long,
+        tags: List<String>,
+        content: String,
+        images: List<com.example.assistant.data.db.entity.DiaryImageEntity> = emptyList()
+    ): String {
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
+        val imageTag = if (images.isEmpty()) "｜图片：无"
+        else "｜图片 " + images.size + " 张（" + images.joinToString("、") { "#img=" + it.id } + "）"
         val head = "#id=" + id + "｜" + fmt.format(Date(createdAt)) +
-            (if (tags.isEmpty()) "" else "｜标签：" + tags.joinToString("、"))
+            (if (tags.isEmpty()) "" else "｜标签：" + tags.joinToString("、")) + imageTag
         val text = if (content.length > FEEDBACK_CAP) content.take(FEEDBACK_CAP) + "…（已截断显示）" else content
         return head + "\n" + text
     }

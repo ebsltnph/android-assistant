@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * 系统提示消息的角色（2026-09-23）：用于「上下文整理」这类**只上屏、不进模型上下文**的提示行——
@@ -59,10 +60,10 @@ data class ChatUiMessage(
     /** 推理模型的思考过程（独立于正式回答展示，带"思考过程"标注） */
     val thinking: String = "",
     val streaming: Boolean = false,
-    /** 消息附带的图片缩略图（识屏截图 / 上传的图片），空表示无图 */
-    val image: Bitmap? = null,
-    /** 附带图片在本机的文件路径（chat_images 下；会话只存路径不存 base64） */
-    val imagePath: String? = null,
+    /** 消息附带的图片缩略图（识屏截图 / 上传的图片，可多张），空表示无图 */
+    val images: List<Bitmap> = emptyList(),
+    /** 附带图片在本机的文件路径列表（chat_images 下；会话只存路径不存 base64） */
+    val imagePaths: List<String> = emptyList(),
     /** 分段内容（按真实时序：思考块/正文段/工具执行行）；非空时优先于 text/thinking 渲染 */
     val segments: List<MsgSegment> = emptyList(),
     /** 该轮能否「重做」（走对话通道生成的才行） */
@@ -96,10 +97,15 @@ fun ChatUiMessage.spokenBody(): String =
         .joinToString("\n") { it.text }
         .ifBlank { text }
 
-/** 待发送附件：缩略图（附件栏显示）+ base64（发送时给视觉模型） */
+/**
+ * 待发送附件（可多张）：缩略图（附件栏显示）+ 图片数据来源（二选一）。
+ *  - [base64]：相册/分享选图后的 JPEG base64（省内存），发送时解码落盘；
+ *  - [filePath]：已在磁盘上的图片路径（识屏截图、编辑重发还原），发送时复制进 chat_images。
+ */
 data class PendingImage(
     val thumbnail: Bitmap,
-    val base64: String
+    val base64: String? = null,
+    val filePath: String? = null
 )
 
 /**
@@ -183,8 +189,8 @@ private data class StreamOutcome(
      * 页脚写进历史会被模型模仿，在正文里自己编"已执行"清单（2026-09-14 修的 bug）。
      */
     val body: String = answer,
-    /** 工具中间轮记录：(模型输出原文, 回传的结果消息)；未触发工具时为空 */
-    val exchanges: List<Pair<String, String>> = emptyList(),
+    /** 工具中间轮记录（调用原文 + 结果 + 注入的日记图片路径）；未触发工具时为空 */
+    val exchanges: List<Agent.ToolExchange> = emptyList(),
     /** 成功执行过的工具名（write_diary 兜底判断用） */
     val toolNames: List<String> = emptyList()
 )
@@ -256,9 +262,9 @@ class ChatViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
-    /** 待发送图片附件（分享/上传后等待用户输入文字，一起发送） */
-    private val _pendingImage = MutableStateFlow<PendingImage?>(null)
-    val pendingImage: StateFlow<PendingImage?> = _pendingImage
+    /** 待发送图片附件（分享/上传后等待用户输入文字，一起发送；可多张） */
+    private val _pendingImages = MutableStateFlow<List<PendingImage>>(emptyList())
+    val pendingImages: StateFlow<List<PendingImage>> = _pendingImages
 
     private val session = Session()
     private var counter = 0L
@@ -271,7 +277,7 @@ class ChatViewModel(
     /** 会话快照保留天数（0 = 不留存） */
     private var retentionDays = SettingsStore.DEFAULT_CHAT_RETENTION_DAYS
 
-    /** 历史图片保留张数（-1 = 全部保留；0 = 只当前轮；默认 1） */
+    /** 历史图片保留档位（-1 = 全部保留；0 = 只当前轮）——两档，见 Session.enforceImageRetention */
     private var imageRetention = SettingsStore.DEFAULT_CHAT_IMAGE_KEEP
 
     // ---- 「进行中的事」缓冲区（2026-09-17）----
@@ -384,7 +390,7 @@ class ChatViewModel(
                 }
             }
         }
-        // 历史图片保留张数（-1 = 全部；影响 token 成本，见设置页说明）
+        // 历史图片保留档位（-1 = 全部 / 0 = 仅当前轮；影响 token 成本，见设置页说明）
         scope.launch {
             settingsStore.chatImageKeep.collect { imageRetention = it }
         }
@@ -401,11 +407,21 @@ class ChatViewModel(
         _inputText.value = text
     }
 
-    /** 聊天上传/分享图片 → 读图、缩放、进入附件栏 */
+    /** 聊天上传/分享图片 → 读图、缩放、追加进附件栏（可多张） */
+    fun setPendingImagesFromUris(uris: List<Uri>) {
+        uris.forEach { loadImageToPending(it) }
+    }
+
+    /** 单张（分享到助手等单图入口） */
     fun setPendingImageFromUri(uri: Uri) = loadImageToPending(uri)
 
-    fun removePendingImage() {
-        _pendingImage.value = null
+    /** 移除附件栏里第 [index] 张图片 */
+    fun removePendingImage(index: Int) {
+        _pendingImages.update { list -> list.filterIndexed { i, _ -> i != index } }
+    }
+
+    fun clearPendingImages() {
+        _pendingImages.value = emptyList()
     }
 
     private fun loadImageToPending(uri: Uri) {
@@ -417,14 +433,17 @@ class ChatViewModel(
                 _error.value = "无法读取这张图片，请换一张试试"
                 return@launch
             }
-            _pendingImage.value = PendingImage(
-                thumbnail = ImageUtils.thumbnail(bitmap),
-                base64 = ImageUtils.bitmapToBase64(bitmap)
+            appendPending(
+                PendingImage(
+                    thumbnail = ImageUtils.thumbnail(bitmap),
+                    // JPEG base64：多图时比 PNG 小一个量级，避免附件栏占内存过大
+                    base64 = ImageUtils.bitmapToJpegBase64(bitmap)
+                )
             )
         }
     }
 
-    /** 本地截图文件加入附件栏（识屏小窗「在 App 中继续」），与分享/上传图片同一交互 */
+    /** 本地截图文件加入附件栏（识屏「在 App 中继续」），与分享/上传图片同一交互 */
     private fun addFileAttachment(path: String) {
         scope.launch {
             val bitmap = withContext(Dispatchers.IO) {
@@ -438,25 +457,34 @@ class ChatViewModel(
                 _error.value = "无法读取截图，请重新识屏"
                 return@launch
             }
-            _pendingImage.value = PendingImage(
-                thumbnail = ImageUtils.thumbnail(bitmap),
-                base64 = ImageUtils.bitmapToBase64(bitmap)
-            )
+            appendPending(PendingImage(thumbnail = ImageUtils.thumbnail(bitmap), filePath = path))
+        }
+    }
+
+    /** 附件栏追加一张；超过上限时忽略并提示（与日记多选一致，最多 [MAX_PENDING_IMAGES] 张） */
+    private fun appendPending(image: PendingImage) {
+        _pendingImages.update { list ->
+            if (list.size >= MAX_PENDING_IMAGES) {
+                _error.value = "一次最多添加 $MAX_PENDING_IMAGES 张图片"
+                list
+            } else {
+                list + image
+            }
         }
     }
 
     fun send() {
         val text = _inputText.value.trim()
-        val image = _pendingImage.value
-        if (text.isEmpty() && image == null) return
+        val images = _pendingImages.value
+        if (text.isEmpty() && images.isEmpty()) return
         if (_isStreaming.value) return
         _inputText.value = ""
-        _pendingImage.value = null
+        _pendingImages.value = emptyList()
         scope.launch {
             _isStreaming.value = true
             _error.value = null
-            if (image != null) {
-                sendImageTurn(text, image.base64, null, image.thumbnail)
+            if (images.isNotEmpty()) {
+                sendImageTurn(text, images)
             } else {
                 sendText(text)
             }
@@ -512,62 +540,79 @@ class ChatViewModel(
     }
 
     /**
-     * 浮动界面识图模式对话 / 聊天页附件：文字要求 + 图片**一起**发给模型。
+     * 浮动界面（识屏截图 / 附件栏多图）发送一轮带图消息：文字要求 + 全部图片**一起**发给模型。
      *
-     * 2026-09-11 起图片走**同一条聊天通道**（只换成「识屏（视觉）」指派的档案）：
-     * 图片只是这一轮用户消息里的一个 image part——相当于"多花一张图的 token"。
-     * 于是带图轮与纯文字轮完全同质：有完整上下文、能调用工具、展示思维链、
-     * 支持重做/编辑重发/删除单条，不再有独立的视觉通道与隐藏的静默调用。
+     * 图片走**同一条聊天通道**（只换成「识屏（视觉）」指派的档案）：
+     * 带图轮与纯文字轮一样有完整上下文、工具回路与思维链，支持重做/编辑重发/删除。
      *
-     * @param imageBase64 图片 base64（聊天页附件）；与 [imageFilePath] 二选一
-     * @param imageFilePath 图片本机路径（浮动面板截图）
+     * @param extra 额外图片（面板识屏截图的 filePath 包装）；会与附件栏里的图一起发出
      */
-    fun sendImageMessage(
-        text: String,
-        imageBase64: String? = null,
-        imageFilePath: String? = null,
-        thumbnail: Bitmap?
-    ) {
+    fun sendImages(text: String, extra: List<PendingImage> = emptyList()) {
         val t = text.trim()
-        if (_isStreaming.value) return
-        if (imageBase64 == null && imageFilePath == null) return
+        val all = _pendingImages.value + extra
+        if (all.isEmpty() || _isStreaming.value) return
+        _pendingImages.value = emptyList()
         scope.launch {
             _isStreaming.value = true
             _error.value = null
             if (t.isNotEmpty()) conversationLog.log(t)
-            sendImageTurn(t, imageBase64, imageFilePath, thumbnail)
+            sendImageTurn(t, all, restoreInput = false)
             _isStreaming.value = false
         }
     }
 
-    /** 带图消息实发：图片落盘（chat_images）→ 会话留路径 → 走对话回路 */
+    /**
+     * 带图消息实发：全部图片落盘（chat_images）→ 会话留路径 → 走对话回路。
+     * @param restoreInput 失败时是否把 [text] 还原进聊天页输入框。
+     *        聊天页发送=true；浮动面板发送=false（面板有自己的输入框，别污染聊天页）
+     */
     private suspend fun sendImageTurn(
         text: String,
-        imageBase64: String?,
-        imageFilePath: String?,
-        thumbnail: Bitmap?
+        images: List<PendingImage>,
+        restoreInput: Boolean = true
     ) {
-        val path = withContext(Dispatchers.IO) {
-            when {
-                !imageFilePath.isNullOrEmpty() -> ImageUtils.importToChatImages(context, imageFilePath)
-                !imageBase64.isNullOrEmpty() ->
-                    ImageUtils.decodeBase64Bitmap(imageBase64)?.let { bmp ->
-                        ImageUtils.saveToChatImages(context, ImageUtils.scaleBitmap(bmp))
-                    }
-                else -> null
+        val paths = withContext(Dispatchers.IO) {
+            images.mapNotNull { img ->
+                when {
+                    !img.filePath.isNullOrEmpty() -> persistPendingFile(img.filePath)
+                    !img.base64.isNullOrEmpty() ->
+                        ImageUtils.decodeBase64Bitmap(img.base64)?.let { bmp ->
+                            ImageUtils.saveToChatImages(context, ImageUtils.scaleBitmap(bmp))
+                        }
+                    else -> null
+                }
             }
         }
-        // 没写要求时给一句默认指令（否则模型只看到一张图，不知道要做什么）
+        if (paths.isEmpty()) {
+            _error.value = "图片保存失败，请重试"
+            // 还原附件（send()/sendImages() 已提前清空）；输入框只在聊天页路径还原，
+            // 面板的输入是面板本地状态，写回聊天页输入框会串台
+            if (restoreInput) _inputText.value = text
+            _pendingImages.value = images
+            return
+        }
+        // 没写要求时给一句默认指令（否则模型只看到图片，不知道要做什么）
         val instruction = text.ifBlank { DEFAULT_IMAGE_INSTRUCTION }
-        val turnId = session.beginTurn(instruction, path)
+        val turnId = session.beginTurn(instruction, paths)
         // 历史图片保留策略在 runTurn 里统一执行（对当前轮的图永远放行）
         _messages.update {
             it + ChatUiMessage(
                 id = counter++, turnId = turnId, role = "user", text = text,
-                image = thumbnail, imagePath = path
+                images = images.map { img -> img.thumbnail }, imagePaths = paths
             )
         }
         runTurn(turnId, text, preferVision = true)
+    }
+
+    /**
+     * 把附件栏里的一张图落到 chat_images 并返回可引用的路径：
+     * 已在 chat_images 下的（编辑重发还原）直接用，其它路径复制/缩放后另存。
+     */
+    private fun persistPendingFile(path: String): String? {
+        val f = File(path)
+        if (!f.exists()) return null
+        if (path.contains("chat_images")) return path
+        return ImageUtils.importToChatImages(context, path)
     }
 
     /** 浮动界面「记录」模式：文本直接写入默认日记本（不经模型），并给出反馈消息 */
@@ -589,7 +634,7 @@ class ChatViewModel(
         // 秘密功能：记录用户发出的内容（数字分身素材）
         conversationLog.log(text)
         val turnId = session.beginTurn(text)
-        _messages.update { it + userMsg(counter++, turnId, text, null) }
+        _messages.update { it + userMsg(counter++, turnId, text, emptyList()) }
         runTurn(turnId, text)
     }
 
@@ -600,8 +645,8 @@ class ChatViewModel(
      */
     private suspend fun runTurn(turnId: Long, rawText: String, preferVision: Boolean = false) {
         // 历史图片保留策略：统一在这里执行（所有请求都从这里发出：发送/带图/重做/面板）。
-        // keep=0「仅当前轮」= 只有最近一轮的图会发出去，下一轮（哪怕只是文字）起这张图就不再发送；
-        // keep≥1 保留最近 N 张；keep<0 全留。当前轮的图永远保留（见 Session.enforceImageRetention）。
+        // 0「仅当前轮」= 只有当前这一轮的图发出去，下一轮（哪怕只是文字）起历史图就不再发送；
+        // -1「全部」= 历史里的图每轮都重发。当前轮（含其全部图片）永远保留。
         session.enforceImageRetention(imageRetention)
         // 静态前缀（系统提示词/工具手册/记忆快照/标签/状态快照）变了 → 厂商缓存的前缀整段失效，
         // 把指纹交给会话层比较：不一致就把窗口回落到下限重新起跑（与"到上限回落"共用同一条
@@ -653,10 +698,17 @@ class ChatViewModel(
                 ) {
                     outcome.answer + "\n\n" + Agent.IMAGE_MODEL_GUIDE
                 } else outcome.answer
-                // 工具中间轮写回会话历史：后续追问时模型能看到调用过什么、拿到过什么结果
-                outcome.exchanges.forEach { (request, resultsMsg) ->
-                    session.appendAssistant(turnId, ChatMessage("assistant", request))
-                    session.appendAssistant(turnId, ChatMessage("user", resultsMsg))
+                // 工具中间轮写回会话历史：后续追问时模型能看到调用过什么、拿到过什么结果。
+                // 工具注入的日记图片（read_diary_image）是否随结果消息写回会话轮，由「历史图片保留」
+                // 设置决定：仅当前轮 → 不落库（只在本次回复内可见）；全部图片 → 写回并跨轮重发。
+                outcome.exchanges.forEach { ex ->
+                    session.appendAssistant(turnId, ChatMessage("assistant", ex.call))
+                    // 工具注入的日记图片：「全部图片」才写回会话轮（跨轮重发）；
+                    // 「仅当前轮」不落库——它们只在本次回复内可见（图片仍留在 diary_images 里）。
+                    session.appendToolResult(
+                        turnId, ex.result,
+                        if (imageRetention < 0) ex.imagePaths else emptyList()
+                    )
                 }
                 // 只把**正文**写回历史（不带界面的「🔧 已执行：…」页脚）：
                 // 页脚进历史后模型会模仿它在正文里自己编执行清单（2026-09-14 修的 bug）
@@ -936,7 +988,14 @@ class ChatViewModel(
             // 3) 老快照没有 uncoveredTurns 字段 → 退回用 turns 里"已出窗口且未覆盖"的那些
             (snap.uncoveredTurns + snap.turns.filter { it.id !in live }).map { st ->
                 session.turnFromStored(
-                    st.id, st.userText, st.imagePath, st.assistant, st.createdAt, st.notices
+                    id = st.id,
+                    userText = st.userText,
+                    imagePaths = st.effectiveImagePaths(),
+                    assistantTexts = st.assistant,
+                    assistantImages = st.assistantImagePaths,
+                    assistantRoles = st.assistantRoles,
+                    createdAt = st.createdAt,
+                    notices = st.notices
                 )
             }
         }
@@ -966,7 +1025,7 @@ class ChatViewModel(
                     userText = raw.ifEmpty { null }?.let { t ->
                         if (at > 0L) "[" + fmt.format(java.util.Date(at)) + "] " + t else t
                     },
-                    imagePath = null,
+                    imagePaths = emptyList(),
                     assistantTexts = msgs.filter { it.role == "assistant" }.map { it.spokenBody() },
                     createdAt = at
                 )
@@ -1038,7 +1097,7 @@ class ChatViewModel(
         var base = ""      // 已定格正文（各轮保留正文的累加；维护 text 字段供复制/滚动）
         var roundAcc = ""  // 本轮流式文本累计
         var textThisRound = false  // 本轮是否流出过正文（RoundSettled 时定位要清洗的段）
-        var exchanges: List<Pair<String, String>> = emptyList()
+        var exchanges: List<Agent.ToolExchange> = emptyList()
         var toolNames: List<String> = emptyList()
         var finalAnswer: String? = null
         var finalBody: String? = null
@@ -1148,6 +1207,11 @@ class ChatViewModel(
         val turn = session.lastTurn() ?: return
         if (turn.id != msg.turnId) return
         val rawText = rawUserText(turn) ?: return
+        // 重做前先记下这一轮是否带图（用户图或工具注入的日记图）——
+        // clearAssistant 会把它们一起清掉，之后再看就晚了。
+        // 带图轮必须走「识屏（视觉）」档案，否则纯文本模型遇到图片会 400。
+        val hadImages = turn.imagePaths.isNotEmpty() ||
+            turn.assistantImagePaths.any { it.isNotEmpty() }
         scope.launch {
             _isStreaming.value = true
             _error.value = null
@@ -1156,8 +1220,8 @@ class ChatViewModel(
             updateMessage(messageId) {
                 it.copy(text = "", thinking = "", streaming = true, segments = emptyList(), regenerable = true)
             }
-            // 带图轮重做仍走「识屏」档案（图片还在会话里）
-            runTurn(turn.id, rawText, preferVision = turn.imagePath != null)
+            // 带图轮重做仍走「识屏」档案（用户图可能还在会话里；工具图重做时由模型重新调工具）
+            runTurn(turn.id, rawText, preferVision = hadImages)
             _isStreaming.value = false
         }
     }
@@ -1180,16 +1244,20 @@ class ChatViewModel(
         removed.map { it.turnId }.distinct().forEach { session.deleteTurn(it) }
         refreshContextStatus()
         persistSession()
-        // 带图消息：把原图（chat_images 下的文件）还原进附件栏，编辑后可直接重发
-        val path = lastUser.imagePath
-        if (restoreImage && path != null) {
+        // 带图消息：把原图（chat_images 下的文件）还原进附件栏，编辑后可直接重发（可多张）
+        if (restoreImage && lastUser.imagePaths.isNotEmpty()) {
+            val paths = lastUser.imagePaths
             scope.launch {
                 val pending = withContext(Dispatchers.IO) {
-                    val bmp = ImageUtils.decodeFit(path, ImageUtils.MAX_WIDTH)
-                    if (bmp == null) null
-                    else PendingImage(ImageUtils.thumbnail(bmp), ImageUtils.bitmapToBase64(bmp))
+                    paths.mapNotNull { p ->
+                        val bmp = ImageUtils.decodeThumbnail(p) ?: return@mapNotNull null
+                        PendingImage(thumbnail = bmp, filePath = p)
+                    }
                 }
-                if (pending != null) _pendingImage.value = pending
+                if (pending.isNotEmpty()) {
+                    // 追加而不是替换：撤回前用户若已另选了图，不应被覆盖（仍受总上限约束）
+                    _pendingImages.update { list -> (list + pending).take(MAX_PENDING_IMAGES) }
+                }
             }
         }
         return lastUser.text
@@ -1279,7 +1347,16 @@ class ChatViewModel(
         coveredThroughTurnId = snap.coveredThroughTurnId
         // 待补整理的轮（离开窗口但还没折进缓冲区）：恢复到内存，下次整理一起带上
         uncoveredTurns = snap.uncoveredTurns.map { st ->
-            session.turnFromStored(st.id, st.userText, st.imagePath, st.assistant, st.createdAt, st.notices)
+            session.turnFromStored(
+                id = st.id,
+                userText = st.userText,
+                imagePaths = st.effectiveImagePaths(),
+                assistantTexts = st.assistant,
+                assistantImages = st.assistantImagePaths,
+                assistantRoles = st.assistantRoles,
+                createdAt = st.createdAt,
+                notices = st.notices
+            )
         }
 
         // 旧快照没有 createdAt 字段（2026-09-17 之前）：回退到 userText 的 [时间] 前缀，
@@ -1291,7 +1368,14 @@ class ChatViewModel(
         session.restoreTurns(
             snap.turns.map { t ->
                 session.turnFromStored(
-                    t.id, t.userText, t.imagePath, t.assistant, turnTime[t.id] ?: 0L, t.notices
+                    id = t.id,
+                    userText = t.userText,
+                    imagePaths = t.effectiveImagePaths(),
+                    assistantTexts = t.assistant,
+                    assistantImages = t.assistantImagePaths,
+                    assistantRoles = t.assistantRoles,
+                    createdAt = turnTime[t.id] ?: 0L,
+                    notices = t.notices
                 )
             }
         )
@@ -1301,10 +1385,12 @@ class ChatViewModel(
         // 带图轮：从 chat_images 路径懒加载缩略图（文件可能已被清理策略删掉 → 无缩略图）
         val thumbs = withContext(Dispatchers.IO) {
             snap.turns.mapNotNull { t ->
-                t.imagePath?.let { p -> ImageUtils.decodeThumbnail(p)?.let { b -> t.id to b } }
+                val ps = t.effectiveImagePaths()
+                if (ps.isEmpty()) null
+                else t.id to ps.mapNotNull { ImageUtils.decodeThumbnail(it) }
             }.toMap()
         }
-        val pathByTurn = snap.turns.associate { it.id to it.imagePath }
+        val pathsByTurn = snap.turns.associate { it.id to it.effectiveImagePaths() }
         // 孤儿消息（所属轮已被裁掉、文件里也没存过时刻）的估计时刻，见 estimateLegacyCreatedAt
         val legacyAt = estimateLegacyCreatedAt(turnTime.values, snap.savedAt)
         var stamped = false
@@ -1318,8 +1404,8 @@ class ChatViewModel(
                 text = m.text,
                 thinking = m.thinking,
                 streaming = false,
-                image = thumbs[m.turnId],
-                imagePath = pathByTurn[m.turnId],
+                images = thumbs[m.turnId].orEmpty(),
+                imagePaths = pathsByTurn[m.turnId].orEmpty(),
                 segments = m.segments.map { s ->
                     when (s.kind) {
                         "think" -> MsgSegment.Think(s.text)
@@ -1413,8 +1499,8 @@ class ChatViewModel(
 
     // ---- 内部工具 ----
 
-    private fun userMsg(id: Long, turnId: Long, text: String, image: Bitmap?): ChatUiMessage =
-        ChatUiMessage(id = id, turnId = turnId, role = "user", text = text, image = image)
+    private fun userMsg(id: Long, turnId: Long, text: String, images: List<Bitmap>): ChatUiMessage =
+        ChatUiMessage(id = id, turnId = turnId, role = "user", text = text, images = images)
 
 
     private fun assistantMsg(
@@ -1473,8 +1559,10 @@ class ChatViewModel(
     private fun Session.Turn.toStored(): StoredTurn = StoredTurn(
         id = id,
         userText = userText,
-        imagePath = imagePath,
+        imagePaths = imagePaths,
         assistant = assistant.map { it.textContent },
+        assistantImagePaths = assistantImagePaths.map { it.toList() },
+        assistantRoles = assistant.map { it.role },
         createdAt = createdAt,
         notices = notices.toList()
     )
@@ -1507,6 +1595,9 @@ class ChatViewModel(
 
         /** 只发图片没写要求时的默认指令 */
         private const val DEFAULT_IMAGE_INSTRUCTION = "请描述这张图片"
+
+        /** 一次最多添加的图片张数（与日记多选一致，防一次请求体过大） */
+        const val MAX_PENDING_IMAGES = 9
 
         /** 一天的毫秒数（会话记录保留天数换算用） */
         private const val DAY_MS = 24L * 3600_000L

@@ -168,12 +168,17 @@ class SettingsStore(context: Context) {
         dataStore.edit { it[KEY_CHAT_RETENTION_DAYS] = v }
 
     /**
-     * 历史图片保留张数（-1 = 全部保留；0 = 只保留当前轮；**默认 1**）。
-     * 图片进历史后每轮都要重发（token + 上传体积），故默认只留最近一张；
-     * 更早的图只把 `imagePath` 置空（消息内容不改写），仅在新图加入时产生一次缓存失效。
+     * 历史图片保留档位（2026-10-05 起只有**两档**）：
+     *  - `0` = 仅当前轮：只有当前这一轮的图片发给模型，历史轮的图一律不发（默认）；
+     *  - `-1` = 全部：历史里的图每轮都重发（token/流量最贵，但模型能回看历史图片）。
+     *
+     * 旧版本还支持"最近 1 张 / 3 张"两档，行为诡异（带图轮与纯文字轮之间反复增删前缀）
+     * 已删除；读取时把任何正数归一到 0，旧用户无需手动改设置。
      */
-    val chatImageKeep: Flow<Int> =
-        dataStore.data.map { it[KEY_CHAT_IMAGE_KEEP] ?: DEFAULT_CHAT_IMAGE_KEEP }
+    val chatImageKeep: Flow<Int> = dataStore.data.map {
+        val raw = it[KEY_CHAT_IMAGE_KEEP] ?: DEFAULT_CHAT_IMAGE_KEEP
+        if (raw > 0) 0 else raw
+    }
     suspend fun setChatImageKeep(v: Int) = dataStore.edit { it[KEY_CHAT_IMAGE_KEEP] = v }
 
     // ---- 「进行中的事」缓冲区（2026-09-17）----
@@ -286,8 +291,8 @@ class SettingsStore(context: Context) {
         /** 会话快照保留天数默认值（0 = 不留存） */
         const val DEFAULT_CHAT_RETENTION_DAYS = 7
 
-        /** 历史图片保留张数默认值（-1 = 全部；0 = 只当前轮） */
-        const val DEFAULT_CHAT_IMAGE_KEEP = 1
+        /** 历史图片保留档位默认值（-1 = 全部；0 = 只当前轮）——默认只发当前轮的图 */
+        const val DEFAULT_CHAT_IMAGE_KEEP = 0
 
         /** 「进行中的事」注入块字符上限默认值 */
         const val DEFAULT_BUFFER_CHAR_LIMIT = 1_200

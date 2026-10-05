@@ -429,7 +429,8 @@ class BackupManager(
         settingsStore.setConversationMinTurns(s.conversationMinTurns)
         settingsStore.setConversationCharLimit(s.conversationCharLimit)
         settingsStore.setChatSessionRetentionDays(s.chatSessionRetentionDays)
-        settingsStore.setChatImageKeep(s.chatImageKeep)
+        // 旧备份里的 1/3（"最近 1/3 张"挡位已删除）归一为 0 = 仅当前轮
+        settingsStore.setChatImageKeep(if (s.chatImageKeep > 0) 0 else s.chatImageKeep)
         settingsStore.setDiaryTagsCsv(s.diaryTagsCsv)
         settingsStore.setSecretLogEnabled(s.secretLogEnabled)
         settingsStore.setPanelVoiceMode(s.panelVoiceMode)

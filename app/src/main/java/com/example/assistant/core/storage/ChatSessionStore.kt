@@ -43,10 +43,25 @@ data class StoredTurn(
     val id: Long,
     /** 用户消息文本（已含创建时刻的时间戳前缀） */
     val userText: String? = null,
-    /** 附带图片的本机路径（可为空） */
+    /**
+     * 旧字段：单张附带图片的本机路径（v1.5 及更早的快照）。
+     * 保留只为读旧文件；新写入一律走 [imagePaths]。
+     */
     val imagePath: String? = null,
+    /** 附带图片的本机路径列表（一轮可多张，2026-10-05 起） */
+    val imagePaths: List<String> = emptyList(),
     /** 该轮的助手侧消息（工具调用原文 / [结果] 回传 / 最终回答），按顺序 */
     val assistant: List<String> = emptyList(),
+    /**
+     * 与 [assistant] 一一对应的工具注入图片路径（read_diary_image 看过的日记图；空=该条无图）。
+     * 旧快照没有此字段 → 全空；只存路径不存 base64，文件仍在 diary_images 下。
+     */
+    val assistantImagePaths: List<List<String>> = emptyList(),
+    /**
+     * 与 [assistant] 一一对应的消息角色（"assistant" | "user"）。
+     * 工具结果回传是 user 消息；旧快照没有此字段 → 由"是否带注入图片"推断（会退化）。
+     */
+    val assistantRoles: List<String> = emptyList(),
     /** 该轮创建时刻（按保留天数清理用；旧快照没有此字段时回退到 userText 时间戳/保存时刻） */
     val createdAt: Long = 0L,
     /**
@@ -54,7 +69,15 @@ data class StoredTurn(
      * **必须持久化**：它的位置是缓存前缀的一部分，重启后位置变了就等于把前缀改了。
      */
     val notices: List<String> = emptyList()
-)
+) {
+    /**
+     * 兼容旧快照：优先用新字段 [imagePaths]；旧文件只有单图 [imagePath] 时回退成单元素列表。
+     * 图片路径可能指向已清理的文件——读取方（Session.imagePartOf）会自行判断存在性。
+     */
+    fun effectiveImagePaths(): List<String> =
+        if (imagePaths.isNotEmpty()) imagePaths
+        else listOfNotNull(imagePath?.takeIf { it.isNotBlank() })
+}
 
 @Serializable
 data class StoredUiMessage(

@@ -1299,12 +1299,8 @@ private fun formatBytes(bytes: Long): String = when {
 
 // ======================= 聊天上下文（入口卡 + 子页面） =======================
 
-/** 历史图片保留张数的展示文案 */
-private fun imageKeepLabel(keep: Int): String = when (keep) {
-    -1 -> "全部"
-    0 -> "仅当前轮"
-    else -> "最近 $keep 张"
-}
+/** 历史图片保留档位的展示文案（只有两档：仅当前轮 / 全部） */
+private fun imageKeepLabel(keep: Int): String = if (keep < 0) "全部图片" else "仅当前轮"
 
 /** 主页入口卡：「进行中的事」缓冲区（只显示摘要，详细配置进子页） */
 @Composable
@@ -1602,7 +1598,7 @@ private fun ChatContextPage(vm: SettingsViewModel, onBack: () -> Unit) {
         item {
             GlassCard {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("历史图片保留张数", style = MaterialTheme.typography.titleSmall)
+                    Text("历史图片保留", style = MaterialTheme.typography.titleSmall)
                     Text(
                         "带图对话的图片每轮都要重发，保留越少越省 token 与流量。当前：${imageKeepLabel(imageKeep)}。",
                         style = MaterialTheme.typography.bodySmall,
@@ -1614,9 +1610,7 @@ private fun ChatContextPage(vm: SettingsViewModel, onBack: () -> Unit) {
                     ) {
                         listOf(
                             0 to "仅当前轮",
-                            1 to "最近 1 张",
-                            3 to "最近 3 张",
-                            -1 to "全部"
+                            -1 to "全部图片"
                         ).forEach { (v, label) ->
                             FilterChip(
                                 selected = imageKeep == v,
@@ -1626,9 +1620,10 @@ private fun ChatContextPage(vm: SettingsViewModel, onBack: () -> Unit) {
                         }
                     }
                     Text(
-                        "图片每轮都要重新上传，保留越少越省 token 与流量。当前轮的图片**永远**会发给模型；" +
-                            "「仅当前轮」= 下一轮开始（哪怕只是文字）这张图就不再发送；" +
-                            "改小保留张数只会把更早的图换成文字，造成一次性缓存失效。",
+                        "图片每轮都要重新上传：保留越少越省 token 与流量。当前轮的图片（含一次发的多张）" +
+                            "**永远**会发给模型。\n" +
+                            "「仅当前轮」= 下一轮开始（哪怕只是文字）历史图片就不再发送；" +
+                            "「全部图片」= 历史里的图每轮都重发，模型能回看之前的图。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

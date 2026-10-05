@@ -229,7 +229,7 @@ class SettingsViewModel(
         viewModelScope.launch { settingsStore.setChatSessionRetentionDays(v) }
     }
 
-    /** 历史图片保留张数（-1 = 全部；0 = 只当前轮；默认 1） */
+    /** 历史图片保留档位（-1 = 全部；0 = 只当前轮；默认 0 = 仅当前轮） */
     val chatImageKeep: StateFlow<Int> = settingsStore.chatImageKeep
         .stateIn(
             viewModelScope, SharingStarted.WhileSubscribed(5000),

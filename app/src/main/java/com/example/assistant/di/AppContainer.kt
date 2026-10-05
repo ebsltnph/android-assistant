@@ -13,6 +13,7 @@ import com.example.assistant.core.agent.PromptBuilder
 import com.example.assistant.core.agent.ReminderTimeParser
 import com.example.assistant.core.agent.tools.MonitorEventTool
 import com.example.assistant.core.agent.tools.ListRemindersTool
+import com.example.assistant.core.agent.tools.ReadDiaryImageTool
 import com.example.assistant.core.agent.tools.ReadDiaryTool
 import com.example.assistant.core.agent.tools.ReadWebpageTool
 import com.example.assistant.core.agent.tools.ScreenSenseTool
@@ -28,6 +29,7 @@ import com.example.assistant.core.agent.tools.WriteMemoryTool
 import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.backup.BackupManager
 import com.example.assistant.core.network.AsrClient
+import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.PageReader
 import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.SearchClient
@@ -157,6 +159,12 @@ class AppContainer(context: Context) {
                 ReadWebpageTool(pageReader),
                 // 读日记：主模型可检索用户历史日记
                 ReadDiaryTool(diaryRepository),
+                // 看日记图片：把某条日记的图片原图送回对话让主模型亲眼看。
+                // 工具只返回图片路径，由 Agent 负责注入图片并切到视觉档案（见 Agent.chatReplyFlow）
+                ReadDiaryImageTool(diaryRepository) {
+                    val p = providerRegistry.profileFor(Capability.VISION)
+                    p?.supportsVision == true && p.isConfigured()
+                },
                 // 改日记：按 #id 修改正文/标签或删除（id 来自 read_diary 的结果）
                 UpdateDiaryTool(diaryRepository) { parseDiaryTags(settingsStore.diaryTagsCsv.first()) },
                 // 读提醒：查看提醒列表（"我有哪些提醒 / 明天有什么安排"）

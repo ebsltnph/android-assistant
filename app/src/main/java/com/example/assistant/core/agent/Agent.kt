@@ -51,19 +51,30 @@ class Agent(
          * @param body 进会话历史用：**只有正文**，不带页脚——页脚是界面装饰，
          *        写进历史后模型会模仿它在正文里自己编"已执行"清单（2026-09-14 修的 bug）
          * @param toolNames 成功执行过的工具名
-         * @param exchanges 工具中间轮：(模型输出原文, 回传的结果消息)
+         * @param exchanges 工具中间轮（调用原文 + 回传结果 + 注入的图片路径）
          * @param usage **本轮全部请求的用量合计**（不是最后一次请求；界面显示的缓存命中率按整轮算）
          * @param requests 本轮发出的模型请求次数（工具回路每转一圈多一次）
          */
         data class Final(
             val answer: String,
             val toolNames: List<String>,
-            val exchanges: List<Pair<String, String>>,
+            val exchanges: List<ToolExchange>,
             val usage: Usage? = null,
             val requests: Int = 0,
             val body: String = answer
         ) : ReplyEvent
     }
+
+    /**
+     * 一次工具中间轮：模型输出原文 + 回传的结果消息 + 该轮**注入对话的图片路径**
+     * （read_diary_image 看过的日记图）。界面层据此把图片写回会话（是否跨轮保留由
+     * Session 的历史图片保留策略决定）。
+     */
+    data class ToolExchange(
+        val call: String,
+        val result: String,
+        val imagePaths: List<String> = emptyList()
+    )
 
     sealed interface AgentResult {
         /** 需要走对话回路（流式 + 工具循环）；capability 决定用哪个档案（带图轮走「识屏」档案） */
@@ -243,7 +254,7 @@ class Agent(
         val finalized = StringBuilder()                        // 各轮保留正文的累加
         val usedToolNames = LinkedHashSet<String>()           // 成功执行过的工具名
         val usedLabels = LinkedHashSet<String>()              // 成功执行过的动作描述（页脚）
-        val exchanges = mutableListOf<Pair<String, String>>() // (模型输出原文, 回传的结果消息)
+        val exchanges = mutableListOf<ToolExchange>()           // 工具中间轮（含注入的图片路径）
         val successMemo = HashMap<String, String>()           // 本回复内成功调用备忘（签名→feedback），重复调用直接复用
         var usageSum: Usage? = null                           // 本轮**全部请求**的用量合计（见 accumulateUsage）
         var requests = 0                                      // 本轮发出的模型请求次数
@@ -259,6 +270,9 @@ class Agent(
             finalized.append(p)
         }
 
+        // 本轮回复使用的档案：默认按调用方给的能力；一旦 read_diary_image 把图片塞进对话，
+        // 后续请求必须改用「识屏（视觉）」档案（与对话档案相同则行为无差别）
+        var currentCapability = capability
         var guard = 0
         while (true) {
             if (++guard > GUARD_LIMIT) break
@@ -268,7 +282,7 @@ class Agent(
             var released = false
             var reqUsage: Usage? = null                 // 本次请求的用量（流式厂商在最后一个 chunk 带）
             requests++
-            chatStream(messages, capability).collect { chunk ->
+            chatStream(messages, currentCapability).collect { chunk ->
                 chunk.usage?.let { reqUsage = it }
                 val delta = chunk.choices.firstOrNull()?.delta
                 val t = delta?.textContent.orEmpty()
@@ -310,6 +324,8 @@ class Agent(
             val uniqueCalls = calls.distinctBy { it.tool.name + "|" + it.args.toString() }
             emit(ReplyEvent.ToolsRunning(uniqueCalls.map { it.label }))
             val sb = StringBuilder("[结果]")
+            // 本轮工具要注入对话的图片（read_diary_image 返回的原图路径）
+            val roundImages = LinkedHashSet<String>()
             uniqueCalls.forEachIndexed { i, call ->
                 val sig = call.tool.name + "|" + call.args.toString()
                 // 只读工具（read_diary/list_reminders/read_webpage/web_search）**不复用旧结果**：
@@ -328,6 +344,7 @@ class Agent(
                     is ToolOutcome.Success -> {
                         usedToolNames += call.tool.name
                         usedLabels += call.label
+                        if (outcome.images.isNotEmpty()) roundImages.addAll(outcome.images)
                         sb.append("｜状态：成功\n").append(outcome.feedback)
                     }
                     is ToolOutcome.Failure ->
@@ -337,8 +354,21 @@ class Agent(
             sb.append("\n\n请根据以上结果继续：信息足够就直接给出正式回答；有失败可修正参数重新调用（剩余次数有限），或如实告知用户。")
             val resultsMsg = sb.toString()
 
-            messages = messages + ChatMessage("assistant", cleanAcc) + ChatMessage("user", resultsMsg)
-            exchanges += cleanAcc to resultsMsg
+            messages = messages + ChatMessage("assistant", cleanAcc)
+            if (roundImages.isEmpty()) {
+                messages = messages + ChatMessage("user", resultsMsg)
+            } else {
+                // 读图工具把日记图片原图送回：作为本轮结果消息的 image part 塞进对话，
+                // 让主模型亲眼看到；后续请求切到「识屏（视觉）」档案（对话模型本身带视觉则无差别）。
+                // 图片路径随 ToolExchange 一起回传，由界面层写回会话轮；
+                // 是否跨轮保留由「历史图片保留」设置决定（仅当前轮会清掉，全部则每轮重发）。
+                currentCapability = Capability.VISION
+                val parts = ArrayList<ContentPart>(roundImages.size + 1)
+                parts += ContentPart.text(resultsMsg)
+                roundImages.forEach { p -> Session.imagePartOf(p)?.let { parts += it } }
+                messages = messages + ChatMessage("user", parts)
+            }
+            exchanges += ToolExchange(cleanAcc, resultsMsg, roundImages.toList())
 
             if (toolRounds >= ToolRegistry.MAX_TOOL_ROUNDS && !forcedFinal) {
                 messages += ChatMessage("user", ToolRegistry.FORCED_FINAL_NOTE)
@@ -359,7 +389,7 @@ class Agent(
         finalized: StringBuilder,
         usedToolNames: Set<String>,
         usedLabels: Set<String>,
-        exchanges: List<Pair<String, String>>,
+        exchanges: List<ToolExchange>,
         usage: Usage?,
         requests: Int
     ): ReplyEvent.Final {
@@ -389,8 +419,10 @@ class Agent(
             model = profile.model,
             messages = messages,
             temperature = 0.7,
-            // 4096：推理模型思考占配额，且多轮工具场景回答更长（2048 曾被吃光）
-            maxTokens = 4096,
+            // 8192（2026-10-05 从 4096 提高）：推理模型思考也吃这个配额，且多轮工具场景
+            // 回答更长；4096 时偶尔 finish_reason=length 把回答截断。8192 与小结/整理量级一致，
+            // 主流模型都支持（项目中期间总结已在用 16384）。
+            maxTokens = CHAT_MAX_TOKENS,
             stream = true,
             reasoningEffort = effort,
             // 流式也要用量统计：缓存命中 token 是验证"提示词缓存是否生效"的唯一手段
@@ -469,6 +501,9 @@ class Agent(
     companion object {
         /** 循环保险丝：正常最多 纯答/多轮工具+强制收尾 轮 */
         private const val GUARD_LIMIT = 10
+
+        /** 单轮对话回复的输出配额（推理模型的思考过程也占这个配额） */
+        private const val CHAT_MAX_TOKENS = 8192
 
         /** 界面上的系统页脚前缀（不进会话历史；正文里出现即视为模型仿写） */
         const val FOOTER_PREFIX = "🔧 已执行："
