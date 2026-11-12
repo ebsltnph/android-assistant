@@ -74,13 +74,13 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 
 设计要点：
 - **单一 API 契约**：所有功能复用同一套 OpenAI 兼容接口；`ProviderRegistry` 按能力（对话/识屏/分类）解析提供商档案，按 baseUrl 缓存 Retrofit 实例
-- **提示词缓存结构**（`PromptBuilder` 保证，**四段布局**，2026-09-11 起）：
-  `messages[0]` 静态系统外壳+用户设定（缓存）→ `messages[1]` **工具手册+日记标签词汇表**（缓存）→ `messages[2]` 长期记忆块（缓存）→ `messages[3..n]` 对话尾部（**每个用户消息自带创建时刻的 `[yyyy-MM-dd HH:mm]` 时间戳**，不再有单独的"当前时间"易变消息）
+- **提示词缓存结构**（`PromptBuilder` 保证，四段布局，2026-09-11 起）：
+  `messages[0]` 静态系统外壳+用户设定（缓存）→ `messages[1]` **工具使用原则+日记标签词汇表**（缓存；工具 JSON Schema 走请求的 `tools` 字段，不在消息里）→ `messages[2]` 长期记忆块（缓存）→ `messages[3..n]` 对话尾部（**每个用户消息自带创建时刻的 `[yyyy-MM-dd HH:mm]` 时间戳**，不再有单独的"当前时间"易变消息）
   - 分层原则：**块顺序按"最稳定 → 最易变"排；绝不把易变内容（如当前时间）放在对话之前**——提示词缓存按最长公共前缀命中，中间插一条每分钟都变的消息会让其后整段历史永远无法命中（2026-09-11 修正的根因）
   - 上下文窗口：**上下限双阈值**（到上限 U 后回落到下限 L 再重新累积 ⇒ 发送序列 L→L+1→…→U→L，区间内每轮都是上一轮的延长）+ 字符软上限兜底
 - **识图 = 同一条聊天通道，只换模型**（2026-09-11 起）：带图轮走 `Capability.VISION` 档案，其余（上下文/工具/思维链/重做/编辑/删除）与纯文字轮完全一致；图片存 `filesDir/chat_images`，会话只留路径；**没有任何"隐藏的静默调用"**（原 `Agent.silentReply` 已删除）
 - **意图路由**：仅识屏关键词本地直连；其余全部进对话回路由主模型自主调度（无独立分类调用）
-- **主模型统一工具调度（2026-08-24 架构定稿）**：提醒/记录/长期记忆/监控/搜索/网页阅读/识屏全部由主聊天模型经文本协议 `[调用] {"tool":...,"args":{...}}` 自主发起，`ToolRegistry` 解析分发、`Agent.chatReplyFlow` 统一回路执行与结果回传；仅剩识屏关键词本地直连与后台批处理（小结/期间总结/简报/事件轮询命中判断/日记页记忆抽取）走独立调用
+- **主模型统一工具调度（原生 Function Calling，2026-11-13 起）**：提醒/记录/长期记忆/监控/搜索/网页阅读/识屏全部由主聊天模型经**原生 `tools`/`tool_calls`** 自主发起，工具结果以 `role=tool` + `tool_call_id` 配对回传；`ToolRegistry` 只负责 schema/分发/执行，不再解析正文调用行。仅剩识屏关键词本地直连与后台批处理（小结/期间总结/简报/事件轮询命中判断/日记页记忆抽取）走独立调用
 
 ## 开发阶段状态
 
@@ -239,7 +239,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **新增设置键**（均已进备份）：`panel_auto_voice_enabled`、`voice_silence_ms`、`conversation_min_turns`、`conversation_context_char_limit`、`chat_session_retention_days`、`chat_image_keep`；`conversation_max_turns` 沿用旧键（默认 10→20）
   - **沙箱编译环境记录**：本机 `~/.gradle` 在 DSH 沙箱里只读，构建时用工作区内副本：`$env:GRADLE_USER_HOME="<repo>\.gradle\ghome"` + `--offline`（Kotlin daemon 起不来会回退进程内编译，属正常）
 - [x] **设置页整理 + 两个新工具 + 清空确认 + 滑动卡顿排查**（2026-09-11，编译通过，待真机复验）
-  - **设置页拆子页面**：悬浮球语音输入（总开关/方式/停顿）与聊天上下文（上下限/字符上限/会话保留/历史图片）各拆独立子页，主页只留一行摘要（右侧箭头，与其它入口卡一致）；chip 改 `FlowRow` 自动换行——修复"最右侧选项被压成扁条看不见字"
+  - **设置页拆子页面**：悬浮球语音输入（总开关/方式/停顿）、聊天上下文（上下限/字符上限/会话保留/历史图片）、联网搜索与抓取（双提供商/Key/测试/事件状态）各拆独立子页，主页只留一行摘要（右侧箭头，与其它入口卡一致）；chip 改 `FlowRow` 自动换行——修复"最右侧选项被压成扁条看不见字"
   - **会话保留天数语义（用户确认）**：0 = **只停止持久化并删除已存快照**，当前会话与界面继续保留（不立即清空）；清空用聊天页删除按钮
   - **聊天页右上角「清空对话」加二次确认**（与删除单条一致，防误触）
   - **新工具 2 个（9 → 11）**：`update_diary(id, content?, tags?, delete?)` 改/删已有日记（id 来自 read_diary——**read_diary 返回每条都带 `#id`**；删除连图片文件一起清）；`list_reminders(scope?, limit?)` 读提醒列表（pending/all，带 #id、重复规则、状态）。配套：`ReminderRepository.all()`、`JsonObject.argLong/argBool/hasArg`；**记录兜底加保护**——本轮碰过日记（read/update/write）就不再触发"没调 write_diary 就存原文"的兜底，否则"把日记改成…"会被多写一条
@@ -329,6 +329,20 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **性能/健壮性**：`Turn.charWeight()` 不再走 `messages()`（原先 `planWindow` 每轮为算字符当量把每张图读盘+base64，现只 `File.exists`）；`Session.imagePartOf` 加**按 mtime 失效、上限 12 条**的缓存；`regenerate` 在 `clearAssistant` **之前**捕获"这一轮是否有图"（含 `assistantImagePaths`），避免带图轮重做走纯文本档案；`ReadDiaryImageTool` 可用性判断含 `isConfigured()`。
   - **测试**：`SessionAndDiaryGuardTest` 扩到覆盖多图/两档保留/工具注入图保留与三表对齐 —— 全套 **84 例**通过。装机：`adb install -r` 覆盖安装，启动无 FATAL。子 agent 审查后按报告修了文件名碰撞、主线程读图、角色漂移、路径校验等，复核确认可发布。
   - **v1.8.1 发布**（2026-10-05）：版本号 1.8.0 → **1.8.1 / code 16**（PATCH，用户指定；按项目此前"有新功能 = MINOR"的约定严格说该记 MINOR，用户拍板 1.8.1）。提交 `8fdb0a0`，GitHub Release **v1.8.1**（Latest）已附 `app-release.apk`（**14,376,680 字节**，sha256 `f22b25bab98aa461a047135a0139ff861ddaf8c0f680bc25b207d800c5940a97`，与本地构建产物一致；target = `8fdb0a0d9a4bf985333b64777750d6a9a29874af`）。**推送坑复现**：workspace-write 下 `git push` 报 `sh.exe couldn't create signal pipe, Win32 error 5` + `could not read Username`；提权（danger-full-access）+ 仓库级 `credential.helper='!gh auth git-credential'` + `-c http.sslBackend=openssl` + socks5 代理后成功。⚠️ 提权那次 pwsh 会把 git 的 stderr 当成 NativeCommandError 报 **exit code 1**，但输出里有 `e31543f..8fdb0a0 master -> master` 即代表推送成功（别被退出码骗了）。`gh release create` 仍走**直连**（不设 HTTPS_PROXY），11.5s 内完成。
+
+- [x] **联网搜索/抓取双提供商 + 原生 Function Calling 改造**（2026-11-13，**128 个单测通过，Debug/Release 构建通过，真机验证通过**）
+  - **搜索/抓取独立选择**：设置主页只保留一行「联网搜索与抓取」摘要入口（显示当前搜索/抓取提供商），点进独立子页再配置两个下拉框、Key、测试；提供商详情只在该提供商被搜索或抓取选中时显示，测试按钮也只显示对应能力。搜索与抓取各自选 Tavily / DeepSeek；**默认仍是 Tavily + Tavily**，升级不自动产生费用。选中哪个就只用哪个，**失败绝不跨提供商回退**（避免查询/密钥改道和隐藏计费）。
+  - **Tavily 保持默认**：`/search` + `/extract`，空 key 继续 keyless；`include_domains` 修正为官方要求的 `string[]`；keyless 实测仍可用，但连续请求会 HTTP 429——错误会显示真实状态与限流建议，不再吞掉。
+  - **DeepSeek 官方 Web API（可选付费）**：`POST https://api.deepseek.com/v1/tools/search` / `/v1/tools/fetch`，Bearer 鉴权。Search 发 `query/count/need_content=false`；`timeRange` 转 `after:`、`includeDomains` 转 `site:` 操作符；摘要优先 `summary` 再 `snippet`；Fetch 返回 Markdown。官方当前 ¥5/千次成功请求，UI 测试按钮前有费用提示。
+  - **DeepSeek 凭据**：优先专用 `deepseek_web_api_key`（加密、不进备份）；否则仅当**当前「对话」档案**是 `api.deepseek.com` 官方端点时复用它。**不自动挑任意 DeepSeek 档案**，避免用错账号计费；缺凭据时明确失败。
+  - **诊断**：设置页可分别测试搜索/抓取（真实结果、耗时、HTTP 错误）；`WebAccessStatusStore` 记录事件监控最近一次搜索状态并在**事件详情**展示（设置子页不再显示“最近事件搜索”行）；失败不推进 `markChecked`，下一次 6h 周期会重试，不会被 `pollHours` 压一天。
+  - **原生工具协议（只保留原生，无文本 fallback）**：删除 `[调用]` 手册/解析/纯调用轮；请求携带 13 个工具的稳定 JSON Schema（`ToolSchemas.kt`），流式解析 `tool_calls`（按 index 累计、空 id/name 不覆盖、并行缺 index 报协议错误、非法参数按 call_id 回错误），结果用 `role=tool` + `tool_call_id` 配对；图片工具的结果之后再注入 user 图片消息。
+  - **DeepSeek reasoning 回放**：工具调用轮的 `reasoning_content` 必须保存并在后续请求完整回传（官方思考模式要求）；`ChatMessage`/`Session`/`StoredTurn.assistantMeta` 全链路保存，非官方端点不回传该字段。缺失会导致 HTTP 400。
+  - **会话迁移**：`StoredChat.protocolVersion`（旧=1，新=2）；旧快照里的文本 `[调用]`/`[结果]` 中间轮只在**模型上下文**中剥离，界面消息保留；首次升级会重建一次前缀/窗口。
+  - **上下文整理**：改非流式原生 `tool_calls`，只允许执行 `update_buffer`；**未成功写入不推进水位线**（避免裁掉的轮永久丢失），noop 必须显式调用。特殊标记（DSML/XML/旧调用）由 `ProtocolLeakFilter` 缓冲/剥离，绝不执行；held 正文在 `RoundSettled` 补 Text 段，避免界面不可见。
+  - **序列化坑**：`ApiClient` 改 `encodeDefaults=false` 后，所有请求必带常量字段（role/content/type/temperature/max_tokens/stream/tool type/stream_options）必须用 `@EncodeDefault(ALWAYS)`；纯文本 content 序列化为字符串，带图才发数组。
+  - **测试**：新增 SearchProviderTest / NativeToolCallAssemblerTest / ChatWireProtocolTest / NativeSessionPersistenceTest / ProtocolLeakFilterTest；全套 **128 例通过**。`assembleDebug`/`assembleRelease` 通过；`lintDebug` 仍有 **6 个既有错误**（RemoteVoiceRecorder 权限、FloatingPanel super、OrientationUtils API30、TileService 弃用），不是本次引入，未改。
+  - **真机验证（2026-11-13）**：① 旧会话打开/迁移正常，界面消息保留；② Tavily 搜索与抓取测试均成功（keyless 连续探测会 429，属限流）；③ DeepSeek 搜索/抓取测试均 HTTP 200、无异常；④ DeepSeek 凭据复用官方对话档案正常；⑤ 聊天确认工具确实以结构化 `tool_calls` 发起，未再出现正文 DSML/`[调用]` 标记。设置子页收纳与“只显示当前选中提供商”已真机确认并恢复原 Tavily 默认。
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细开发计划见本机 `.claude/plans/` 目录（未入库）。

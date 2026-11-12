@@ -1,13 +1,13 @@
 package com.example.assistant.core.agent.tools
 
-import com.example.assistant.core.network.PageReader
+import com.example.assistant.core.network.WebAccessRegistry
 import kotlinx.serialization.json.JsonObject
 
 /**
  * 网页阅读工具：读取指定 URL 的正文全文（Tavily Extract）。
  * 正文截断到约 6000 字防上下文爆炸；失败原因回传，模型可换来源或放弃。
  */
-class ReadWebpageTool(private val pageReader: PageReader) : AssistantTool {
+class ReadWebpageTool(private val webAccess: WebAccessRegistry) : AssistantTool {
 
     override val name = "read_webpage"
     override val readOnly = true
@@ -27,12 +27,15 @@ class ReadWebpageTool(private val pageReader: PageReader) : AssistantTool {
             return ToolOutcome.Failure("url 必须以 http:// 或 https:// 开头，收到的是：" + url.take(100))
         }
         return try {
-            val content = pageReader.extract(url)
+            val page = webAccess.currentPageReader().extract(url)
+            val content = page.content
             val truncated = content.length > MAX_CHARS
             val body = if (truncated) content.take(MAX_CHARS) else content
+            val titleLine = page.title?.takeIf { it.isNotBlank() }?.let { "《$it》\n" }.orEmpty()
             ToolOutcome.Success(
                 buildString {
-                    append("网页 ").append(url).append(" 的正文：\n\n").append(body)
+                    append("网页 ").append(url).append(" 的正文：\n\n")
+                        .append(titleLine).append(body)
                     if (truncated) append("\n\n（正文过长，已截断到前 ").append(MAX_CHARS).append(" 字）")
                 }
             )

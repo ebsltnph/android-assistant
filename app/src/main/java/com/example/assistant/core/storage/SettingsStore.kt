@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.assistant.core.network.Capability
+import com.example.assistant.core.network.WebProvider
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -69,6 +70,21 @@ class SettingsStore(context: Context) {
         it[KEY_QUIET_START] = startMinute
         it[KEY_QUIET_END] = endMinute
     }
+
+    // ---- 联网搜索与抓取（搜索/抓取独立选择；默认 Tavily，升级不产生费用） ----
+    /** 搜索提供商；未知/缺失值回退 Tavily */
+    val searchProvider: Flow<WebProvider> = dataStore.data.map {
+        WebProvider.fromStorage(it[KEY_SEARCH_PROVIDER])
+    }
+    suspend fun setSearchProvider(provider: WebProvider) =
+        dataStore.edit { it[KEY_SEARCH_PROVIDER] = provider.storageValue }
+
+    /** 抓取提供商；与搜索独立，默认 Tavily */
+    val fetchProvider: Flow<WebProvider> = dataStore.data.map {
+        WebProvider.fromStorage(it[KEY_FETCH_PROVIDER])
+    }
+    suspend fun setFetchProvider(provider: WebProvider) =
+        dataStore.edit { it[KEY_FETCH_PROVIDER] = provider.storageValue }
 
     // ---- 高级设置：思考深度（"default" = 不发送参数，跟随厂商/模型默认） ----
     // 2026-08-07 起只保留深度（OpenAI 通用参数 reasoning_effort）；思考开关删除了——
@@ -252,6 +268,8 @@ class SettingsStore(context: Context) {
         private val KEY_BRIEFING_ENABLED = booleanPreferencesKey("briefing_enabled")
         private val KEY_QUIET_START = intPreferencesKey("quiet_start_minute")
         private val KEY_QUIET_END = intPreferencesKey("quiet_end_minute")
+        private val KEY_SEARCH_PROVIDER = stringPreferencesKey("search_provider")
+        private val KEY_FETCH_PROVIDER = stringPreferencesKey("fetch_provider")
         private val KEY_REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
         private val KEY_FLOATING_BALL = booleanPreferencesKey("floating_ball_enabled")
         private val KEY_PANEL_VOICE_MODE = stringPreferencesKey("panel_voice_mode")

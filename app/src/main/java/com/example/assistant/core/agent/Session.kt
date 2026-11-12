@@ -2,6 +2,7 @@ package com.example.assistant.core.agent
 
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.network.dto.ContentPart
+import com.example.assistant.core.storage.toChatToolCall
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -138,6 +139,13 @@ class Session {
             }
             assistant.forEachIndexed { i, m ->
                 total += m.content.sumOf { it.text.orEmpty().length }
+                total += m.reasoningContent?.length ?: 0
+                total += m.toolCallId?.length ?: 0
+                m.toolCalls?.forEach { call ->
+                    total += call.id.length + call.type.length
+                    total += (call.function?.name?.length ?: 0) +
+                        (call.function?.arguments?.length ?: 0)
+                }
                 total += assistantImagePaths.getOrNull(i).orEmpty().count {
                     it.isNotBlank() && java.io.File(it).exists()
                 } * IMAGE_CHAR_EQUIVALENT
@@ -207,24 +215,48 @@ class Session {
         assistantTexts: List<String>,
         assistantImages: List<List<String>> = emptyList(),
         assistantRoles: List<String> = emptyList(),
+        assistantMeta: List<com.example.assistant.core.storage.StoredAssistantMeta> = emptyList(),
         createdAt: Long = 0L,
-        notices: List<String> = emptyList()
+        notices: List<String> = emptyList(),
+        /** 旧协议快照（protocolVersion<2）：只清模型上下文里的文本工具中间轮，不碰界面消息 */
+        stripLegacyProtocol: Boolean = false
     ): Turn {
-        // 文本 / 图片路径 / 角色一一配对后再过滤，保证三个列表不错位。
-        // 角色：新快照按存下来的 role 还原（工具结果是 user）；旧快照没有该字段时，
-        // 退化为"带注入图片的算 user，其余 assistant"（旧的 [结果] 消息会变成 assistant）。
-        val entries = assistantTexts.mapIndexed { i, txt ->
+        // 文本 / 图片路径 / 角色 / 原生元数据一一配对后再过滤，保证不错位。
+        val entries = assistantTexts.mapIndexedNotNull { i, txt ->
             val clean = com.example.assistant.core.agent.tools.stripFakeFooterLines(txt)
             val imgs = assistantImages.getOrNull(i).orEmpty().filter { it.isNotBlank() }
-            val storedRole = assistantRoles.getOrNull(i)
-            val role = if (storedRole == "user" || storedRole == "assistant") storedRole
-            else if (imgs.isNotEmpty()) "user" else "assistant"
-            Triple(clean, imgs, role)
-        }.filter { it.first.isNotBlank() || it.second.isNotEmpty() }
+            val meta = assistantMeta.getOrNull(i)
+            val storedRole = meta?.role?.takeIf { it in VALID_ROLES }
+                ?: assistantRoles.getOrNull(i)?.takeIf { it in VALID_ROLES }
+            val role = storedRole
+                ?: if (imgs.isNotEmpty()) "user" else "assistant"
+            val toolCalls = meta?.toolCalls.orEmpty().map { it.toChatToolCall() }
+            val reasoning = meta?.reasoningContent?.takeIf { it.isNotBlank() }
+            val toolCallId = meta?.toolCallId?.takeIf { it.isNotBlank() }
+
+            // 旧文本协议：assistant 的 [调用] 中间轮、user 的 [结果] 回传都无法安全转成原生
+            // （缺 id/reasoning），从模型上下文移除；最终回答与界面消息保留。
+            if (stripLegacyProtocol) {
+                if (role == "user" || role == "tool") return@mapIndexedNotNull null
+                if (toolCalls.isEmpty() && (containsLegacyCallLine(clean) ||
+                        clean.trimStart().startsWith("[结果]"))
+                ) return@mapIndexedNotNull null
+            }
+            if (clean.isBlank() && imgs.isEmpty() && toolCalls.isEmpty()) return@mapIndexedNotNull null
+
+            val message = ChatMessage(
+                role = role,
+                content = listOf(com.example.assistant.core.network.dto.ContentPart.text(clean)),
+                reasoningContent = reasoning,
+                toolCalls = toolCalls.takeIf { it.isNotEmpty() },
+                toolCallId = toolCallId
+            )
+            Triple(message, imgs, role)
+        }
         return Turn(
             id = id,
             userText = userText,
-            assistant = entries.map { ChatMessage(it.third, it.first) }.toMutableList(),
+            assistant = entries.map { it.first }.toMutableList(),
             imagePaths = imagePaths,
             createdAt = createdAt,
             notices = notices.filter { it.isNotBlank() }.toMutableList(),
@@ -273,14 +305,20 @@ class Session {
     }
 
     /**
-     * 追加一条**工具结果**消息（role=user），可携带工具注入的图片路径
-     * （read_diary_image 看过的日记图）。图片路径单独存放，[Turn.messages]
-     * 组装请求时才读成 image part，与回复当次请求的形态完全一致。
+     * 追加一条**工具结果/图片回放**消息（role=tool 或带图 user），可携带图片路径。
+     *
+     * 原生协议下 assistant 的 tool_calls 与 tool_call_id 必须成对保存；
+     * 图片路径单独存放，[Turn.messages] 组装请求时才读成 image part。
      */
-    fun appendToolResult(turnId: Long, text: String, imagePaths: List<String> = emptyList()) {
+    fun appendReplayMessage(turnId: Long, msg: ChatMessage, imagePaths: List<String> = emptyList()) {
         val turn = turns.firstOrNull { it.id == turnId } ?: return
-        turn.assistant += ChatMessage("user", text)
+        turn.assistant += msg
         turn.assistantImagePaths.add(imagePaths.filter { it.isNotBlank() })
+    }
+
+    /** 兼容旧调用：追加一条 user 角色的工具结果文本 */
+    fun appendToolResult(turnId: Long, text: String, imagePaths: List<String> = emptyList()) {
+        appendReplayMessage(turnId, ChatMessage("user", text), imagePaths)
     }
 
     /** 只有助手消息的一轮（浮动面板记录提示、识屏结果回填） */
@@ -477,6 +515,16 @@ class Session {
     companion object {
         /** 图片的字符当量（字符软上限的粗略折算：图片 token 与分辨率有关，这里只做量级估计） */
         const val IMAGE_CHAR_EQUIVALENT = 1_500
+
+        private val VALID_ROLES = setOf("assistant", "user", "tool")
+        private val LEGACY_CALL_LINE = Regex("""^[ \t]*[\[［][ \t]*调[ \t]*用[ \t]*[\]］]""")
+
+        /**
+         * 旧 cleanAcc 可能是「一段正文 + [调用]…」的多行文本；
+         * 没有 MULTILINE 的 ^ 只匹配整个字符串开头，会漏掉。逐行判断。
+         */
+        private fun containsLegacyCallLine(text: String): Boolean =
+            text.lineSequence().any { LEGACY_CALL_LINE.containsMatchIn(it.trim()) }
 
         /** 窗口回落原因：静态前缀（提示词/长期记忆/标签）变了 */
         const val RESET_PREFIX = "长期记忆或提示词有更新"

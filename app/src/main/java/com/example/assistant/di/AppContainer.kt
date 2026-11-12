@@ -30,11 +30,8 @@ import com.example.assistant.core.alarm.ReminderScheduler
 import com.example.assistant.core.backup.BackupManager
 import com.example.assistant.core.network.AsrClient
 import com.example.assistant.core.network.Capability
-import com.example.assistant.core.network.PageReader
 import com.example.assistant.core.network.ProviderRegistry
-import com.example.assistant.core.network.SearchClient
-import com.example.assistant.core.network.TavilyExtractClient
-import com.example.assistant.core.network.TavilySearchClient
+import com.example.assistant.core.network.WebAccessRegistry
 import com.example.assistant.data.db.entity.parseDiaryTags
 import com.example.assistant.core.quiet.QuietHours
 import com.example.assistant.core.storage.ConversationLog
@@ -44,6 +41,7 @@ import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
 import com.example.assistant.core.storage.SummaryStore
+import com.example.assistant.core.storage.WebAccessStatusStore
 import com.example.assistant.core.vision.ScreenSenseController
 import com.example.assistant.data.db.AppDatabase
 import com.example.assistant.data.repo.BufferRepository
@@ -146,8 +144,10 @@ class AppContainer(context: Context) {
     val providerRegistry: ProviderRegistry by lazy {
         ProviderRegistry(secretStore, settingsStore)
     }
-    val searchClient: SearchClient by lazy { TavilySearchClient(secretStore) }
-    val pageReader: PageReader by lazy { TavilyExtractClient(secretStore) }
+    val webAccessRegistry: WebAccessRegistry by lazy {
+        WebAccessRegistry(secretStore, settingsStore, providerRegistry)
+    }
+    val webAccessStatusStore: WebAccessStatusStore by lazy { WebAccessStatusStore(appContext) }
 
     // ---- Agent 编排（主模型统一调度：工具注册表 + 对话回路） ----
     val promptBuilder: PromptBuilder by lazy { PromptBuilder(promptStore) }
@@ -155,8 +155,8 @@ class AppContainer(context: Context) {
     val toolRegistry: ToolRegistry by lazy {
         ToolRegistry(
             listOf(
-                WebSearchTool(searchClient),
-                ReadWebpageTool(pageReader),
+                WebSearchTool(webAccessRegistry),
+                ReadWebpageTool(webAccessRegistry),
                 // 读日记：主模型可检索用户历史日记
                 ReadDiaryTool(diaryRepository),
                 // 看日记图片：把某条日记的图片原图送回对话让主模型亲眼看。

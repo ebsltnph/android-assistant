@@ -10,6 +10,8 @@ import com.example.assistant.core.agent.Agent
 import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.ProviderProfile
 import com.example.assistant.core.network.ProviderRegistry
+import com.example.assistant.core.network.WebAccessRegistry
+import com.example.assistant.core.network.WebProvider
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
@@ -28,7 +30,8 @@ class SettingsViewModel(
     private val settingsStore: SettingsStore,
     private val promptStore: PromptStore,
     private val registry: ProviderRegistry,
-    private val agent: Agent
+    private val agent: Agent,
+    private val webAccess: WebAccessRegistry
 ) : ViewModel() {
 
     private val _profiles = MutableStateFlow<List<ProviderProfile>>(emptyList())
@@ -65,6 +68,68 @@ class SettingsViewModel(
         secretStore.saveSearchApiKey(key)
         searchApiKey.value = key
     }
+
+    // ---- 联网搜索/抓取（两个独立选择；默认 Tavily，不自动切换） ----
+    val searchProvider: StateFlow<WebProvider> = settingsStore.searchProvider
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), WebProvider.TAVILY)
+    val fetchProvider: StateFlow<WebProvider> = settingsStore.fetchProvider
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), WebProvider.TAVILY)
+
+    /** DeepSeek Web 专用 Key（空 = 复用官方 DeepSeek 对话档案） */
+    private val _deepSeekWebApiKey = MutableStateFlow(secretStore.deepSeekWebApiKey())
+    val deepSeekWebApiKey: StateFlow<String> = _deepSeekWebApiKey
+
+    /** DeepSeek 凭据来源（设置页展示，不显示 Key 本身） */
+    private val _deepSeekCredentialDescription = MutableStateFlow("正在检查…")
+    val deepSeekCredentialDescription: StateFlow<String> = _deepSeekCredentialDescription
+
+    /** 测试状态：key = "search_tavily" / "fetch_deepseek" … */
+    private val _webTests = MutableStateFlow<Map<String, WebTestUiState>>(emptyMap())
+    val webTests: StateFlow<Map<String, WebTestUiState>> = _webTests
+
+    fun setSearchProvider(provider: WebProvider) {
+        viewModelScope.launch { settingsStore.setSearchProvider(provider) }
+    }
+
+    fun setFetchProvider(provider: WebProvider) {
+        viewModelScope.launch { settingsStore.setFetchProvider(provider) }
+    }
+
+    fun saveDeepSeekWebApiKey(key: String) {
+        secretStore.saveDeepSeekWebApiKey(key)
+        _deepSeekWebApiKey.value = key.trim()
+        viewModelScope.launch { refreshDeepSeekCredential() }
+    }
+
+    /**
+     * 显式测试指定提供商；不读取/切换当前选择，也绝不回退到另一家。
+     * DeepSeek 每次测试会产生一次可能的搜索/抓取费用（UI 已提示）。
+     */
+    fun testWebProvider(provider: WebProvider, search: Boolean) {
+        val testKey = testKey(provider, search)
+        viewModelScope.launch {
+            _webTests.value = _webTests.value + (testKey to WebTestUiState(running = true))
+            val result = if (search) webAccess.probeSearch(provider)
+            else webAccess.probeFetch(provider)
+            _webTests.value = _webTests.value + (testKey to WebTestUiState(
+                running = false,
+                success = result.success,
+                message = result.message + "（${result.elapsedMs} ms）"
+            ))
+        }
+    }
+
+    private suspend fun refreshDeepSeekCredential() {
+        _deepSeekCredentialDescription.value = webAccess.deepSeekCredentialDescription()
+    }
+
+    /** 从设置页返回/档案更新后刷新凭据来源 */
+    fun refreshWebAccessInfo() {
+        viewModelScope.launch { refreshDeepSeekCredential() }
+    }
+
+    private fun testKey(provider: WebProvider, search: Boolean): String =
+        (if (search) "search_" else "fetch_") + provider.storageValue
 
     // ---- 清晨简报 ----
     val briefingMinute: StateFlow<Int> = settingsStore.briefingMinuteOfDay
@@ -301,6 +366,7 @@ class SettingsViewModel(
             _assignments.value = Capability.entries.associateWith { cap ->
                 settingsStore.currentProfileIdFor(cap).ifBlank { null }
             }
+            refreshDeepSeekCredential()
         }
     }
 
@@ -364,3 +430,10 @@ class SettingsViewModel(
         data class Failure(val message: String) : TestResult
     }
 }
+
+/** 联网搜索/抓取测试的 UI 状态 */
+data class WebTestUiState(
+    val running: Boolean = false,
+    val success: Boolean? = null,
+    val message: String = ""
+)

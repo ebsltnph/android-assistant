@@ -133,6 +133,15 @@ class ProviderRegistry(
                 }
                 // 只对"参数不认识/值非法"类 400 降级；其他错误原样抛给上层
                 if (code != 400 || body.isNullOrBlank()) throw e
+                // 原生工具调用不支持：不降级成文本协议，给出明确可行动的错误
+                if (req.tools != null && looksLikeToolsProblem(body)) {
+                    throw ApiHttpException(
+                        code,
+                        "当前模型/中转站不支持原生工具调用（tools/tool_choice/function calling）。" +
+                            "请到「设置 → 模型配置」换用支持 Function Calling 的模型（推荐 DeepSeek 官方）。" +
+                            "原始错误：$body"
+                    )
+                }
                 when {
                     // 0 级：stream_options 不认识 → 去掉并记住（缓存命中统计失效，不影响对话）
                     looksLikeStreamOptionsProblem(body) && req.streamOptions != null -> {
@@ -198,6 +207,18 @@ class ProviderRegistry(
         if (!b.contains("stream_options") && !b.contains("include_usage")) return false
         return b.contains("unknown") || b.contains("unsupported") || b.contains("invalid") ||
             b.contains("not support") || b.contains("parameter") || b.contains("extra")
+    }
+
+    /** 错误是否指向原生工具声明/工具选择不被支持 */
+    private fun looksLikeToolsProblem(body: String): Boolean {
+        val b = body.lowercase()
+        val mentionsFeature = b.contains("tool_choice") || b.contains("tool choice") ||
+            b.contains("function calling") || b.contains("function_call") ||
+            (b.contains("tools") && (b.contains("unknown") || b.contains("unsupported") ||
+                b.contains("not support") || b.contains("invalid") || b.contains("extra")))
+        if (!mentionsFeature) return false
+        return b.contains("unknown") || b.contains("unsupported") || b.contains("not support") ||
+            b.contains("invalid") || b.contains("extra") || b.contains("parameter")
     }
 }
 

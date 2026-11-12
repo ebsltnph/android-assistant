@@ -67,6 +67,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.assistant.AssistantApplication
 import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.ProviderProfile
+import com.example.assistant.core.network.WebProvider
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.ui.GlassCard
 import com.example.assistant.service.FloatingBallService
@@ -90,7 +91,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             app.container.settingsStore,
             app.container.promptStore,
             app.container.providerRegistry,
-            app.container.agent
+            app.container.agent,
+            app.container.webAccessRegistry
         )
     }
 
@@ -106,7 +108,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         if (uri != null) vm.importBubbleImage(context, uri) { }
     }
     val screenSenseRegionEnabled by vm.screenSenseRegionEnabled.collectAsState()
-    val searchApiKey by vm.searchApiKey.collectAsState()
     val summaryMinute by vm.summaryMinute.collectAsState()
     val dailySummaryEnabled by vm.dailySummaryEnabled.collectAsState()
     val briefingMinute by vm.briefingMinute.collectAsState()
@@ -126,6 +127,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 overlayGranted = Settings.canDrawOverlays(context)
+                vm.refreshWebAccessInfo()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -149,7 +151,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 profiles = profiles,
                 assignments = assignments,
                 floatingBallEnabled = floatingBallEnabled,
-                searchApiKey = searchApiKey,
                 summaryMinute = summaryMinute,
                 dailySummaryEnabled = dailySummaryEnabled,
                 briefingMinute = briefingMinute,
@@ -246,6 +247,10 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 vm = vm,
                 onBack = { subPage = null }
             )
+            SettingsSubPage.WEB_ACCESS -> WebAccessPage(
+                vm = vm,
+                onBack = { subPage = null }
+            )
             SettingsSubPage.BUFFER -> BufferPage(
                 vm = vm,
                 onBack = { subPage = null }
@@ -280,6 +285,8 @@ private enum class SettingsSubPage {
     BALL_VOICE,
     /** 聊天上下文（上下限/字符上限/会话保留/历史图片，同样折叠进子页） */
     CHAT_CONTEXT,
+    /** 联网搜索与抓取（双提供商、Key、测试、事件搜索状态；主页只留摘要入口） */
+    WEB_ACCESS,
     /** 「进行中的事」缓冲区（2026-09-17：开关 + 注入上限 + 整理阈值） */
     BUFFER
 }
@@ -292,7 +299,6 @@ private fun SettingsMainList(
     profiles: List<ProviderProfile>,
     assignments: Map<Capability, String?>,
     floatingBallEnabled: Boolean,
-    searchApiKey: String,
     summaryMinute: Int,
     dailySummaryEnabled: Boolean,
     briefingMinute: Int,
@@ -521,9 +527,16 @@ private fun SettingsMainList(
             )
         }
 
-        // ---- 8. 搜索（keyless 默认） ----
+        // ---- 8. 联网搜索与抓取（主页只留摘要，点进子页配置） ----
         item {
-            SearchSettingsCard(apiKey = searchApiKey, onSaveKey = { vm.saveSearchApiKey(it) })
+            val searchProvider by vm.searchProvider.collectAsState()
+            val fetchProvider by vm.fetchProvider.collectAsState()
+            EntryCard(
+                title = "联网搜索与抓取",
+                subtitle = "搜索：${searchProvider.displayName} · 抓取：${fetchProvider.displayName}" +
+                    "（点开配置提供商、Key 与测试）",
+                onClick = { onOpenSubPage(SettingsSubPage.WEB_ACCESS) }
+            )
         }
 
         // ---- 9. 提示词：只保留两个常用项，其余进「高级设置」 ----
@@ -1663,56 +1676,240 @@ private fun ChatContextPage(vm: SettingsViewModel, onBack: () -> Unit) {
     }
 }
 
-// ======================= 搜索（keyless 默认折叠） =======================
+// ======================= 联网搜索与抓取子页（主页只留摘要入口） =======================
 
 /**
- * 搜索设置卡片（Tavily）：默认 keyless 免费模式（免注册、有限流）；
- * 点「填入 API Key」展开输入框；填 Key 后每月 1000 次免费（tavily.com 注册）。
+ * 搜索/抓取独立选择：升级后默认 Tavily + Tavily，不自动产生费用。
+ * 选中哪个就只用哪个；测试结果和真实 HTTP 错误直接显示，不静默回退。
  */
 @Composable
-private fun SearchSettingsCard(
-    apiKey: String,
-    onSaveKey: (String) -> Unit
+private fun WebAccessPage(vm: SettingsViewModel, onBack: () -> Unit) {
+    val searchProvider by vm.searchProvider.collectAsState()
+    val fetchProvider by vm.fetchProvider.collectAsState()
+    val tavilyApiKey by vm.searchApiKey.collectAsState()
+    val deepSeekKey by vm.deepSeekWebApiKey.collectAsState()
+    val deepSeekCredential by vm.deepSeekCredentialDescription.collectAsState()
+    val tests by vm.webTests.collectAsState()
+    val tavilyForSearch = searchProvider == WebProvider.TAVILY
+    val tavilyForFetch = fetchProvider == WebProvider.TAVILY
+    val deepSeekForSearch = searchProvider == WebProvider.DEEPSEEK
+    val deepSeekForFetch = fetchProvider == WebProvider.DEEPSEEK
+
+    var tavilyExpanded by remember { mutableStateOf(false) }
+    var deepSeekExpanded by remember { mutableStateOf(false) }
+    var tavilyKeyInput by remember(tavilyApiKey) { mutableStateOf(tavilyApiKey) }
+    var deepSeekKeyInput by remember(deepSeekKey) { mutableStateOf(deepSeekKey) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { SubPageHeader("联网搜索与抓取", onBack) }
+
+        item {
+            GlassCard {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "搜索与抓取分别选择提供商；选中哪个就只用哪个，失败不会自动切换。" +
+                            "默认 Tavily 免费模式。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    WebProviderSelector(
+                        title = "搜索提供商",
+                        selected = searchProvider,
+                        isSearch = true,
+                        onSelected = { vm.setSearchProvider(it) }
+                    )
+                    WebProviderSelector(
+                        title = "抓取提供商",
+                        selected = fetchProvider,
+                        isSearch = false,
+                        onSelected = { vm.setFetchProvider(it) }
+                    )
+
+                    HorizontalDivider()
+                    if (tavilyForSearch || tavilyForFetch) {
+                        Text(
+                            "Tavily（用于${webUsageLabel(tavilyForSearch, tavilyForFetch)}）",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (tavilyApiKey.isBlank()) "当前为 keyless 免费模式（有限流）"
+                                else "已配置 Tavily API Key",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (tavilyApiKey.isBlank()) {
+                                AssistChip(onClick = {}, label = { Text("免费模式") })
+                            }
+                            TextButton(onClick = { tavilyExpanded = !tavilyExpanded }) {
+                                Text(if (tavilyExpanded) "收起" else "填入 Key")
+                            }
+                        }
+                        if (tavilyExpanded) {
+                            OutlinedTextField(
+                                value = tavilyKeyInput,
+                                onValueChange = { tavilyKeyInput = it },
+                                label = { Text("Tavily API Key（可选）") },
+                                placeholder = { Text("tvly-…，留空用免费模式") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedButton(onClick = { vm.saveSearchApiKey(tavilyKeyInput) }) {
+                                    Text("保存")
+                                }
+                                Text(
+                                    if (tavilyKeyInput.isBlank()) "留空 = keyless 免费模式"
+                                    else "保存后立即用于 Tavily 搜索/抓取",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        WebTestRow(
+                            provider = WebProvider.TAVILY,
+                            searchState = tests["search_tavily"],
+                            fetchState = tests["fetch_tavily"],
+                            showSearch = tavilyForSearch,
+                            showFetch = tavilyForFetch,
+                            onTestSearch = { vm.testWebProvider(WebProvider.TAVILY, search = true) },
+                            onTestFetch = { vm.testWebProvider(WebProvider.TAVILY, search = false) }
+                        )
+                        if (deepSeekForSearch || deepSeekForFetch) HorizontalDivider()
+                    }
+
+                    if (deepSeekForSearch || deepSeekForFetch) {
+                        Text(
+                            "DeepSeek（付费，用于${webUsageLabel(deepSeekForSearch, deepSeekForFetch)}）",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            "Search/Fetch 各按成功请求计费（官方当前 ¥5/千次）；每次测试也会产生一次可能的费用。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            "凭据：$deepSeekCredential",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (deepSeekCredential.startsWith("未配置")) {
+                                MaterialTheme.colorScheme.error
+                            } else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(onClick = { deepSeekExpanded = !deepSeekExpanded }) {
+                            Text(if (deepSeekExpanded) "收起专用 Key" else "填写专用 DeepSeek Web Key（可选）")
+                        }
+                        if (deepSeekExpanded) {
+                            OutlinedTextField(
+                                value = deepSeekKeyInput,
+                                onValueChange = { deepSeekKeyInput = it },
+                                label = { Text("DeepSeek Web API Key（可选）") },
+                                placeholder = { Text("留空 = 复用官方 DeepSeek 对话档案") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedButton(onClick = { vm.saveDeepSeekWebApiKey(deepSeekKeyInput) }) {
+                                Text("保存")
+                            }
+                        }
+                        WebTestRow(
+                            provider = WebProvider.DEEPSEEK,
+                            searchState = tests["search_deepseek"],
+                            fetchState = tests["fetch_deepseek"],
+                            showSearch = deepSeekForSearch,
+                            showFetch = deepSeekForFetch,
+                            onTestSearch = { vm.testWebProvider(WebProvider.DEEPSEEK, search = true) },
+                            onTestFetch = { vm.testWebProvider(WebProvider.DEEPSEEK, search = false) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WebProviderSelector(
+    title: String,
+    selected: WebProvider,
+    isSearch: Boolean,
+    onSelected: (WebProvider) -> Unit
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    var key by remember { mutableStateOf(apiKey) }
-    GlassCard {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("搜索（联网）", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        if (apiKey.isBlank()) "对话搜索与新闻监控 · 当前为免费模式（keyless）"
-                        else "对话搜索与新闻监控 · 已配置 API Key",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (apiKey.isBlank()) {
-                    AssistChip(onClick = {}, label = { Text("免费模式") })
-                }
-                TextButton(onClick = { expanded = !expanded }) {
-                    Text(if (expanded) "收起" else "填入 API Key")
-                }
+    Text(title, style = MaterialTheme.typography.titleSmall)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        WebProvider.entries.forEach { provider ->
+            FilterChip(
+                selected = provider == selected,
+                onClick = { onSelected(provider) },
+                label = { Text(provider.displayName) }
+            )
+        }
+    }
+    Text(
+        if (isSearch) selected.searchHint else selected.fetchHint,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+/** "搜索与抓取" / "搜索" / "抓取"：只描述当前实际使用该提供商的能力 */
+private fun webUsageLabel(forSearch: Boolean, forFetch: Boolean): String = when {
+    forSearch && forFetch -> "搜索与抓取"
+    forSearch -> "搜索"
+    forFetch -> "抓取"
+    else -> ""
+}
+
+@Composable
+private fun WebTestRow(
+    provider: WebProvider,
+    searchState: WebTestUiState?,
+    fetchState: WebTestUiState?,
+    showSearch: Boolean,
+    showFetch: Boolean,
+    onTestSearch: () -> Unit,
+    onTestFetch: () -> Unit
+) {
+    if (showSearch || showFetch) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (showSearch) {
+                OutlinedButton(
+                    onClick = onTestSearch,
+                    enabled = searchState?.running != true
+                ) { Text(if (searchState?.running == true) "测试中…" else "测试搜索") }
             }
-            if (expanded) {
-                OutlinedTextField(
-                    value = key,
-                    onValueChange = { key = it },
-                    label = { Text("Tavily API Key（可选）") },
-                    placeholder = { Text("tvly-…，留空用免费模式") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = { onSaveKey(key) }) { Text("保存") }
-                    Text(
-                        if (key.isBlank()) "留空 = keyless 免费模式" else "已保存",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            if (showFetch) {
+                OutlinedButton(
+                    onClick = onTestFetch,
+                    enabled = fetchState?.running != true
+                ) { Text(if (fetchState?.running == true) "测试中…" else "测试抓取") }
             }
+        }
+    }
+    if (showSearch) {
+        searchState?.takeUnless { it.running }?.let {
+            Text(
+                "搜索：${it.message}",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (it.success == false) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+    if (showFetch) {
+        fetchState?.takeUnless { it.running }?.let {
+            Text(
+                "抓取：${it.message}",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (it.success == false) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

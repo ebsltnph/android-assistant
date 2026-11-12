@@ -52,9 +52,17 @@ class SecretStore(context: Context) {
         prefs.edit().putString(KEY_SEARCH_KEY, key.trim()).apply()
     }
 
+    // ---- DeepSeek Web 专用 Key（Search/Fetch；空串 = 回退到官方 DeepSeek 对话档案） ----
+    fun deepSeekWebApiKey(): String = prefs.getString(KEY_DEEPSEEK_WEB_KEY, "").orEmpty()
+
+    fun saveDeepSeekWebApiKey(key: String) {
+        prefs.edit().putString(KEY_DEEPSEEK_WEB_KEY, key.trim()).apply()
+    }
+
     companion object {
         private const val TAG = "SecretStore"
         private const val KEY_PROFILES = "provider_profiles"
         private const val KEY_SEARCH_KEY = "search_api_key"
+        private const val KEY_DEEPSEEK_WEB_KEY = "deepseek_web_api_key"
     }
 }

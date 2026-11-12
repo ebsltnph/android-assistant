@@ -69,9 +69,9 @@ class DailySummaryGenerator(
                         ChatMessage("user", diaryText)
                     ),
                     temperature = 0.5,
-                    // 4096：推理模型（如 deepseek-v4-flash）的思考过程占 max_tokens 配额，
-                    // 800 会被思考吃光导致输出为空（finish=length），调大留出输出空间
-                    maxTokens = 4096,
+                    // 16384（2026-10-06 从 4096 提高，与期间总结同量级）：推理模型的思考过程也占
+                    // max_tokens 配额，4096 时偶有小结被截断/输出偏短
+                    maxTokens = 16384,
                     reasoningEffort = effort
                 )
                 val header = providerRegistry.authHeader(profile.apiKey)

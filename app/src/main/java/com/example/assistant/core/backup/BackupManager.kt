@@ -17,6 +17,7 @@ import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
 import com.example.assistant.core.storage.SummaryStore
+import com.example.assistant.core.network.WebProvider
 import com.example.assistant.data.db.AppDatabase
 import com.example.assistant.data.db.entity.DiaryImageEntity
 import kotlinx.coroutines.Dispatchers
@@ -285,6 +286,8 @@ class BackupManager(
             conversationCharLimit = settingsStore.conversationCharLimit.first(),
             chatSessionRetentionDays = settingsStore.chatSessionRetentionDays.first(),
             chatImageKeep = settingsStore.chatImageKeep.first(),
+            searchProvider = settingsStore.searchProvider.first().storageValue,
+            fetchProvider = settingsStore.fetchProvider.first().storageValue,
             diaryTagsCsv = settingsStore.diaryTagsCsv.first(),
             secretLogEnabled = settingsStore.secretLogEnabled.first(),
             panelVoiceMode = settingsStore.panelVoiceMode.first(),
@@ -431,6 +434,9 @@ class BackupManager(
         settingsStore.setChatSessionRetentionDays(s.chatSessionRetentionDays)
         // 旧备份里的 1/3（"最近 1/3 张"挡位已删除）归一为 0 = 仅当前轮
         settingsStore.setChatImageKeep(if (s.chatImageKeep > 0) 0 else s.chatImageKeep)
+        // 未知/旧值由 WebProvider.fromStorage 回退 Tavily；不因损坏配置启用付费服务
+        settingsStore.setSearchProvider(WebProvider.fromStorage(s.searchProvider))
+        settingsStore.setFetchProvider(WebProvider.fromStorage(s.fetchProvider))
         settingsStore.setDiaryTagsCsv(s.diaryTagsCsv)
         settingsStore.setSecretLogEnabled(s.secretLogEnabled)
         settingsStore.setPanelVoiceMode(s.panelVoiceMode)

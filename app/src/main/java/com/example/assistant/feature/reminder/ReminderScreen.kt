@@ -53,6 +53,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.example.assistant.core.storage.WebAccessStatusStore
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -410,6 +411,16 @@ private fun EventDetailDialog(
     val context = LocalContext.current
     val hitList by hits.collectAsState(initial = emptyList())
     val now = System.currentTimeMillis()
+    val lastSearchStatus = remember {
+        try {
+            (context.applicationContext as AssistantApplication)
+                .container.webAccessStatusStore
+                .latest(WebAccessStatusStore.OP_EVENT_SEARCH)
+                .display()
+        } catch (_: Exception) {
+            "尚无事件搜索记录"
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -445,6 +456,11 @@ private fun EventDetailDialog(
                         (if (event.enabled) "已启用" else "已停用") +
                         " · 上次检查 " +
                         if (event.lastCheckedAtEpochMillis > 0) formatTime(event.lastCheckedAtEpochMillis) else "从未",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "最近搜索：$lastSearchStatus",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

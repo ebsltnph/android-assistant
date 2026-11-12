@@ -16,7 +16,9 @@ object ApiClient {
 
     private val json = Json {
         ignoreUnknownKeys = true   // 各家厂商响应字段有差异，忽略未知字段
-        encodeDefaults = true
+        // 只在非默认值时写字段：避免每条消息都带 tool_calls:null / reasoning_content:null。
+        // 必须随请求出现的常量字段（role/type/temperature 等）用 @EncodeDefault 强制写出。
+        encodeDefaults = false
     }
 
     private val loggingInterceptor = HttpLoggingInterceptor().apply {

@@ -7,7 +7,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 /**
- * 工具执行结果：feedback / error 都会以「[结果]」消息回传给模型——
+ * 工具执行结果：feedback / error 都会作为对应 tool_call_id 的 tool 消息回传给模型——
  * 成功给确认信息与数据，失败给**可纠正的错误原因**（模型可修参数重试）。
  */
 sealed interface ToolOutcome {
@@ -25,17 +25,24 @@ sealed interface ToolOutcome {
 }
 
 /**
- * 助手工具（架构核心抽象）：主聊天模型在回复中输出
- * '[调用] {"tool":"名称","args":{...}}' 行发起调用，
- * ToolRegistry 统一解析分发、本地执行。
- * 新增能力 = 新增一个实现类并在 AppContainer 注册，解析器与回路零改动。
+ * 助手工具（架构核心抽象）：主聊天模型通过请求 tools 字段看到工具 Schema，
+ * 用原生 tool_calls 发起调用，ToolRegistry 统一分发、本地执行；
+ * 结果以 role=tool + tool_call_id 配对回传。
+ * 新增能力 = 新增一个实现类并在 AppContainer 注册，回路零改动。
  */
 interface AssistantTool {
     /** 工具名（模型调用时的 "tool" 字段，snake_case） */
     val name: String
 
-    /** 给模型看的一行说明：功能 + 参数格式（进静态工具手册） */
+    /** 给模型看的一行说明：功能 + 何时用；参数细节在 [parameters] 的 JSON Schema 中 */
     val description: String
+
+    /**
+     * 机器可读 JSON Schema（原生 Function Calling 的 tools[].function.parameters）。
+     * 内置工具统一由 [ToolSchemas] 提供；新增工具应覆盖此属性或把名字登记进 schema 表。
+     */
+    val parameters: JsonObject
+        get() = ToolSchemas.of(name)
 
     /** 执行状态提示 / 回答页脚用的人话动作描述（如「搜索：xxx」） */
     fun actionLabel(args: JsonObject): String = name

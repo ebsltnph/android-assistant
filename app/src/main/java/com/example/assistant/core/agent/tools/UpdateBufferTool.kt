@@ -9,8 +9,8 @@ import kotlinx.serialization.json.JsonObject
  * 「进行中的事」缓冲区维护工具（2026-09-17）。
  *
  * 设计要点（用户逐条拍板）：
- *  1. **进工具手册**（messages[1]，被缓存的前缀）——把压缩的全部要求写在 description 里，
- *     永久免费，且尾部触发指令只需一句「请调用 update_buffer」。
+ *  1. **进工具 Schema/description**（请求 tools 字段，被缓存的前缀）——把压缩的全部要求写在
+ *     description 里，工具声明稳定后缓存友好，尾部触发指令只需一句「请调用 update_buffer」。
  *  2. **绝不允许主动调用**：description 里写死，且应用侧 `compactionRoundActive` 硬拦截
  *     （不是压缩轮就回 Failure）。模型手贱也写不进去，只浪费一轮，不损坏数据。
  *  3. 触发由系统决定（ContextCompactor 在窗口回落时发 [上下文整理] 指令），不由模型决定。

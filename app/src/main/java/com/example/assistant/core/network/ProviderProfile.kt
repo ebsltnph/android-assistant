@@ -36,6 +36,16 @@ data class ProviderProfile(
     }
 
     fun isConfigured(): Boolean = baseUrl.isNotBlank() && apiKey.isNotBlank() && model.isNotBlank()
+
+    /** 是否为 DeepSeek 官方端点（决定是否回传 reasoning_content；只看 host，不看 /v1） */
+    fun isOfficialDeepSeekEndpoint(): Boolean {
+        val host = try {
+            java.net.URI(baseUrl.trim()).host
+        } catch (_: Exception) {
+            null
+        }
+        return host.equals("api.deepseek.com", ignoreCase = true)
+    }
 }
 
 /**

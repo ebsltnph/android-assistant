@@ -16,10 +16,12 @@ import com.example.assistant.core.storage.ChatSessionStore
 import com.example.assistant.core.storage.PrefixSnapshot
 import com.example.assistant.core.storage.PrefixSnapshotStore
 import com.example.assistant.core.storage.SettingsStore
+import com.example.assistant.core.storage.StoredAssistantMeta
 import com.example.assistant.core.storage.StoredChat
 import com.example.assistant.core.storage.StoredSegment
 import com.example.assistant.core.storage.StoredTurn
 import com.example.assistant.core.storage.StoredUiMessage
+import com.example.assistant.core.storage.toStoredToolCall
 import com.example.assistant.core.vision.ImageUtils
 import com.example.assistant.core.vision.ScreenSenseController
 import com.example.assistant.data.db.entity.parseDiaryTags
@@ -648,7 +650,7 @@ class ChatViewModel(
         // 0「仅当前轮」= 只有当前这一轮的图发出去，下一轮（哪怕只是文字）起历史图就不再发送；
         // -1「全部」= 历史里的图每轮都重发。当前轮（含其全部图片）永远保留。
         session.enforceImageRetention(imageRetention)
-        // 静态前缀（系统提示词/工具手册/记忆快照/标签/状态快照）变了 → 厂商缓存的前缀整段失效，
+        // 静态前缀（系统提示词/工具 schema/记忆快照/标签/状态快照）变了 → 厂商缓存的前缀整段失效，
         // 把指纹交给会话层比较：不一致就把窗口回落到下限重新起跑（与"到上限回落"共用同一条
         // L→U 序列，避免白扛着 U 轮历史每轮付全价）。
         val diaryTags = parseDiaryTags(settingsStore.diaryTagsCsv.first())
@@ -701,14 +703,16 @@ class ChatViewModel(
                 // 工具中间轮写回会话历史：后续追问时模型能看到调用过什么、拿到过什么结果。
                 // 工具注入的日记图片（read_diary_image）是否随结果消息写回会话轮，由「历史图片保留」
                 // 设置决定：仅当前轮 → 不落库（只在本次回复内可见）；全部图片 → 写回并跨轮重发。
+                // 原生工具轮写回会话：assistant 消息保留 tool_calls/reasoning，结果按
+                // tool_call_id 原样回放。工具注入的日记图片是否落库仍由「历史图片保留」决定。
                 outcome.exchanges.forEach { ex ->
-                    session.appendAssistant(turnId, ChatMessage("assistant", ex.call))
-                    // 工具注入的日记图片：「全部图片」才写回会话轮（跨轮重发）；
-                    // 「仅当前轮」不落库——它们只在本次回复内可见（图片仍留在 diary_images 里）。
-                    session.appendToolResult(
-                        turnId, ex.result,
-                        if (imageRetention < 0) ex.imagePaths else emptyList()
-                    )
+                    session.appendAssistant(turnId, ex.assistantMessage)
+                    ex.results.forEach { replay ->
+                        val persistImages = replay.imagePaths.isEmpty() || imageRetention < 0
+                        if (persistImages) {
+                            session.appendReplayMessage(turnId, replay.message, replay.imagePaths)
+                        }
+                    }
                 }
                 // 只把**正文**写回历史（不带界面的「🔧 已执行：…」页脚）：
                 // 页脚进历史后模型会模仿它在正文里自己编执行清单（2026-09-14 修的 bug）
@@ -994,8 +998,10 @@ class ChatViewModel(
                     assistantTexts = st.assistant,
                     assistantImages = st.assistantImagePaths,
                     assistantRoles = st.assistantRoles,
+                    assistantMeta = st.assistantMeta,
                     createdAt = st.createdAt,
-                    notices = st.notices
+                    notices = st.notices,
+                    stripLegacyProtocol = snap.protocolVersion < 2
                 )
             }
         }
@@ -1141,13 +1147,20 @@ class ChatViewModel(
                             ev.prose.isEmpty() -> base
                             else -> "$base\n\n${ev.prose}"
                         }
-                        // 本轮流出的正文段：替换为剥掉调用标记后的干净正文（纯调用轮没有正文段）
+                        // 本轮流出的正文段：替换为剥掉协议标记后的干净正文。
+                        // 若标记缓冲导致本轮从未流出正文（textThisRound=false），
+                        // 但最终仍有干净正文，必须**新增**一个 Text 段——否则 segments
+                        // 非空时界面只渲染 segments，held 的正文会完全不可见。
                         if (textThisRound) {
                             val li = segments.indexOfLast { it is MsgSegment.Text }
                             if (li >= 0) {
                                 if (ev.prose.isEmpty()) segments.removeAt(li)
                                 else segments[li] = MsgSegment.Text(ev.prose)
+                            } else if (ev.prose.isNotEmpty()) {
+                                segments += MsgSegment.Text(ev.prose)
                             }
+                        } else if (ev.prose.isNotEmpty()) {
+                            segments += MsgSegment.Text(ev.prose)
                         }
                         textThisRound = false
                         roundAcc = ""
@@ -1354,8 +1367,10 @@ class ChatViewModel(
                 assistantTexts = st.assistant,
                 assistantImages = st.assistantImagePaths,
                 assistantRoles = st.assistantRoles,
+                assistantMeta = st.assistantMeta,
                 createdAt = st.createdAt,
-                notices = st.notices
+                notices = st.notices,
+                stripLegacyProtocol = snap.protocolVersion < 2
             )
         }
 
@@ -1374,8 +1389,10 @@ class ChatViewModel(
                     assistantTexts = t.assistant,
                     assistantImages = t.assistantImagePaths,
                     assistantRoles = t.assistantRoles,
+                    assistantMeta = t.assistantMeta,
                     createdAt = turnTime[t.id] ?: 0L,
-                    notices = t.notices
+                    notices = t.notices,
+                    stripLegacyProtocol = snap.protocolVersion < 2
                 )
             }
         )
@@ -1423,7 +1440,7 @@ class ChatViewModel(
         // 启动即清理过期记录（超过保留天数且已不在上下文里的轮）；补过时间戳也立刻写回文件（否则下次保存又变回 0）
         val before = _messages.value.size
         pruneExpiredRecords()
-        if (stamped || _messages.value.size != before) persistSession()
+        if (stamped || _messages.value.size != before || snap.protocolVersion < 2) persistSession()
         refreshContextStatus()
     }
 
@@ -1437,6 +1454,7 @@ class ChatViewModel(
             .takeLast(ChatSessionStore.MAX_TURNS)
         val snapshot = StoredChat(
             savedAt = System.currentTimeMillis(),
+            protocolVersion = 2,
             coveredThroughTurnId = coveredThroughTurnId,
             uncoveredTurns = uncoveredTurns.takeLast(ChatSessionStore.MAX_TURNS).map { t -> t.toStored() },
             turns = turns.map { it.toStored() },
@@ -1563,6 +1581,14 @@ class ChatViewModel(
         assistant = assistant.map { it.textContent },
         assistantImagePaths = assistantImagePaths.map { it.toList() },
         assistantRoles = assistant.map { it.role },
+        assistantMeta = assistant.map { msg ->
+            StoredAssistantMeta(
+                role = msg.role,
+                reasoningContent = msg.reasoningContent.orEmpty(),
+                toolCalls = msg.toolCalls.orEmpty().map { it.toStoredToolCall() },
+                toolCallId = msg.toolCallId.orEmpty()
+            )
+        },
         createdAt = createdAt,
         notices = notices.toList()
     )

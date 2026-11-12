@@ -1,6 +1,8 @@
 package com.example.assistant.core.storage
 
 import android.content.Context
+import com.example.assistant.core.network.dto.ChatToolCall
+import com.example.assistant.core.network.dto.FunctionCall
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -20,6 +22,13 @@ import java.io.File
 @Serializable
 data class StoredChat(
     val savedAt: Long = 0L,
+    /**
+     * 会话工具协议版本：
+     * - 1（旧）= 正文 `[调用]`/`[结果]`；
+     * - 2 = 原生 tool_calls（当前）。
+     * 读取旧版本时只从**模型上下文**剥离旧工具中间轮，界面消息不动。
+     */
+    val protocolVersion: Int = 1,
     val turns: List<StoredTurn> = emptyList(),
     /** 界面消息（含思考块/工具行分段），用于恢复聊天页显示 */
     val messages: List<StoredUiMessage> = emptyList(),
@@ -50,7 +59,7 @@ data class StoredTurn(
     val imagePath: String? = null,
     /** 附带图片的本机路径列表（一轮可多张，2026-10-05 起） */
     val imagePaths: List<String> = emptyList(),
-    /** 该轮的助手侧消息（工具调用原文 / [结果] 回传 / 最终回答），按顺序 */
+    /** 该轮的助手侧消息（工具调用 / tool 结果 / 最终回答），按顺序 */
     val assistant: List<String> = emptyList(),
     /**
      * 与 [assistant] 一一对应的工具注入图片路径（read_diary_image 看过的日记图；空=该条无图）。
@@ -58,10 +67,15 @@ data class StoredTurn(
      */
     val assistantImagePaths: List<List<String>> = emptyList(),
     /**
-     * 与 [assistant] 一一对应的消息角色（"assistant" | "user"）。
-     * 工具结果回传是 user 消息；旧快照没有此字段 → 由"是否带注入图片"推断（会退化）。
+     * 与 [assistant] 一一对应的消息角色（"assistant" | "user" | "tool"）。
+     * 旧快照没有此字段 → 由"是否带注入图片"推断（会退化）。
      */
     val assistantRoles: List<String> = emptyList(),
+    /**
+     * 与 [assistant] 一一对应的原生工具回放元数据（tool_calls / tool_call_id / reasoning_content）。
+     * 旧快照没有 → 空；新快照必须与 [assistant] 等长写入。
+     */
+    val assistantMeta: List<StoredAssistantMeta> = emptyList(),
     /** 该轮创建时刻（按保留天数清理用；旧快照没有此字段时回退到 userText 时间戳/保存时刻） */
     val createdAt: Long = 0L,
     /**
@@ -78,6 +92,35 @@ data class StoredTurn(
         if (imagePaths.isNotEmpty()) imagePaths
         else listOfNotNull(imagePath?.takeIf { it.isNotBlank() })
 }
+
+@Serializable
+data class StoredAssistantMeta(
+    val role: String = "assistant",
+    /** DeepSeek 思考模式：工具调用轮的 reasoning 必须回传 */
+    val reasoningContent: String = "",
+    val toolCalls: List<StoredToolCall> = emptyList(),
+    val toolCallId: String = ""
+)
+
+@Serializable
+data class StoredToolCall(
+    val id: String = "",
+    val name: String = "",
+    /** 原始 JSON 字符串；即使非法 JSON 也保留，不静默修复历史 */
+    val arguments: String = ""
+)
+
+fun ChatToolCall.toStoredToolCall(): StoredToolCall = StoredToolCall(
+    id = id,
+    name = function?.name.orEmpty(),
+    arguments = function?.arguments.orEmpty()
+)
+
+fun StoredToolCall.toChatToolCall(): ChatToolCall = ChatToolCall(
+    id = id,
+    type = "function",
+    function = FunctionCall(name = name, arguments = arguments)
+)
 
 @Serializable
 data class StoredUiMessage(

@@ -14,50 +14,61 @@ import retrofit2.http.POST
 import java.util.concurrent.TimeUnit
 
 /**
- * Tavily 搜索 API（专为 AI 助手设计，返回清洗后的内容摘要）。
- * - 免费 1000 次/月；不填 API Key 时自动用 keyless 模式（免注册、有限流，自用够）
- * - Base URL: https://api.tavily.com，端点 POST /search
+ * Tavily 搜索 API（默认提供商）：
+ * - 不填 API Key 时使用 keyless 模式（免注册、有限流）；
+ * - 填 Key 后使用该 Key 的额度；
+ * - 与抓取共用同一个 Key/keyless 状态。
+ *
+ * 失败不会回退到其他提供商。
  */
 class TavilySearchClient(private val secretStore: SecretStore) : SearchClient {
 
-    private val api: TavilyApi = Retrofit.Builder()
-        .baseUrl("https://api.tavily.com/")
-        .client(
-            OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
-                .build()
-        )
-        .addConverterFactory(Json { ignoreUnknownKeys = true }
-            .asConverterFactory("application/json".toMediaType()))
-        .build()
-        .create(TavilyApi::class.java)
+    override val provider = WebProvider.TAVILY
 
-    override suspend fun search(
-        query: String,
-        topic: String,
-        timeRange: String?,
-        maxResults: Int,
-        includeDomains: String?
-    ): List<SearchResult> {
-        val key = secretStore.searchApiKey()
-        val auth = if (key.isNotBlank()) "Bearer $key" else ""
-        // keyless 模式：未填 key 时用该头替代 Authorization（Tavily 官方支持）
-        val accessMode = if (key.isBlank()) "keyless" else null
-        val response = api.search(
-            auth = auth,
-            accessMode = accessMode,
-            body = TavilyRequest(
-                query = query,
-                maxResults = maxResults,
-                topic = topic,
-                timeRange = timeRange,
-                includeDomains = includeDomains
-            )
-        )
-        return response.results.map { SearchResult(it.title, it.url, it.content, it.score) }
+    private val api: TavilyApi = createTavilyApi(readTimeoutSeconds = 30)
+
+    override suspend fun search(request: WebSearchRequest): List<SearchResult> {
+        val key = secretStore.searchApiKey().trim()
+        return try {
+            val response = withWebReadRetry(provider, "搜索") {
+                try {
+                    api.search(
+                        auth = if (key.isNotBlank()) "Bearer $key" else "",
+                        accessMode = if (key.isBlank()) "keyless" else null,
+                        body = TavilyRequest(
+                            query = request.query,
+                            maxResults = request.maxResults,
+                            topic = request.topic,
+                            timeRange = request.timeRange,
+                            includeDomains = parseTavilyDomains(request.includeDomains)
+                        )
+                    )
+                } catch (e: Throwable) {
+                    throw webFailureOf(provider, "搜索", e)
+                }
+            }
+            response.results.map { it.toSearchResult() }
+        } catch (e: Throwable) {
+            throw webFailureOf(provider, "搜索", e)
+        }
     }
 }
+
+internal fun TavilyResult.toSearchResult(): SearchResult = SearchResult(
+    title = title.ifBlank { url },
+    url = url,
+    content = content,
+    score = score,
+    provider = WebProvider.TAVILY
+)
+
+/** Tavily 的 include_domains 是 string[]，不是逗号串 */
+internal fun parseTavilyDomains(raw: String?): List<String>? =
+    raw?.split(',', '，', ';', '；')
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.distinct()
+        ?.takeIf { it.isNotEmpty() }
 
 /** Tavily 请求体 */
 @Serializable
@@ -70,9 +81,9 @@ data class TavilyRequest(
     /** "day" | "week" | "month" | "year" */
     @SerialName("time_range")
     val timeRange: String? = null,
-    /** 只返回这些域名下的结果（逗号分隔） */
+    /** 只返回这些域名下的结果（官方类型是 string[]） */
     @SerialName("include_domains")
-    val includeDomains: String? = null
+    val includeDomains: List<String>? = null
 )
 
 /** Tavily 响应 */
@@ -107,6 +118,23 @@ interface TavilyApi {
     ): TavilyExtractResponse
 }
 
+private fun createTavilyApi(readTimeoutSeconds: Long): TavilyApi =
+    Retrofit.Builder()
+        .baseUrl("https://api.tavily.com/")
+        .client(
+            OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                // 抓正文比搜索慢，读超时由调用方放宽
+                .readTimeout(readTimeoutSeconds, TimeUnit.SECONDS)
+                .build()
+        )
+        .addConverterFactory(
+            Json { ignoreUnknownKeys = true }
+                .asConverterFactory("application/json".toMediaType())
+        )
+        .build()
+        .create(TavilyApi::class.java)
+
 // ======================= 网页正文抽取（/extract，read_webpage 工具用） =======================
 
 @Serializable
@@ -122,6 +150,7 @@ data class TavilyExtractResponse(
 @Serializable
 data class TavilyExtractResult(
     val url: String = "",
+    val title: String? = null,
     @SerialName("raw_content")
     val rawContent: String? = null
 )
@@ -131,39 +160,47 @@ data class TavilyFailedResult(val url: String = "", val error: String? = null)
 
 /**
  * Tavily Extract 实现：抓取并清洗网页正文。
- * 与搜索同一服务/Key（keyless 模式同样支持），反爬严格的页面可能拿不到（错误回传给模型）。
+ * 与搜索同一服务/Key（keyless 模式同样支持），反爬严格的页面可能拿不到。
  */
 class TavilyExtractClient(private val secretStore: SecretStore) : PageReader {
 
-    private val api: TavilyApi = Retrofit.Builder()
-        .baseUrl("https://api.tavily.com/")
-        .client(
-            OkHttpClient.Builder()
-                // 抓正文比搜索慢，读超时放宽
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(45, TimeUnit.SECONDS)
-                .build()
-        )
-        .addConverterFactory(Json { ignoreUnknownKeys = true }
-            .asConverterFactory("application/json".toMediaType()))
-        .build()
-        .create(TavilyApi::class.java)
+    override val provider = WebProvider.TAVILY
 
-    override suspend fun extract(url: String): String {
-        val key = secretStore.searchApiKey()
-        val auth = if (key.isNotBlank()) "Bearer $key" else ""
-        val accessMode = if (key.isBlank()) "keyless" else null
-        val response = api.extract(
-            auth = auth,
-            accessMode = accessMode,
-            body = TavilyExtractRequest(urls = listOf(url))
-        )
-        val content = response.results.firstOrNull()?.rawContent?.trim()
-        if (content.isNullOrBlank()) {
-            val reason = response.failedResults.firstOrNull()?.error?.takeIf { it.isNotBlank() }
-                ?: "页面没有可提取的正文"
-            throw IllegalStateException(reason)
+    private val api: TavilyApi = createTavilyApi(readTimeoutSeconds = 45)
+
+    override suspend fun extract(url: String): ExtractedPage {
+        val key = secretStore.searchApiKey().trim()
+        return try {
+            val response = withWebReadRetry(provider, "抓取") {
+                try {
+                    api.extract(
+                        auth = if (key.isNotBlank()) "Bearer $key" else "",
+                        accessMode = if (key.isBlank()) "keyless" else null,
+                        body = TavilyExtractRequest(urls = listOf(url))
+                    )
+                } catch (e: Throwable) {
+                    throw webFailureOf(provider, "抓取", e)
+                }
+            }
+            val first = response.results.firstOrNull()
+            val content = first?.rawContent?.trim()
+            if (content.isNullOrBlank()) {
+                val reason = response.failedResults.firstOrNull()?.error?.takeIf { it.isNotBlank() }
+                    ?: "页面没有可提取的正文"
+                throw WebApiException(
+                    provider = provider,
+                    operation = "抓取",
+                    kind = WebFailureKind.NOT_FOUND,
+                    detail = reason
+                )
+            }
+            ExtractedPage(
+                title = first.title?.takeIf { it.isNotBlank() },
+                content = content,
+                provider = provider
+            )
+        } catch (e: Throwable) {
+            throw webFailureOf(provider, "抓取", e)
         }
-        return content
     }
 }

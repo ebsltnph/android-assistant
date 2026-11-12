@@ -1,5 +1,7 @@
 package com.example.assistant.core.agent
 
+import com.example.assistant.core.agent.tools.AssistantTool
+import com.example.assistant.core.agent.tools.NativeToolCallAssembler
 import com.example.assistant.core.agent.tools.ToolOutcome
 import com.example.assistant.core.agent.tools.ToolRegistry
 import com.example.assistant.core.network.Capability
@@ -9,20 +11,27 @@ import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.dto.ChatMessage
 import com.example.assistant.core.network.dto.ChatRequest
 import com.example.assistant.core.network.dto.ChatResponse
+import com.example.assistant.core.network.dto.ChatToolCall
 import com.example.assistant.core.network.dto.ContentPart
+import com.example.assistant.core.network.dto.FunctionCall
+import com.example.assistant.core.network.dto.FunctionDefinition
 import com.example.assistant.core.network.dto.StreamOptions
+import com.example.assistant.core.network.dto.ToolDefinition
 import com.example.assistant.core.network.dto.Usage
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 
 /**
- * Agent 编排器（主模型统一调度架构）：
- * 1. 意图路由：仅剩识屏关键词本地直连（瞬时、无需模型）；其余全部走对话回路，
- *    由主聊天模型在回复中自主调用工具完成（提醒/记录/记忆/监控/搜索/读网页/识屏）
- * 2. chatReplyFlow 工具回路：模型流式输出 → 解析 [调用] 行 → 本地执行 → 结果回传 →
- *    模型继续（可自纠重试、连环调用），直到给出正式回答
- * 3. 缓存友好：静态块（系统外壳/工具手册）与易变块（时间/标签）分离，见 PromptBuilder
+ * Agent 编排器（主模型统一调度 + 原生 Function Calling）：
+ * 1. 意图路由：仅剩识屏关键词本地直连；其余全部走对话回路。
+ * 2. chatReplyFlow：流式收集 content/reasoning/tool_calls → 本地执行 → 用 role=tool
+ *    + tool_call_id 回传 → 继续请求，直到模型给出正式回答。
+ * 3. 缓存友好：工具 Schema 走请求 tools 字段；消息里只保留稳定的工具使用原则。
  */
 class Agent(
     private val providerRegistry: ProviderRegistry,
@@ -33,11 +42,11 @@ class Agent(
 
     /** 单次回复的事件流（chatReplyFlow 产出，界面层据此渲染气泡） */
     sealed interface ReplyEvent {
-        /** 流式增量：text 在标记缓冲期为空串；thinking 为思考增量 */
+        /** 流式增量：text 在协议标记缓冲期为空串；thinking 为思考增量 */
         data class Delta(val text: String, val thinking: String) : ReplyEvent
 
         /**
-         * 一轮流结束：本轮保留的正文并入气泡基线（纯调用轮 prose 为空串=仅重置流式区），
+         * 一轮流结束：本轮保留的正文并入气泡基线（工具轮可以没有正文），
          * 下一轮的流式文本从基线之后追加显示。
          */
         data class RoundSettled(val prose: String) : ReplyEvent
@@ -48,12 +57,11 @@ class Agent(
         /**
          * 最终回答。
          * @param answer 上屏用：正文 + 系统页脚「🔧 已执行：…」
-         * @param body 进会话历史用：**只有正文**，不带页脚——页脚是界面装饰，
-         *        写进历史后模型会模仿它在正文里自己编"已执行"清单（2026-09-14 修的 bug）
+         * @param body 进会话历史用：只有正文，不带页脚
          * @param toolNames 成功执行过的工具名
-         * @param exchanges 工具中间轮（调用原文 + 回传结果 + 注入的图片路径）
-         * @param usage **本轮全部请求的用量合计**（不是最后一次请求；界面显示的缓存命中率按整轮算）
-         * @param requests 本轮发出的模型请求次数（工具回路每转一圈多一次）
+         * @param exchanges 原生工具调用轮（assistant 回放消息 + 配对的 tool 结果）
+         * @param usage **本轮全部请求的用量合计**
+         * @param requests 本轮发出的模型请求次数
          */
         data class Final(
             val answer: String,
@@ -66,18 +74,22 @@ class Agent(
     }
 
     /**
-     * 一次工具中间轮：模型输出原文 + 回传的结果消息 + 该轮**注入对话的图片路径**
-     * （read_diary_image 看过的日记图）。界面层据此把图片写回会话（是否跨轮保留由
-     * Session 的历史图片保留策略决定）。
+     * 可原样写回会话的一轮工具回放。
+     * assistant 消息带 tool_calls（以及 DeepSeek 需要的 reasoning_content）；
+     * results 里每一条 tool 消息都与对应 call_id 配对，图片消息作为额外一条 user 回放。
      */
     data class ToolExchange(
-        val call: String,
-        val result: String,
+        val assistantMessage: ChatMessage,
+        val results: List<ToolReplay>
+    )
+
+    data class ToolReplay(
+        val message: ChatMessage,
         val imagePaths: List<String> = emptyList()
     )
 
     sealed interface AgentResult {
-        /** 需要走对话回路（流式 + 工具循环）；capability 决定用哪个档案（带图轮走「识屏」档案） */
+        /** 需要走对话回路（流式 + 工具循环）；capability 决定用哪个档案 */
         data class ChatRequested(
             val messages: List<ChatMessage>,
             val capability: Capability = Capability.CHAT
@@ -91,13 +103,8 @@ class Agent(
     }
 
     /**
-     * 路由用户消息。识屏关键词本地直连（瞬时、离线可用）；其余一律进对话回路，
-     * 由主模型决定是否调用工具、调用哪个——不再有独立的意图分类/判断调用。
-     *
-     * @param history 会话历史对话尾部（应已含当前用户消息）
-     * @param diaryTags 用户自定义日记标签词汇表（进静态块，供 write_diary 选标签）
-     * @param preferVision 本轮带图片：改用「识屏（视觉）」指派的档案
-     *        （**同一条通道，只换模型**——上下文结构、工具回路、思考展示完全一致）
+     * 路由用户消息。识屏关键词本地直连；其余一律进对话回路，
+     * 由主模型决定是否调用工具、调用哪个。
      */
     suspend fun route(
         text: String,
@@ -107,60 +114,52 @@ class Agent(
         preferVision: Boolean = false,
         bufferText: String? = null
     ): AgentResult {
-        // 关键词只保留识屏直连
         val keyword = intentRouter.keywordRoute(text)
         if (keyword != null) return AgentResult.Command(keyword)
         return chatRequested(text, memoryText, history, diaryTags, preferVision, bufferText)
     }
 
-    /**
-     * 后台静默工具回路：跑完整工具循环但不产生任何界面事件、不进会话历史。
-     *
-     * ⚠️ 2026-09-11 起**不再有调用方**：带图消息改走同一条聊天通道（主模型自己调 write_diary），
-     * 项目不再有任何"隐藏的模型调用"。保留此方法会重新引入静默消耗，故已删除实现，
-     * 仅留注释说明历史（备份/文档见 CLAUDE.md 开发日志）。
-     */
-
-    /** 当前「识屏（视觉）」档案是否勾选了"支持图片输入"（带图轮失败时的排查提示用） */
+    /** 当前「识屏（视觉）」档案是否勾选了"支持图片输入" */
     suspend fun visionModelSupportsImages(): Boolean =
         providerRegistry.profileFor(Capability.VISION)?.supportsVision == true
 
     /**
-     * 按目标档案能力处理图片：不支持图片输入时，把**历史**图片换成文字占位
-     * （最后一条用户消息里的图保留 —— 那是用户本轮的明确意图）。
-     *
-     * 为什么要抽出来共用：「上下文整理」压缩轮走的是同一条对话链路，必须用**同一套**图片规则，
-     * 否则在纯文本对话模型下，整理请求会带着历史图片直接 HTTP 400、每次都失败
-     * （2026-09-23 审出来的潜在坑；两条路径前缀一致时缓存也才对得上）。
+     * 按目标档案能力处理历史消息：
+     * - 不支持图片 → 历史图片换文字占位（当前用户消息的图片保留）；
+     * - 非 DeepSeek 官方端点 → 去掉 reasoning_content（它只对 DeepSeek 思考回放有意义，
+     *   发给不认识该字段的兼容网关可能 400）。
      */
     suspend fun messagesForCapability(
         messages: List<ChatMessage>,
         capability: Capability
     ): List<ChatMessage> {
-        val supports = providerRegistry.profileFor(capability)?.supportsVision == true
-        return if (supports) messages else stripHistoricalImages(messages)
+        val profile = providerRegistry.profileFor(capability)
+        val supports = profile?.supportsVision == true
+        val preserveReasoning = profile?.isOfficialDeepSeekEndpoint() == true
+        val noReasoning = if (preserveReasoning) messages else messages.map { msg ->
+            if (msg.reasoningContent == null) msg else msg.copy(reasoningContent = null)
+        }
+        return if (supports) noReasoning else stripHistoricalImages(noReasoning)
     }
 
     /**
-     * 静态前缀指纹（系统提示词 / 工具手册 / 日记标签 / 长期记忆 / 「进行中的事」状态块）。
-     * 供会话层判断"这一轮的前缀是不是和上一轮一样"——不一样就说明厂商缓存的前缀全废了，
-     * 窗口该回落到下限重新起跑（见 Session.planWindow）。
-     *
-     * ⚠️ 记忆与状态块走**冻结快照**（PrefixSnapshotStore）：它们的文本只在合并点变，
-     * 合并后调用方会 Session.markPrefixSignature() 对齐基线，不会重复砍窗口。
+     * 静态前缀指纹（系统提示词 / 工具原则+标签 / 工具 schema / 记忆 / 状态块）。
+     * 工具 schema 变化与提示词变化一样会让厂商缓存失效，需要窗口回落一次。
      */
     suspend fun cachePrefixSignature(
         memoryText: String?,
         diaryTags: List<String>,
         bufferText: String? = null
-    ): String = promptBuilder.prefixSignature(memoryText, toolRegistry.manual(), diaryTags, bufferText)
+    ): String = promptBuilder.prefixSignature(
+        memoryText,
+        toolRegistry.schemaSignature(),
+        diaryTags,
+        bufferText
+    )
 
     /**
-     * 一次性非流式对话请求（**上下文整理压缩轮**用，2026-09-17）。
-     *
-     * 与 chatStream 的关键差别：不流式（压缩轮不需要逐字上屏）、temperature 更低
-     * （整理要求稳定、不要发挥）、maxTokens 更小。工具回路不在这里——压缩轮只要
-     * "一次请求 + 解析调用行 + 执行"，由 ContextCompactor 自己编排。
+     * 一次性非流式对话请求（上下文整理压缩轮用）。
+     * 与主回路一样携带原生工具声明；返回 tool_calls 与 reasoning_content。
      */
     suspend fun chatOnce(
         messages: List<ChatMessage>,
@@ -173,21 +172,31 @@ class Agent(
         val effort = providerRegistry.reasoningEffortFor(profile)
         val request = ChatRequest(
             model = profile.model,
-            messages = messages,
+            messages = messagesForCapability(messages, capability),
             temperature = 0.2,
             maxTokens = maxTokens,
-            reasoningEffort = effort
+            reasoningEffort = effort,
+            tools = toolRegistry.definitions(),
+            toolChoice = "auto"
         )
         val header = providerRegistry.authHeader(profile.apiKey)
         val response = providerRegistry.chatCompat(profile, request, header, api)
+        val message = response.choices.firstOrNull()?.message
         return OnceResult(
-            text = response.choices.firstOrNull()?.message?.textContent.orEmpty(),
+            text = message?.textContent.orEmpty(),
+            toolCalls = message?.toolCalls.orEmpty(),
+            reasoningContent = message?.reasoningContent,
             usage = response.usage
         )
     }
 
-    /** 一次性请求的结果：正文 + 用量（压缩轮的用量单独统计，见 ContextStatus.compactUsage） */
-    data class OnceResult(val text: String, val usage: Usage? = null)
+    /** 一次性请求的结果：正文 + 原生工具调用 + 思考回放 + 用量 */
+    data class OnceResult(
+        val text: String,
+        val toolCalls: List<ChatToolCall> = emptyList(),
+        val reasoningContent: String? = null,
+        val usage: Usage? = null
+    )
 
     /** 组装对话回路的初始请求消息 */
     private suspend fun chatRequested(
@@ -208,19 +217,16 @@ class Agent(
         val messages = promptBuilder.buildChatMessages(
             memoryText = memoryText,
             conversation = conversation,
-            toolManual = toolRegistry.manual(),
             diaryTags = diaryTags,
             bufferText = bufferText
         )
-        // 目标模型不支持图片输入时：历史里的图片会直接 400，替换为文字占位
-        // （当前轮的图片始终保留——那是用户的明确意图，不支持就让 API 报错并给出提示）
-        val out = if (profile.supportsVision) messages else stripHistoricalImages(messages)
+        val out = messagesForCapability(messages, capability)
         return AgentResult.ChatRequested(out, capability)
     }
 
     /**
      * 把**非最后一条**用户消息里的图片 part 换成文字占位。
-     * 最后一条用户消息 = 本轮输入，永远保留（历史图片已在 Session 层按保留策略裁剪）。
+     * 最后一条用户消息 = 本轮输入，永远保留。
      */
     private fun stripHistoricalImages(messages: List<ChatMessage>): List<ChatMessage> {
         val lastUserIdx = messages.indexOfLast { it.role == "user" }
@@ -233,36 +239,42 @@ class Agent(
         }
     }
 
+    /** 一次调用的解析/校验结果（给 UI 生成 label，也给执行层复用） */
+    private data class PlannedCall(
+        val rawId: String,
+        val toolName: String,
+        val tool: AssistantTool?,
+        val args: JsonObject?,
+        val parseError: String?,
+        val label: String
+    )
+
     /**
-     * 主模型驱动的工具回路（架构核心）：
+     * 主模型驱动的原生工具回路：
      *
-     *   流式收集一轮回复
-     *     ├─ 存在合法"[调用]"行 → 执行全部调用，结果以 user 消息接回对话，再收集一轮
-     *     │   （纯调用轮整轮隐藏；混合轮正文剥掉调用行后累加保留，不丢失）
-     *     └─ 否则视为正式回答结束
+     *   流式收集 content + reasoning_content + tool_calls
+     *     ├─ tool_calls 非空 → 每个调用执行 → assistant(tool_calls) + role=tool 结果回传
+     *     └─ 没有 tool_calls → 正式回答结束
      *
-     * 单次回复最多 MAX_TOOL_ROUNDS 个工具轮；超限注入强制收尾指令；
-     * guard 上限双保险保证任何情况下必然终止。
+     * 最多 [ToolRegistry.MAX_TOOL_ROUNDS] 个工具轮，guard 双保险；
+     * 只使用结构化 tool_calls，不解析正文协议。
      */
     fun chatReplyFlow(
         baseMessages: List<ChatMessage>,
         capability: Capability = Capability.CHAT
     ): Flow<ReplyEvent> = flow {
-        var messages = baseMessages
+        var messages = messagesForCapability(baseMessages, capability)
         var forcedFinal = false
         var toolRounds = 0
-        val finalized = StringBuilder()                        // 各轮保留正文的累加
-        val usedToolNames = LinkedHashSet<String>()           // 成功执行过的工具名
-        val usedLabels = LinkedHashSet<String>()              // 成功执行过的动作描述（页脚）
-        val exchanges = mutableListOf<ToolExchange>()           // 工具中间轮（含注入的图片路径）
-        val successMemo = HashMap<String, String>()           // 本回复内成功调用备忘（签名→feedback），重复调用直接复用
-        var usageSum: Usage? = null                           // 本轮**全部请求**的用量合计（见 accumulateUsage）
-        var requests = 0                                      // 本轮发出的模型请求次数
+        val finalized = StringBuilder()
+        val usedToolNames = LinkedHashSet<String>()
+        val usedLabels = LinkedHashSet<String>()
+        val exchanges = mutableListOf<ToolExchange>()
+        val successMemo = HashMap<String, String>()
+        var usageSum: Usage? = null
+        var requests = 0
+        var currentCapability = capability
 
-        /**
-         * 各轮保留正文的累加。顺带剥掉模型仿写的机器清单行
-         * （历史里的系统页脚会让它学着在正文里编「🔧 已执行：…」，一条回复里出现好几条）。
-         */
         fun absorbProse(prose: String) {
             val p = toolRegistry.stripMachineLines(prose)
             if (p.isEmpty()) return
@@ -270,105 +282,186 @@ class Agent(
             finalized.append(p)
         }
 
-        // 本轮回复使用的档案：默认按调用方给的能力；一旦 read_diary_image 把图片塞进对话，
-        // 后续请求必须改用「识屏（视觉）」档案（与对话档案相同则行为无差别）
-        var currentCapability = capability
         var guard = 0
         while (true) {
             if (++guard > GUARD_LIMIT) break
 
-            // ---- 一轮流式收集（开头标记缓冲：疑似"[调用"时不上屏）----
-            var acc = ""
+            // 目标档案能力可能因 read_diary_image 切换到视觉档案；每次请求前统一裁剪图片/推理字段
+            messages = messagesForCapability(messages, currentCapability)
+
+            val assembler = NativeToolCallAssembler().apply { reset() }
+            val contentAcc = StringBuilder()
+            val reasoningAcc = StringBuilder()
             var released = false
-            var reqUsage: Usage? = null                 // 本次请求的用量（流式厂商在最后一个 chunk 带）
+            var reqUsage: Usage? = null
             requests++
+
             chatStream(messages, currentCapability).collect { chunk ->
                 chunk.usage?.let { reqUsage = it }
                 val delta = chunk.choices.firstOrNull()?.delta
-                val t = delta?.textContent.orEmpty()
-                val th = delta?.reasoningContent.orEmpty()
-                if (t.isNotEmpty()) acc += t
-                if (!released && toolRegistry.stillBuffering(acc)) {
-                    if (th.isNotEmpty()) emit(ReplyEvent.Delta("", th))
+                val textDelta = delta?.textContent.orEmpty()
+                val thinkDelta = delta?.reasoningContent.orEmpty()
+                assembler.acceptAll(delta?.toolCalls)
+                if (textDelta.isNotEmpty()) contentAcc.append(textDelta)
+                if (thinkDelta.isNotEmpty()) reasoningAcc.append(thinkDelta)
+
+                if (!released) {
+                    if (ProtocolLeakFilter.shouldWithhold(contentAcc.toString())) {
+                        // 开头疑似协议标记：暂不上屏（思考仍可显示）
+                        if (thinkDelta.isNotEmpty()) emit(ReplyEvent.Delta("", thinkDelta))
+                    } else {
+                        released = true
+                        emit(ReplyEvent.Delta(contentAcc.toString(), thinkDelta))
+                    }
                 } else {
-                    released = true
-                    emit(ReplyEvent.Delta(t, th))
+                    emit(ReplyEvent.Delta(textDelta, thinkDelta))
                 }
             }
             usageSum = accumulateUsage(usageSum, reqUsage)
 
-            // ---- 判定这一轮是否发起工具调用 ----
-            val calls = toolRegistry.parseCalls(acc)
-            val act = !forcedFinal && toolRounds < ToolRegistry.MAX_TOOL_ROUNDS && calls.isNotEmpty()
+            val rawContent = contentAcc.toString()
+            val cleanContent = ProtocolLeakFilter.strip(rawContent)
+            val batch = assembler.finish()
+
+            // 缺 id/name、重复 id：无法生成配对的 tool 结果，绝不猜测执行
+            if (batch.calls.isNotEmpty() && !batch.canExecute) {
+                throw IllegalStateException(
+                    "模型返回了不完整的工具调用（" + batch.protocolErrors.joinToString("；") + "），已中止本轮。请重试。"
+                )
+            }
+
+            val act = !forcedFinal && toolRounds < ToolRegistry.MAX_TOOL_ROUNDS &&
+                batch.canExecute
             if (!act) {
-                val finalProse = toolRegistry.stripCallLines(acc)
-                absorbProse(finalProse)
-                // 最后一轮也要发一次"轮结束"：界面据此把流式原文替换成干净正文。
-                // 否则模型仿写的「🔧 已执行：…」行、以及工具轮数用尽时残留的调用行，
-                // 会永远留在最终气泡里（界面渲染的是分段内容，不是 answer 文本）——2026-09-14
-                emit(ReplyEvent.RoundSettled(toolRegistry.stripMachineLines(finalProse)))
+                // 已到上限/强制收尾后模型仍请求工具：不执行，保留它的正文（如果有）
+                if (batch.hasCalls && cleanContent.isBlank()) {
+                    throw IllegalStateException("工具调用次数已达上限，但模型没有给出最终回答。请再发一次消息。")
+                }
+                if (ProtocolLeakFilter.hasLeak(rawContent) && cleanContent.isBlank() && !batch.hasCalls) {
+                    throw IllegalStateException(
+                        "模型返回了无法识别的工具协议标记，已阻止其显示且未执行。请重试。"
+                    )
+                }
+                absorbProse(cleanContent)
+                emit(ReplyEvent.RoundSettled(toolRegistry.stripMachineLines(cleanContent)))
                 emit(finish(finalized, usedToolNames, usedLabels, exchanges, usageSum, requests))
                 return@flow
             }
 
             toolRounds++
-            val pure = toolRegistry.isPureCallTurn(acc)
-            // 中间轮也一样：回传给模型的"自己说过的话"里不保留仿写的清单行
-            val cleanAcc = toolRegistry.stripMachineLines(acc)
-            val roundProse = if (pure) "" else toolRegistry.stripCallLines(cleanAcc).trim()
+            val roundProse = toolRegistry.stripMachineLines(cleanContent).trim()
             absorbProse(roundProse)
             emit(ReplyEvent.RoundSettled(roundProse))
 
-            // ---- 去重后执行调用并组装结果消息 ----
-            // 模型偶发重复输出同一行调用：本轮内按签名去重，跨轮成功结果直接复用（省网络也防状态重复）
-            val uniqueCalls = calls.distinctBy { it.tool.name + "|" + it.args.toString() }
-            emit(ReplyEvent.ToolsRunning(uniqueCalls.map { it.label }))
-            val sb = StringBuilder("[结果]")
-            // 本轮工具要注入对话的图片（read_diary_image 返回的原图路径）
-            val roundImages = LinkedHashSet<String>()
-            uniqueCalls.forEachIndexed { i, call ->
-                val sig = call.tool.name + "|" + call.args.toString()
-                // 只读工具（read_diary/list_reminders/read_webpage/web_search）**不复用旧结果**：
-                // 它们不产生副作用，而且别的工具可能刚改过数据——复用会让模型看到改动前的旧数据，
-                // 误以为"没改成功"（用户实测：连续用同样参数读日记拿到的是上一次的结果）
-                val cachedFeedback = if (call.tool.readOnly) null else successMemo[sig]
-                val outcome = if (cachedFeedback != null) {
-                    ToolOutcome.Success(cachedFeedback + "\n（与此前一次调用参数完全相同，以上为复用的结果）")
-                } else {
-                    val o = toolRegistry.execute(call)
-                    if (o is ToolOutcome.Success && !call.tool.readOnly) successMemo[sig] = o.feedback
-                    o
+            val planned = batch.calls.map { call ->
+                val tool = toolRegistry.find(call.name)
+                val args = call.parsedArgs()
+                val parseError = when {
+                    tool == null -> "未知工具：${call.name}"
+                    args == null -> "参数不是合法 JSON 对象：${call.arguments.take(300)}"
+                    else -> null
                 }
-                sb.append("\n\n").append(i + 1).append(". tool=").append(call.tool.name)
+                val label = when {
+                    tool == null -> "未知工具 ${call.name}"
+                    args == null -> "${call.name}（参数错误）"
+                    else -> try {
+                        tool.actionLabel(args)
+                    } catch (_: Exception) {
+                        tool.name
+                    }
+                }
+                PlannedCall(call.id, call.name, tool, args, parseError, label)
+            }
+            emit(ReplyEvent.ToolsRunning(planned.map { it.label }))
+
+            val assistantMessage = ChatMessage(
+                role = "assistant",
+                content = listOf(ContentPart.text(cleanContent)),
+                reasoningContent = replayReasoningFor(currentCapability, reasoningAcc.toString()),
+                toolCalls = batch.calls.map { call ->
+                    ChatToolCall(
+                        id = call.id,
+                        type = "function",
+                        function = FunctionCall(name = call.name, arguments = call.arguments)
+                    )
+                }
+            )
+            messages = messages + assistantMessage
+
+            val replays = mutableListOf<ToolReplay>()
+            val roundMemo = HashMap<String, ToolOutcome>()
+            val roundImages = LinkedHashSet<String>()
+
+            planned.forEach { p ->
+                val outcome: ToolOutcome = when {
+                    p.parseError != null -> ToolOutcome.Failure(p.parseError)
+                    p.tool == null || p.args == null -> ToolOutcome.Failure("工具调用无法执行")
+                    else -> {
+                        val sig = p.toolName + "|" + p.args.toString()
+                        val canReuse = !p.tool.readOnly
+                        val cachedFeedback = if (canReuse) successMemo[sig] else null
+                        val roundCached = if (canReuse) roundMemo[sig] else null
+                        when {
+                            cachedFeedback != null -> ToolOutcome.Success(
+                                cachedFeedback + "\n（与此前一次调用参数完全相同，以上为复用的结果）"
+                            )
+                            roundCached is ToolOutcome.Success -> ToolOutcome.Success(
+                                roundCached.feedback +
+                                    "\n（本轮重复调用参数完全相同，以上为复用的结果）"
+                            )
+                            roundCached is ToolOutcome.Failure -> ToolOutcome.Failure(
+                                roundCached.error +
+                                    "\n（本轮重复调用参数完全相同，以上为复用的错误）"
+                            )
+                            else -> {
+                                val o = toolRegistry.execute(p.tool, p.args)
+                                if (o is ToolOutcome.Success && !p.tool.readOnly) {
+                                    successMemo[sig] = o.feedback
+                                }
+                                if (!p.tool.readOnly) roundMemo[sig] = o
+                                o
+                            }
+                        }
+                    }
+                }
                 when (outcome) {
                     is ToolOutcome.Success -> {
-                        usedToolNames += call.tool.name
-                        usedLabels += call.label
-                        if (outcome.images.isNotEmpty()) roundImages.addAll(outcome.images)
-                        sb.append("｜状态：成功\n").append(outcome.feedback)
+                        usedToolNames += p.toolName
+                        usedLabels += p.label
+                        outcome.images.filter { it.isNotBlank() }.forEach { roundImages += it }
+                        replays += ToolReplay(
+                            message = ChatMessage(
+                                role = "tool",
+                                content = listOf(ContentPart.text(outcome.feedback)),
+                                toolCallId = p.rawId
+                            )
+                        )
                     }
-                    is ToolOutcome.Failure ->
-                        sb.append("｜状态：失败\n").append(outcome.error)
+                    is ToolOutcome.Failure -> {
+                        replays += ToolReplay(
+                            message = ChatMessage(
+                                role = "tool",
+                                content = listOf(ContentPart.text("错误：" + outcome.error)),
+                                toolCallId = p.rawId
+                            )
+                        )
+                    }
                 }
             }
-            sb.append("\n\n请根据以上结果继续：信息足够就直接给出正式回答；有失败可修正参数重新调用（剩余次数有限），或如实告知用户。")
-            val resultsMsg = sb.toString()
 
-            messages = messages + ChatMessage("assistant", cleanAcc)
-            if (roundImages.isEmpty()) {
-                messages = messages + ChatMessage("user", resultsMsg)
-            } else {
-                // 读图工具把日记图片原图送回：作为本轮结果消息的 image part 塞进对话，
-                // 让主模型亲眼看到；后续请求切到「识屏（视觉）」档案（对话模型本身带视觉则无差别）。
-                // 图片路径随 ToolExchange 一起回传，由界面层写回会话轮；
-                // 是否跨轮保留由「历史图片保留」设置决定（仅当前轮会清掉，全部则每轮重发）。
+            // 所有工具结果先配对完成；图片作为额外 user 消息注入，后续请求切到视觉档案
+            replays.forEach { messages = messages + it.message }
+            if (roundImages.isNotEmpty()) {
                 currentCapability = Capability.VISION
                 val parts = ArrayList<ContentPart>(roundImages.size + 1)
-                parts += ContentPart.text(resultsMsg)
-                roundImages.forEach { p -> Session.imagePartOf(p)?.let { parts += it } }
-                messages = messages + ChatMessage("user", parts)
+                parts += ContentPart.text(IMAGE_INJECTION_PREFIX)
+                roundImages.forEach { path -> Session.imagePartOf(path)?.let { parts += it } }
+                val imageMsg = ChatMessage("user", parts)
+                messages = messages + imageMsg
+                replays += ToolReplay(imageMsg, roundImages.toList())
             }
-            exchanges += ToolExchange(cleanAcc, resultsMsg, roundImages.toList())
+
+            exchanges += ToolExchange(assistantMessage, replays.toList())
 
             if (toolRounds >= ToolRegistry.MAX_TOOL_ROUNDS && !forcedFinal) {
                 messages += ChatMessage("user", ToolRegistry.FORCED_FINAL_NOTE)
@@ -376,14 +469,19 @@ class Agent(
             }
         }
 
-        // guard 兜底出口（正常流程到不了这里）
         emit(finish(finalized, usedToolNames, usedLabels, exchanges, usageSum, requests))
+    }
+
+    /** DeepSeek 官方端点的工具轮必须回传 reasoning_content；其他端点不发 */
+    private suspend fun replayReasoningFor(capability: Capability, reasoning: String): String? {
+        if (reasoning.isBlank()) return null
+        val profile = providerRegistry.profileFor(capability) ?: return null
+        return reasoning.takeIf { profile.isOfficialDeepSeekEndpoint() }
     }
 
     /**
      * 组装最终回答：正文 + 已执行动作页脚。
-     * `answer` 给界面（含页脚），`body` 给会话历史（**不含页脚**——页脚进历史会被模型模仿）。
-     * toolNames/usage/requests 随事件外传（记录兜底判断、缓存命中展示用）。
+     * answer 给界面；body 给会话历史（不含页脚）。
      */
     private fun finish(
         finalized: StringBuilder,
@@ -406,7 +504,7 @@ class Agent(
         )
     }
 
-    /** 发送流式对话请求（单次请求；工具回路由 chatReplyFlow 编排多次调用本方法） */
+    /** 发送流式对话请求（原生 tools/tool_calls；工具回路由 chatReplyFlow 编排） */
     suspend fun chatStream(
         messages: List<ChatMessage>,
         capability: Capability = Capability.CHAT
@@ -419,14 +517,13 @@ class Agent(
             model = profile.model,
             messages = messages,
             temperature = 0.7,
-            // 8192（2026-10-05 从 4096 提高）：推理模型思考也吃这个配额，且多轮工具场景
-            // 回答更长；4096 时偶尔 finish_reason=length 把回答截断。8192 与小结/整理量级一致，
-            // 主流模型都支持（项目中期间总结已在用 16384）。
+            // 8192：推理模型思考也吃这个配额，且多轮工具场景回答更长
             maxTokens = CHAT_MAX_TOKENS,
             stream = true,
             reasoningEffort = effort,
-            // 流式也要用量统计：缓存命中 token 是验证"提示词缓存是否生效"的唯一手段
-            streamOptions = StreamOptions(includeUsage = true)
+            streamOptions = StreamOptions(includeUsage = true),
+            tools = toolRegistry.definitions(),
+            toolChoice = "auto"
         )
         val header = providerRegistry.authHeader(profile.apiKey)
         return flow {
@@ -435,9 +532,8 @@ class Agent(
         }
     }
 
-    /** 测试连接：对指定档案发一个最小请求验证配置是否正确（per-provider） */
+    /** 测试连接：对指定档案发一个最小请求验证配置是否正确（含原生 tools 参数探测） */
     suspend fun testConnection(profile: ProviderProfile): Result<String> {
-        // 语音识别档案：对话接口必然 400（音频模型不收聊天请求），改走真实的语音接口探测
         if (profile.supportsAudio) return testAudioConnection(profile)
         return try {
             val api = providerRegistry.apiFor(profile)
@@ -445,27 +541,42 @@ class Agent(
             val request = ChatRequest(
                 model = profile.model,
                 messages = listOf(ChatMessage("user", "你好，请回复\"连接成功\"四个字")),
-                // 512：推理模型的思考过程占配额，20 会被吃光导致空响应
                 maxTokens = 512,
-                reasoningEffort = effort
+                reasoningEffort = effort,
+                tools = listOf(toolProbeDefinition()),
+                toolChoice = "auto"
             )
             val header = providerRegistry.authHeader(profile.apiKey)
             val response = providerRegistry.chatCompat(profile, request, header, api)
-            val reply = response.choices.firstOrNull()?.message?.textContent
+            val message = response.choices.firstOrNull()?.message
+            val reply = message?.textContent?.takeIf { it.isNotBlank() }
+                ?: if (!message?.toolCalls.isNullOrEmpty()) "模型返回了工具调用（未执行）" else null
                 ?: return Result.failure(IllegalStateException("响应中没有内容"))
-            Result.success(reply)
+            Result.success("$reply（原生工具调用可用）")
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
+    /** 仅供测试连接探测 tools 参数是否被接受；不执行、不影响主工具列表 */
+    private fun toolProbeDefinition(): ToolDefinition = ToolDefinition(
+        type = "function",
+        function = FunctionDefinition(
+            name = "assistant_capability_probe",
+            description = "Internal capability probe. Do not call in normal replies.",
+            parameters = buildJsonObject {
+                put("type", "object")
+                putJsonObject("properties") {}
+                put("additionalProperties", false)
+            }
+        )
+    )
+
     /**
      * 语音识别档案的连接测试：上传 0.1 秒静音 WAV 打真实的转写接口。
-     * HTTP 通了就算成功（静音转不出文字是正常的）；失败给具体错误。
      */
     private suspend fun testAudioConnection(profile: ProviderProfile): Result<String> {
-        // 0.1 秒 16kHz 静音 WAV（内存生成，不落盘）
-        val data = ByteArray(1600 * 2 + 44)  // 1600 采样 × 2 字节 + 44 头
+        val data = ByteArray(1600 * 2 + 44)
         java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
             put("RIFF".toByteArray()); putInt(36 + data.size - 44); put("WAVE".toByteArray())
             put("fmt ".toByteArray()); putInt(16); putShort(1); putShort(1)
@@ -484,7 +595,6 @@ class Agent(
                 return Result.success("语音接口连接成功" + suffix)
             }
             if (r is com.example.assistant.core.network.AsrClient.Result.Error) {
-                // 空结果 = 接口通了只是没转出文字（静音），也算连接成功
                 if (r.message.contains("空结果")) {
                     return Result.success("语音接口连接成功（测试音为静音，无转写内容）")
                 }
@@ -511,7 +621,11 @@ class Agent(
         /** 目标模型不支持图片时，历史图片替换成的文字占位 */
         const val HISTORICAL_IMAGE_PLACEHOLDER = "[（历史图片：当前模型不支持图片输入，已省略）]"
 
-        /** 带图轮报错时的排查提示（模型不支持图片输入的典型症状是 HTTP 400） */
+        /** 工具注入图片时的说明文本（不把图片和 tool 结果混在同一条消息里） */
+        const val IMAGE_INJECTION_PREFIX =
+            "以下是工具刚刚返回的图片（已附在本条消息里）。请直接看图回答，不要在回复里复述这段说明。"
+
+        /** 带图轮报错时的排查提示 */
         const val IMAGE_MODEL_GUIDE =
             "💡 排查：带图对话用的是「设置 → 模型配置 → 能力指派 → 识屏（视觉）」指派的档案。" +
                 "请确认它就是支持图片输入的模型（如通义 qwen-vl、智谱 GLM-4V、Kimi vision、gpt-4o 等），" +
@@ -521,10 +635,8 @@ class Agent(
 }
 
 /**
- * 累计本轮的用量（**整轮合计**，2026-09-14）：
- * 工具回路里"一轮对话"可能发出多次请求（每转一圈多发一次），界面上的缓存命中率要按整轮算，
- * 只看最后一次请求会误导（最后一次请求的前缀最长、命中率天然最高）。
- * 任何一个请求没带用量就按 0 计（厂商未报告），累计结果里缓存字段全无则保持 null = 未报告。
+ * 累计本轮的用量（整轮合计）：工具回路里一轮对话可能发出多次请求，
+ * 界面缓存命中率要按整轮算。
  */
 internal fun accumulateUsage(sum: Usage?, next: Usage?): Usage? {
     if (next == null) return sum

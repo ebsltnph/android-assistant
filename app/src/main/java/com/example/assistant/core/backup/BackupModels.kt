@@ -81,6 +81,10 @@ data class BackupSettings(
     val chatSessionRetentionDays: Int = 7,
     /** 历史图片保留档位（-1 = 全部；0 = 只当前轮） */
     val chatImageKeep: Int = 0,
+    /** 搜索提供商（"tavily" / "deepseek"；旧备份默认 Tavily） */
+    val searchProvider: String = "tavily",
+    /** 抓取提供商（独立于搜索；旧备份默认 Tavily） */
+    val fetchProvider: String = "tavily",
     /** 日记标签词汇表（逗号分隔） */
     val diaryTagsCsv: String = "工作,生活,待办,经验",
     val secretLogEnabled: Boolean = false,

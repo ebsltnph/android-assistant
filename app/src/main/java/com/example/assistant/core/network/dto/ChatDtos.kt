@@ -1,5 +1,6 @@
 package com.example.assistant.core.network.dto
 
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
@@ -12,8 +13,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.encodeToJsonElement
 
 /**
  * OpenAI 兼容协议的请求 DTO。
@@ -22,9 +26,8 @@ import kotlinx.serialization.json.decodeFromJsonElement
 
 /**
  * content 字段的灵活序列化器：
- * - 发送请求：始终输出数组形式（text/image_url part），兼容视觉模型
- * - 解析响应：兼容两种形式——字符串（DeepSeek 等大多数厂商）
- *   和数组（OpenAI 多模态规范），解析为 List<ContentPart> 供统一读取
+ * - 发送请求：纯文本输出字符串（tool 角色要求字符串）；带图片输出数组。
+ * - 解析响应：兼容字符串和数组两种形式，统一为 List<ContentPart>。
  */
 @OptIn(ExperimentalSerializationApi::class)
 object FlexibleContentSerializer : KSerializer<List<ContentPart>> {
@@ -32,8 +35,21 @@ object FlexibleContentSerializer : KSerializer<List<ContentPart>> {
     override val descriptor: SerialDescriptor = listSerializer.descriptor
 
     private val jsonDecoder: Json = Json { ignoreUnknownKeys = true }
+    private val jsonEncoder: Json = Json { encodeDefaults = false }
 
     override fun serialize(encoder: Encoder, value: List<ContentPart>) {
+        // 纯文本（含空内容）发字符串：tool 消息、assistant tool_calls 的 content="" 都按标准形态。
+        // 只有带图片时才需要数组。
+        if (value.none { it.type == "image_url" }) {
+            if (encoder is JsonEncoder) {
+                encoder.encodeJsonElement(JsonPrimitive(value.filter { it.type == "text" }
+                    .joinToString("\n") { it.text.orEmpty() }))
+                return
+            }
+        } else if (encoder is JsonEncoder) {
+            encoder.encodeJsonElement(jsonEncoder.encodeToJsonElement(listSerializer, value))
+            return
+        }
         listSerializer.serialize(encoder, value)
     }
 
@@ -61,8 +77,10 @@ object FlexibleContentSerializer : KSerializer<List<ContentPart>> {
     }
 }
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ContentPart(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     val type: String = "text", // "text" | "image_url"
     val text: String? = null,
     @SerialName("image_url")
@@ -80,19 +98,69 @@ data class ContentPart(
 @Serializable
 data class ImageUrl(val url: String)
 
+// ======================= 原生 Function Calling DTO =======================
+
+/** 请求里声明的工具（OpenAI/DeepSeek 兼容的 tools 字段） */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class ToolDefinition(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    val type: String = "function",
+    val function: FunctionDefinition
+)
+
+@Serializable
+data class FunctionDefinition(
+    val name: String,
+    val description: String,
+    /** JSON Schema（type/properties/required/additionalProperties） */
+    val parameters: JsonObject,
+    val strict: Boolean? = null
+)
+
+/**
+ * 一次工具调用/流式增量。
+ * - 完整回放：id/type/function 齐全，index 不填。
+ * - 流式增量：index 标识调用，id/name 可能只在首片，arguments 逐片追加。
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class ChatToolCall(
+    val id: String = "",
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    val type: String = "function",
+    val function: FunctionCall? = null,
+    val index: Int? = null
+)
+
+@Serializable
+data class FunctionCall(
+    val name: String? = null,
+    val arguments: String? = null
+)
+
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ChatMessage(
     /**
-     * "system" | "user" | "assistant"。
+     * "system" | "user" | "assistant" | "tool"。
      * 默认值仅用于解析流式响应——流式增量 delta 不含 role 字段；
      * 请求端始终通过构造函数显式传 role。
      */
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     val role: String = "assistant",
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     @Serializable(with = FlexibleContentSerializer::class)
     val content: List<ContentPart> = emptyList(),
-    /** DeepSeek 等推理模型返回的思考过程（可选字段，仅响应端使用） */
+    /** DeepSeek 思考模式：工具调用轮必须在后续请求完整回传 */
     @SerialName("reasoning_content")
-    val reasoningContent: String? = null
+    val reasoningContent: String? = null,
+    /** assistant 发起的原生工具调用（回放历史时必须保留） */
+    @SerialName("tool_calls")
+    val toolCalls: List<ChatToolCall>? = null,
+    /** role=tool 时对应的调用 id */
+    @SerialName("tool_call_id")
+    val toolCallId: String? = null
 ) {
     constructor(role: String, text: String) : this(role, listOf(ContentPart.text(text)))
 
@@ -100,16 +168,24 @@ data class ChatMessage(
         get() = content.filter { it.type == "text" }.joinToString("\n") { it.text.orEmpty() }
 }
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
-data class ResponseFormat(val type: String = "json_object")
+data class ResponseFormat(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    val type: String = "json_object"
+)
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ChatRequest(
     val model: String,
     val messages: List<ChatMessage>,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     val temperature: Double = 0.7,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     @SerialName("max_tokens")
     val maxTokens: Int = 2048,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     val stream: Boolean = false,
     @SerialName("response_format")
     val responseFormat: ResponseFormat? = null,
@@ -128,12 +204,19 @@ data class ChatRequest(
      * 部分中转站不认识该参数会 HTTP 400 → ProviderRegistry 会自动去掉并记住（见 effortSafeCall）。
      */
     @SerialName("stream_options")
-    val streamOptions: StreamOptions? = null
+    val streamOptions: StreamOptions? = null,
+    /** 原生工具声明；null = 不带工具（后台批处理） */
+    val tools: List<ToolDefinition>? = null,
+    /** 固定 "auto"；DeepSeek 思考模式不支持 required/named */
+    @SerialName("tool_choice")
+    val toolChoice: String? = null
 )
 
 /** 流式请求选项（目前只用 include_usage） */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class StreamOptions(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     @SerialName("include_usage")
     val includeUsage: Boolean = true
 )

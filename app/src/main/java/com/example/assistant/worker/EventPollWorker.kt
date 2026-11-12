@@ -4,13 +4,16 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.example.assistant.AssistantApplication
+import com.example.assistant.core.network.WebSearchRequest
 import com.example.assistant.core.notification.Notifier
+import com.example.assistant.core.storage.WebAccessStatus
+import com.example.assistant.core.storage.WebAccessStatusStore
 
 /**
  * 新闻事件轮询 Worker（周期 6 小时，由 AssistantApplication 调度）：
- * 对每个启用的监控事件搜索 Tavily（news 主题、近一周）→ 判断命中 → 通知（24h 去重）。
+ * 对每个启用的监控事件按设置选择的供应商搜索（news 主题、近一周）→ 判断命中 → 通知（24h 去重）。
  * 各事件按 pollHours 跳过未到期项；免打扰时段内命中不通知（顺延下周期）。
- * 全部失败都不抛异常（Worker 下次周期再试）。
+ * 搜索失败不抛异常（Worker 下次周期再试），但会记录状态，不再伪装成“没有新闻”。
  */
 class EventPollWorker(
     context: Context,
@@ -27,15 +30,43 @@ class EventPollWorker(
             // pollHours 过滤：未到轮询间隔的跳过
             if (now - event.lastCheckedAtEpochMillis < event.pollHours * 3600_000L) continue
 
+            val provider = container.webAccessRegistry.currentSearchProvider()
+            var searchSucceeded = false
             val results = try {
-                container.searchClient.search(
-                    event.searchQuery,
-                    topic = "news",
-                    timeRange = "week",
-                    maxResults = 5,
-                    includeDomains = event.includeDomains.ifBlank { null }
+                val found = container.webAccessRegistry.currentSearchClient().search(
+                    WebSearchRequest(
+                        query = event.searchQuery,
+                        topic = "news",
+                        timeRange = "week",
+                        maxResults = 5,
+                        includeDomains = event.includeDomains.ifBlank { null }
+                    )
                 )
+                container.webAccessStatusStore.record(
+                    WebAccessStatus(
+                        timestamp = System.currentTimeMillis(),
+                        provider = provider,
+                        operation = WebAccessStatusStore.OP_EVENT_SEARCH,
+                        success = true,
+                        resultCount = found.size,
+                        message = if (found.isEmpty()) "没有找到相关结果" else "「${event.displayName}」"
+                    )
+                )
+                searchSucceeded = true
+                found
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
+                container.webAccessStatusStore.record(
+                    WebAccessStatus(
+                        timestamp = System.currentTimeMillis(),
+                        provider = provider,
+                        operation = WebAccessStatusStore.OP_EVENT_SEARCH,
+                        success = false,
+                        resultCount = null,
+                        message = "「${event.displayName}」：" + (e.message ?: e.javaClass.simpleName)
+                    )
+                )
                 emptyList()
             }
 
@@ -70,7 +101,11 @@ class EventPollWorker(
                     container.eventRepository.markNotified(event.id, now)
                 }
             }
-            container.eventRepository.markChecked(event.id, now)
+            // 搜索失败不推进 lastChecked：否则默认 24h 的 pollHours 会把一次瞬时限流
+            // 变成“一整天不再检查”。失败的 6 小时周期会自然重试。
+            if (searchSucceeded) {
+                container.eventRepository.markChecked(event.id, now)
+            }
         }
         return Result.success()
     }

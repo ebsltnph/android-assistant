@@ -9,7 +9,7 @@ import com.example.assistant.core.storage.PromptStore
  *
  * 目标：请求前缀在多次调用间字节级一致，让各厂商的提示词缓存命中。规则：
  *  - messages[0] 静态助手提示词（固定外壳 + 用户可编辑中间段）→ 稳定，缓存
- *  - messages[1] 工具手册 + 日记标签词汇表（手册是代码常量；标签只在用户改设置时变）→ 缓存
+ *  - messages[1] 工具使用原则 + 日记标签词汇表（工具 schema 走请求的 tools 字段）→ 缓存
  *  - messages[2] 长期记忆块（**冻结快照**，只在"合并点"重渲染）→ 缓存
  *  - messages[3] 「进行中的事」状态块（**冻结快照**，只在"合并点"重渲染）→ 缓存
  *  - messages[4..n] 对话尾部（**每个用户消息自带创建时刻的时间戳**）→ 逐轮延长，缓存
@@ -29,14 +29,12 @@ class PromptBuilder(private val promptStore: PromptStore) {
      * 组装主对话请求（分段布局见类注释）。
      * @param memoryText 长期记忆块文本（未启用传 null）
      * @param conversation 对话尾部（含最新用户消息；用户消息已带时间戳）
-     * @param toolManual 工具手册静态文本（ToolRegistry.manual()）
-     * @param diaryTags 日记标签词汇表（并入手册块；空则不追加）
+     * @param diaryTags 日记标签词汇表（并入工具原则块；空则不追加）
      * @param bufferText 「进行中的事」条目文本（冻结快照；空则不插入块）
      */
     suspend fun buildChatMessages(
         memoryText: String?,
         conversation: List<ChatMessage>,
-        toolManual: String,
         diaryTags: List<String> = emptyList(),
         bufferText: String? = null
     ): List<ChatMessage> {
@@ -46,8 +44,8 @@ class PromptBuilder(private val promptStore: PromptStore) {
 
         val builder = ArrayList<ChatMessage>(conversation.size + 4)
         builder += ChatMessage("system", shelledSystem)
-        // 手册 + 标签：标签变动频率极低（用户改设置），放这里比"每轮重建的易变消息"缓存友好
-        builder += ChatMessage("system", manualWithTags(toolManual, diaryTags))
+        // 工具调用原则 + 标签：都是低频变化内容；真正的 JSON Schema 在请求 tools 字段里
+        builder += ChatMessage("system", toolNoteWithTags(diaryTags))
 
         if (!memoryText.isNullOrBlank()) {
             builder += ChatMessage(
@@ -68,11 +66,11 @@ class PromptBuilder(private val promptStore: PromptStore) {
         return builder
     }
 
-    /** 工具手册 + 可用日记标签（供 write_diary 选标签；没有标签时不追加） */
-    fun manualWithTags(toolManual: String, diaryTags: List<String>): String =
-        if (diaryTags.isEmpty()) toolManual
-        else toolManual + "\n可用日记标签：" + diaryTags.joinToString("、") +
-            "（write_diary 的 tags 只能从中选择）"
+    /** 工具使用原则 + 可用日记标签（没有标签时不追加） */
+    fun toolNoteWithTags(diaryTags: List<String>): String =
+        if (diaryTags.isEmpty()) TOOL_PROTOCOL_NOTE
+        else TOOL_PROTOCOL_NOTE + "\n可用日记标签：" + diaryTags.joinToString("、") +
+            "（write_diary/update_diary 的 tags 只能从中选择）"
 
     /**
      * 静态前缀（对话尾部之前的所有块）的指纹，2026-09-14；2026-09-17 纳入状态块。
@@ -86,13 +84,13 @@ class PromptBuilder(private val promptStore: PromptStore) {
      */
     suspend fun prefixSignature(
         memoryText: String?,
-        toolManual: String,
+        toolSchemaSignature: String,
         diaryTags: List<String>,
         bufferText: String? = null
     ): String {
         val system = promptStore.prompt(PromptStore.PromptKey.ASSISTANT_SYSTEM)
         val raw = SYSTEM_SHELL_PREFIX + system + SYSTEM_SHELL_SUFFIX + SEP +
-            manualWithTags(toolManual, diaryTags) + SEP +
+            toolNoteWithTags(diaryTags) + SEP + toolSchemaSignature + SEP +
             MEMORY_BLOCK_LABEL + SEP + memoryText.orEmpty() + SEP +
             BUFFER_BLOCK_HEADER + SEP + bufferText.orEmpty()
         val md = java.security.MessageDigest.getInstance("SHA-256")
@@ -110,6 +108,16 @@ class PromptBuilder(private val promptStore: PromptStore) {
             "\n\n说明：每条用户消息开头的 [年-月-日 时:分] 是这条消息的发送时间（系统自动添加，" +
                 "不是用户输入的内容），需要判断当前时间或推算相对时间时，以最后一条用户消息的时间为准。"
         private const val MEMORY_BLOCK_LABEL = "以下是助手需要长期记住的关于用户的事实："
+
+        /**
+         * 原生工具协议的唯一常驻说明。工具清单/参数 Schema 不在提示词里，
+         * 由请求的 tools 字段提供；这里只禁止模型在正文里自造任何协议标记。
+         */
+        const val TOOL_PROTOCOL_NOTE =
+            "【工具使用】需要外部动作时，调用本次请求提供的工具；参数按工具 Schema 提交。" +
+                "工具结果由系统以 tool 消息返回，不要伪造工具结果。" +
+                "绝不要在正文里输出任何工具调用标记、DSML/XML 标签或伪“已执行”清单——" +
+                "工具执行情况由界面自动显示。"
 
         /**
          * 「进行中的事」块标题 + 两句固定说明（2026-09-17 与用户逐字确认）。

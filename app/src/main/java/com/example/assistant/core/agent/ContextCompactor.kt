@@ -5,6 +5,7 @@ import com.example.assistant.core.agent.tools.ToolRegistry
 import com.example.assistant.core.agent.tools.UpdateBufferTool
 import com.example.assistant.core.network.Capability
 import com.example.assistant.core.network.dto.ChatMessage
+import com.example.assistant.core.network.dto.ContentPart
 import com.example.assistant.core.network.dto.Usage
 
 /**
@@ -15,7 +16,7 @@ import com.example.assistant.core.network.dto.Usage
  *
  * ⚠️ 三条设计红线（与用户逐条确认）：
  *
- * 1. **走对话同一链路**（不是独立提示词调用）：请求 = 上一次请求原样（系统外壳 + 工具手册 +
+ * 1. **走对话同一链路**（不是独立提示词调用）：请求 = 上一次请求原样（系统外壳 + 工具原则 +
  *    记忆快照 + 状态快照 + 当前窗口的对话，**不裁剪、不剥离图片**）+ 尾部一条【上下文整理】指令。
  *    这样从 messages[0] 到窗口最后一轮**全部命中厂商缓存**，只有那条指令按未命中计价
  *    （用户的主力模型未命中价是命中价的 50 倍，这个差别很大）；独立提示词调用则要把待压缩
@@ -72,7 +73,6 @@ class ContextCompactor(
         val base = promptBuilder.buildChatMessages(
             memoryText = memoryText,
             conversation = conversationTurns.flatMap { it.messages() },
-            toolManual = toolRegistry.manual(),
             diaryTags = diaryTags,
             bufferText = bufferText
         )
@@ -96,35 +96,65 @@ class ContextCompactor(
                 val reply = agent.chatOnce(messages, Capability.CHAT, MAX_TOKENS)
                 requests++
                 usage = accumulateUsage(usage, reply.usage)
-                val calls = toolRegistry.parseCalls(reply.text)
-                if (calls.isEmpty()) break   // 没有调用行 = 认为没什么可整理的 → 结束
-                val sb = StringBuilder("[结果]")
-                var anySuccess = false
-                calls.forEachIndexed { i, call ->
-                    // 压缩轮只允许 update_buffer（防模型顺手读日记/搜索等）
-                    val outcome = if (call.tool.name == UpdateBufferTool.NAME) {
-                        toolRegistry.execute(call)
-                    } else {
-                        ToolOutcome.Failure("上下文整理期间只允许调用 update_buffer，其它工具本轮不可用。")
-                    }
-                    if (outcome is ToolOutcome.Success) {
-                        anySuccess = true
-                        if (call.tool.name == UpdateBufferTool.NAME) wrote = true
-                    }
-                    sb.append("\n\n").append(i + 1).append(". tool=").append(call.tool.name)
-                    when (outcome) {
-                        is ToolOutcome.Success -> sb.append("｜状态：成功\n").append(outcome.feedback)
-                        is ToolOutcome.Failure -> sb.append("｜状态：失败\n").append(outcome.error)
-                    }
+                val calls = reply.toolCalls
+                if (calls.isEmpty()) break   // 没有工具调用 = 没什么可整理 → 结束
+                if (calls.any { it.id.isBlank() }) {
+                    return Outcome(
+                        ran = true,
+                        requests = requests,
+                        usage = usage,
+                        wrote = wrote,
+                        error = "上下文整理返回了缺少 tool_call_id 的工具调用，已中止且不推进水位线"
+                    )
                 }
-                messages = messages + ChatMessage("assistant", reply.text) + ChatMessage("user", sb.toString())
+                var anySuccess = false
+                val results = ArrayList<ChatMessage>(calls.size)
+                calls.forEach { call ->
+                    val name = call.function?.name.orEmpty()
+                    val rawArgs = call.function?.arguments.orEmpty()
+                    val args = com.example.assistant.core.agent.JsonExtract.objectOf(rawArgs.ifBlank { "{}" })
+                    val outcome = when {
+                        name != UpdateBufferTool.NAME ->
+                            ToolOutcome.Failure("上下文整理期间只允许调用 update_buffer，其它工具本轮不可用。")
+                        args == null ->
+                            ToolOutcome.Failure("工具参数不是合法 JSON 对象，请修正后重试。")
+                        else -> toolRegistry.execute(toolRegistry.find(name)!!, args)
+                    }
+                    if (outcome is ToolOutcome.Success && name == UpdateBufferTool.NAME) {
+                        anySuccess = true
+                        wrote = true
+                    }
+                    val text = when (outcome) {
+                        is ToolOutcome.Success -> outcome.feedback
+                        is ToolOutcome.Failure -> "错误：" + outcome.error
+                    }
+                    results += ChatMessage(
+                        role = "tool",
+                        content = listOf(ContentPart.text(text)),
+                        toolCallId = call.id
+                    )
+                }
+                val assistant = ChatMessage(
+                    role = "assistant",
+                    content = listOf(ContentPart.text(reply.text)),
+                    reasoningContent = reply.reasoningContent,
+                    toolCalls = calls
+                )
+                messages = messages + assistant + results
                 rounds++
                 // 有成功写入就收工（一次压缩 = 一次请求，省一次往返与延迟）；
-                // 只有**全部失败**（参数写错等）才再来一轮，让模型看着 [结果] 里的原因自我纠正。
-                // 多次写入写在同一条回复的多行调用里即可，不需要靠多轮。
+                // 只有全部失败才再来一轮，让模型看着错误自我纠正。
                 if (anySuccess) break
             }
-            return Outcome(ran = true, requests = requests, usage = usage, wrote = wrote)
+            return Outcome(
+                ran = true,
+                requests = requests,
+                usage = usage,
+                wrote = wrote,
+                // 没有成功写入（含模型没调用 update_buffer / 参数一直被拒）视为失败：
+                // 水位线不能推进，否则这批被裁掉的轮会永久丢失（2026-09-23 的教训）。
+                error = if (!wrote) "模型未成功调用 update_buffer（可能没有调用或参数均被拒绝）" else null
+            )
         } catch (e: Exception) {
             return Outcome(
                 ran = true,
@@ -158,7 +188,7 @@ class ContextCompactor(
         return "【上下文整理】$what 即将（或已经）离开上下文。" +
             "请调用 update_buffer 把它们整理进「进行中的事」：" +
             "有变化的改写、已结束的归档、未变化的原样保留。" +
-            "不要回答用户的问题，也不要输出任何解释文字（只输出调用行）。"
+            "不要回答用户的问题，也不要输出任何解释文字（只调用工具）。"
     }
 
     /** 把"漏掉的历史片段"渲染成纯文本（剥掉图片，只留文字，避免重复上传图片） */
