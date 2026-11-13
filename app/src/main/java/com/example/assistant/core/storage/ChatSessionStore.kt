@@ -4,10 +4,14 @@ import android.content.Context
 import com.example.assistant.core.network.dto.ChatToolCall
 import com.example.assistant.core.network.dto.FunctionCall
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * 会话快照的持久化格式。
@@ -154,36 +158,86 @@ class ChatSessionStore(private val context: Context) {
         encodeDefaults = true
     }
 
+    /**
+     * 写盘串行化（2026-11-14）：定时对话会先异步 persist、再同步 persist，
+     * 两次 save 若并发写同一个 tmp 文件，旧实现的"删正式文件→rename"可能出现
+     * 后完成者把前者刚写好的文件删掉、rename 又失败 → 整份会话历史丢失。
+     * 这里用 Mutex 串行化，并每次使用独立临时文件 + 原子替换。
+     */
+    private val ioMutex = Mutex()
+
     private val file: File get() = File(context.filesDir, "chat_session.json")
+
+    /** 当前进程内已成功写入的最大修订号（防旧的异步快照晚到后覆盖新快照） */
+    private var newestRevision = 0L
+
+    /** 修订号发号器：在**构造快照时**同步领取，异步写盘晚到也不会乱序 */
+    private val revisionSeq = java.util.concurrent.atomic.AtomicLong(0L)
+
+    fun newRevision(): Long = revisionSeq.incrementAndGet()
 
     /** 读取快照；没有/损坏（含旧版本格式不兼容）返回 null 并顺手删掉坏文件 */
     suspend fun load(): StoredChat? = withContext(Dispatchers.IO) {
-        try {
-            val f = file
-            if (!f.exists() || f.length() == 0L) return@withContext null
-            json.decodeFromString<StoredChat>(f.readText())
-        } catch (_: Exception) {
-            try { file.delete() } catch (_: Exception) {}
-            null
+        ioMutex.withLock {
+            try {
+                val f = file
+                if (!f.exists() || f.length() == 0L) return@withLock null
+                json.decodeFromString<StoredChat>(f.readText())
+            } catch (_: Exception) {
+                try { file.delete() } catch (_: Exception) {}
+                null
+            }
         }
     }
 
-    suspend fun save(snapshot: StoredChat) = withContext(Dispatchers.IO) {
-        try {
-            val tmp = File(context.filesDir, "chat_session.json.tmp")
-            tmp.writeText(json.encodeToString(StoredChat.serializer(), snapshot))
-            if (file.exists()) file.delete()
-            tmp.renameTo(file)
-        } catch (_: Exception) {
-            // 持久化失败不影响使用（会话本就随时可丢）
+    /**
+     * 保存快照。修订号由调用方单调递增提供：异步保存可能晚于同步保存到达，
+     * 若它携带的是更旧的快照则直接丢弃，避免把新对话覆盖掉。
+     */
+    suspend fun save(snapshot: StoredChat, revision: Long = 0L) = withContext(Dispatchers.IO) {
+        ioMutex.withLock {
+            if (revision > 0L && revision < newestRevision) return@withLock
+            var tmp: File? = null
+            try {
+                tmp = File.createTempFile("chat_session_", ".tmp", context.filesDir)
+                tmp.writeText(json.encodeToString(StoredChat.serializer(), snapshot))
+                replaceAtomically(tmp, file)
+                tmp = null
+                if (revision > newestRevision) newestRevision = revision
+            } catch (_: Exception) {
+                // 持久化失败不影响使用（会话本就随时可丢）
+            } finally {
+                try { tmp?.delete() } catch (_: Exception) {}
+            }
         }
     }
 
     suspend fun clear() = withContext(Dispatchers.IO) {
+        ioMutex.withLock {
+            // 清空也是一次"更新"：抬高最新修订号，让仍在路上的旧快照保存被丢弃，
+            // 否则清空后又被异步旧快照写回，下次启动会恢复出已经清掉的对话。
+            newestRevision = maxOf(newestRevision, revisionSeq.incrementAndGet())
+            try {
+                file.delete()
+                File(context.filesDir, "chat_session.json.tmp").delete()
+                // 清理进程被杀时残留的独立临时文件
+                context.filesDir.listFiles { f ->
+                    f.name.startsWith("chat_session_") && f.name.endsWith(".tmp")
+                }?.forEach { it.delete() }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** 原子替换；个别文件系统不支持 ATOMIC_MOVE 时退回普通 REPLACE_EXISTING */
+    private fun replaceAtomically(src: File, dst: File) {
         try {
-            file.delete()
-            File(context.filesDir, "chat_session.json.tmp").delete()
+            Files.move(
+                src.toPath(), dst.toPath(),
+                StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE
+            )
         } catch (_: Exception) {
+            Files.move(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
     }
 

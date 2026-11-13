@@ -112,9 +112,11 @@ class Agent(
         history: List<ChatMessage> = emptyList(),
         diaryTags: List<String> = emptyList(),
         preferVision: Boolean = false,
-        bufferText: String? = null
+        bufferText: String? = null,
+        /** false = 跳过识屏关键词本地直连（定时对话等后台消息不该触发授权流程） */
+        allowKeywordRoute: Boolean = true
     ): AgentResult {
-        val keyword = intentRouter.keywordRoute(text)
+        val keyword = if (allowKeywordRoute) intentRouter.keywordRoute(text) else null
         if (keyword != null) return AgentResult.Command(keyword)
         return chatRequested(text, memoryText, history, diaryTags, preferVision, bufferText)
     }

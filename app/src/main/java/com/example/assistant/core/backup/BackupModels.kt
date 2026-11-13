@@ -1,6 +1,7 @@
 package com.example.assistant.core.backup
 
 import com.example.assistant.core.network.ProviderProfile
+import com.example.assistant.core.scheduled.ScheduledChat
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
 
@@ -45,6 +46,11 @@ data class BackupFile(
      * 冻结快照（prefix_snapshot.json）不进备份——它可以从这里的条目重新渲染。
      */
     val bufferItems: List<com.example.assistant.data.db.entity.BufferItemEntity> = emptyList(),
+    /**
+     * 定时对话配置（2026-11-14）：提示词/时间/启停。
+     * 不进聊天会话（会话本身不备份），但配置是用户手写的，恢复后应继续生效。
+     */
+    val scheduledChats: List<ScheduledChat> = emptyList(),
     /** zip 里是否有 secret_log/chat_history.txt */
     val secretLogIncluded: Boolean = false,
     /** SummaryStore 最近一份小结（App 内展示的缓存，与 dailySummaries 历史表重复，低优先级） */

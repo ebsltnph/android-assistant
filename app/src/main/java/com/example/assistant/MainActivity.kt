@@ -137,7 +137,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // （原悬浮窗权限检查与引导已随 P6 识屏入口统一到权限 Activity 而移除）
+        // 定时对话：每次回到前台都重排一次（幂等）。若精确闹钟被系统延迟/撤销，
+        // 30 分钟内的预定触发会在这里补跑；否则按当前时间重排下一次。
+        lifecycleScope.launch {
+            try {
+                container.scheduledChatManager.rescheduleAll()
+            } catch (_: Exception) {
+            }
+        }
     }
 
     /** 解析通知点击 / 分享 / 识屏等外部 Intent */
@@ -158,6 +165,10 @@ class MainActivity : ComponentActivity() {
                 AppSharedState.currentTab.value = MainTab.Home
                 AppSharedState.briefingText.value =
                     intent.getStringExtra(Notifier.EXTRA_BRIEFING_TEXT) ?: "（简报内容缺失）"
+            }
+            Notifier.ACTION_OPEN_CHAT -> {
+                // 定时对话通知点击：回复已写进聊天会话，切到聊天页即可看到
+                AppSharedState.currentTab.value = MainTab.Chat
             }
             Notifier.ACTION_CONFIRM_REMINDER -> {
                 // 提醒通知点击：弹确认窗（确认后停止 5 分钟重复通知）

@@ -10,6 +10,7 @@ import com.example.assistant.core.agent.ContextCompactor
 import com.example.assistant.core.agent.IntentRouter
 import com.example.assistant.core.agent.Session
 import com.example.assistant.core.network.dto.ChatMessage
+import com.example.assistant.core.scheduled.ScheduledChat
 import com.example.assistant.core.speech.TtsManager
 import com.example.assistant.core.storage.ConversationLog
 import com.example.assistant.core.storage.ChatSessionStore
@@ -29,8 +30,10 @@ import com.example.assistant.data.repo.BufferRepository
 import com.example.assistant.data.repo.DiaryRepository
 import com.example.assistant.data.repo.MemoryRepository
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -41,6 +44,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -198,6 +202,20 @@ private data class StreamOutcome(
 )
 
 /**
+ * 后台定时对话的执行结果（Worker 据此发通知/是否重试）。
+ */
+sealed interface ScheduledChatResult {
+    /** 已走完整对话回路并落盘；[answer] 为上屏正文（可能含错误提示） */
+    data class Success(val answer: String) : ScheduledChatResult
+
+    /** 用户正在对话，等待超时；可稍后重试 */
+    data class Busy(val message: String) : ScheduledChatResult
+
+    /** 执行前/中失败，未产生可用回复 */
+    data class Failed(val message: String) : ScheduledChatResult
+}
+
+/**
  * 聊天核心逻辑（进程级共享单例，AppContainer 创建）：
  * 聊天页与浮动界面共用同一份会话与消息列表。
  * 主模型统一调度架构：是否调用工具、调用哪个全部由主聊天模型在回复中决定
@@ -270,6 +288,12 @@ class ChatViewModel(
 
     private val session = Session()
     private var counter = 0L
+
+    /**
+     * 启动恢复完成信号：后台定时对话可能先于界面存在（进程被闹钟冷启动），
+     * 必须等会话从磁盘恢复完再追加，否则会把旧会话覆盖掉。
+     */
+    private val restored = CompletableDeferred<Unit>()
 
     /** 上下文窗口设置（DataStore 实时同步；状态行展示用） */
     private var minTurns = 5
@@ -402,7 +426,14 @@ class ChatViewModel(
         scope.launch { settingsStore.bufferInjectMaxItems.collect { bufferMaxItems = it } }
         scope.launch { settingsStore.bufferCompactMinChars.collect { compactMinChars = it } }
         // 启动恢复（轻量持久化；超过保留天数视为过期直接丢掉）
-        scope.launch { restoreSession() }
+        scope.launch {
+            try {
+                restoreSession()
+            } finally {
+                // 失败也要放行：后台定时对话最多也只能基于当前内存态继续
+                restored.complete(Unit)
+            }
+        }
     }
 
     fun setInput(text: String) {
@@ -542,6 +573,86 @@ class ChatViewModel(
     }
 
     /**
+     * 后台定时对话入口（2026-11-14）：**走与用户发消息完全相同的对话回路** ——
+     * 同样的系统提示词、上下文窗口、缓存前缀、工具回路、上下文整理与会话持久化。
+     *
+     * 与普通发送的区别只有两点：
+     * 1. 后台可能先于界面启动，必须等 [restored] 完成；
+     * 2. 聊天里用「⏰ 定时对话 · 名称」作为用户气泡，模型实际收到的是可编辑的提示词原文。
+     *
+     * 由 [ScheduledChatWorker] 在 WorkManager 线程调用；内部切到主线程操作 UI 状态。
+     */
+    suspend fun runScheduledConversation(schedule: ScheduledChat): ScheduledChatResult =
+        withContext(Dispatchers.Main.immediate) {
+            if (withTimeoutOrNull(RESTORE_WAIT_MS) { restored.await() } == null) {
+                return@withContext ScheduledChatResult.Failed("聊天会话初始化超时")
+            }
+            if (!awaitStreamingIdle(STREAM_IDLE_WAIT_MS)) {
+                return@withContext ScheduledChatResult.Busy("用户正在对话，本次定时对话稍后再试")
+            }
+            _isStreaming.value = true
+            _error.value = null
+            try {
+                val prompt = schedule.prompt.trim().ifBlank { ScheduledChat.DEFAULT_PROMPT }
+                val label = if (schedule.customName.isEmpty()) {
+                    "⏰ 定时对话"
+                } else {
+                    "⏰ 定时对话 · ${schedule.customName}"
+                }
+                val answer = sendScheduledText(prompt, label)
+                // sendScheduledText 内部已同步写盘，确保 Worker 结束/进程回收后记录仍在
+                ScheduledChatResult.Success(answer)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ScheduledChatResult.Failed(e.message ?: e.javaClass.simpleName)
+            } finally {
+                _isStreaming.value = false
+            }
+        }
+
+    /** 等启动恢复完成（普通发送路径也走这里，避免恢复稍后完成时把刚发的消息覆盖掉） */
+    private suspend fun awaitSessionRestore() {
+        withTimeoutOrNull(RESTORE_WAIT_MS) { restored.await() }
+    }
+
+    /** 等待当前对话结束（最多 [maxWaitMs]）；超时返回 false（定时任务改期重试） */
+    private suspend fun awaitStreamingIdle(maxWaitMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + maxWaitMs
+        while (_isStreaming.value) {
+            if (System.currentTimeMillis() >= deadline) return false
+            delay(500)
+        }
+        return true
+    }
+
+    /** 定时对话的一轮：界面气泡显示来源标签，模型收到完整提示词（不写入"秘密功能"的用户记录） */
+    private suspend fun sendScheduledText(rawText: String, displayText: String): String {
+        val turnId = session.beginTurn(rawText)
+        _messages.update { it + userMsg(counter++, turnId, displayText, emptyList()) }
+        return try {
+            val answer = runTurn(
+                turnId, rawText,
+                persistAsync = false,
+                allowDiaryFallback = false,
+                allowKeywordRoute = false
+            )
+            persistSessionBlocking()
+            answer
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 兜底：即使对话回路在建上下文/整理阶段异常，也保证聊天里有一句明确错误，
+            // 而不是留下一条没有回复的定时消息。
+            val msg = "⚠️ 定时对话执行失败：${e.message ?: e.javaClass.simpleName}"
+            session.appendAssistant(turnId, ChatMessage("assistant", msg))
+            append(assistantMsg(counter++, turnId, msg))
+            persistSessionBlocking()
+            msg
+        }
+    }
+
+    /**
      * 浮动界面（识屏截图 / 附件栏多图）发送一轮带图消息：文字要求 + 全部图片**一起**发给模型。
      *
      * 图片走**同一条聊天通道**（只换成「识屏（视觉）」指派的档案）：
@@ -573,6 +684,7 @@ class ChatViewModel(
         images: List<PendingImage>,
         restoreInput: Boolean = true
     ) {
+        awaitSessionRestore()
         val paths = withContext(Dispatchers.IO) {
             images.mapNotNull { img ->
                 when {
@@ -633,6 +745,7 @@ class ChatViewModel(
 
     /** 普通文字消息：路由 + 主模型工具回路流式回复 */
     private suspend fun sendText(text: String) {
+        awaitSessionRestore()
         // 秘密功能：记录用户发出的内容（数字分身素材）
         conversationLog.log(text)
         val turnId = session.beginTurn(text)
@@ -644,8 +757,19 @@ class ChatViewModel(
      * 跑一轮对话回路（发送/重做共用）：
      * 用**当前**会话（而非历史请求快照）重建上下文，因此删除/裁剪/记忆更新后重做不会发出过期请求。
      * @param preferVision 本轮带图片 → 用「识屏（视觉）」指派的档案（同一条通道，只换模型）
+     * @return 本轮上屏的最终正文（定时对话后台场景用于通知；普通发送忽略）
      */
-    private suspend fun runTurn(turnId: Long, rawText: String, preferVision: Boolean = false) {
+    private suspend fun runTurn(
+        turnId: Long,
+        rawText: String,
+        preferVision: Boolean = false,
+        /** false = 调用方自行同步落盘（定时对话）；普通发送保持异步 */
+        persistAsync: Boolean = true,
+        /** 定时对话的提示词不是用户"记录"请求，不触发写日记兜底 */
+        allowDiaryFallback: Boolean = true,
+        /** 定时对话在后台，不把提示词里的"识屏/截屏"当作本地直连指令 */
+        allowKeywordRoute: Boolean = true
+    ): String {
         // 历史图片保留策略：统一在这里执行（所有请求都从这里发出：发送/带图/重做/面板）。
         // 0「仅当前轮」= 只有当前这一轮的图发出去，下一轮（哪怕只是文字）起历史图就不再发送；
         // -1「全部」= 历史里的图每轮都重发。当前轮（含其全部图片）永远保留。
@@ -675,20 +799,24 @@ class ChatViewModel(
         val bufferText = snapshot.bufferText.ifBlank { null }
         val ctx = session.buildContext(minTurns, maxTurns, charLimit, signature, plan, reasonOverride)
         _contextStatus.update { it.withContext(ctx, minTurns, maxTurns, charLimit) }
+        var turnAnswer = ""
         when (val result = agent.route(
             rawText, memoryText = memoryText, history = ctx.messages,
-            diaryTags = diaryTags, preferVision = preferVision, bufferText = bufferText
+            diaryTags = diaryTags, preferVision = preferVision, bufferText = bufferText,
+            allowKeywordRoute = allowKeywordRoute
         )) {
             is AgentResult.Command -> {
                 // 目前只有识屏关键词直连会走到这里
                 val hint = executeCommand(result.intent)
                 session.appendAssistant(turnId, ChatMessage("assistant", hint))
                 append(assistantMsg(counter++, turnId, hint))
+                turnAnswer = hint
             }
             is AgentResult.Error -> {
                 val msg = "⚠️ ${result.message}"
                 session.appendAssistant(turnId, ChatMessage("assistant", msg))
                 append(assistantMsg(counter++, turnId, msg))
+                turnAnswer = msg
             }
             is AgentResult.ChatRequested -> {
                 val streamingId = counter++
@@ -724,15 +852,19 @@ class ChatViewModel(
                 val diaryTouched = outcome.toolNames.any {
                     it == "write_diary" || it == "update_diary" || it == "read_diary"
                 }
-                if (!diaryTouched && intentRouter.looksLikeDiaryRequest(rawText)) {
+                if (allowDiaryFallback && !diaryTouched &&
+                    intentRouter.looksLikeDiaryRequest(rawText)
+                ) {
                     writeDiary(rawText)
                 }
+                turnAnswer = answer
             }
         }
         // 每轮结束都清一次过期记录（超过保留天数 + 已不在上下文里的轮才删，见 pruneExpiredRecords）
         pruneExpiredRecords()
         refreshContextStatus()
-        persistSession()
+        if (persistAsync) persistSession()
+        return turnAnswer
     }
 
     // ---- 「进行中的事」：冻结快照 / 上下文整理 / 粘性通知（2026-09-17）----
@@ -832,6 +964,8 @@ class ChatViewModel(
     fun compactNow() {
         if (_isStreaming.value) return
         scope.launch {
+            awaitSessionRestore()
+            if (_isStreaming.value) return@launch
             _isStreaming.value = true
             _error.value = null
             try {
@@ -1190,6 +1324,9 @@ class ChatViewModel(
                 }
             }
             updateMessage(messageId) { it.copy(streaming = false) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // 后台 Worker 被取消（停用/删除配置）时不要把它伪装成"[出错]"写进会话
+            throw e
         } catch (e: Exception) {
             val tail = "[出错：${e.message}]"
             appendText(tail)
@@ -1250,6 +1387,10 @@ class ChatViewModel(
         val list = _messages.value
         val lastUser = list.lastOrNull { it.role == "user" } ?: return null
         if (lastUser.id != messageId) return null
+        // 定时对话的气泡只显示来源标签，但编辑重发应拿回**真正发给模型的提示词**
+        val sourceText = session.lastTurn()
+            ?.takeIf { it.id == lastUser.turnId }
+            ?.let { rawUserText(it) }
         val idx = list.indexOf(lastUser)
         // 界面与该轮的会话历史一起删（按 turnId 精确定位，多删的助手提示轮一并清理）
         val removed = list.drop(idx)
@@ -1273,7 +1414,7 @@ class ChatViewModel(
                 }
             }
         }
-        return lastUser.text
+        return sourceText ?: lastUser.text
     }
 
     /**
@@ -1302,6 +1443,8 @@ class ChatViewModel(
     fun clearConversation(alsoCompact: Boolean = false) {
         if (_isStreaming.value) return
         scope.launch {
+            awaitSessionRestore()
+            if (_isStreaming.value) return@launch
             val all = session.allTurns()
             if (alsoCompact && all.isNotEmpty() && settingsStore.bufferEnabled.first()) {
                 _isStreaming.value = true
@@ -1446,13 +1589,29 @@ class ChatViewModel(
 
     /** 保存会话快照（界面消息 + 会话轮；条数上限防文件无限增长） */
     private fun persistSession() {
-        if (retentionDays <= 0) return
+        val snapshot = buildSessionSnapshot() ?: return
+        val revision = sessionStore.newRevision()
+        scope.launch { sessionStore.save(snapshot, revision) }
+    }
+
+    /** 同步等待写盘（后台定时对话用：Worker 结束/进程被回收前必须确保这轮已落盘） */
+    private suspend fun persistSessionBlocking() {
+        val snapshot = buildSessionSnapshot() ?: return
+        sessionStore.save(snapshot, sessionStore.newRevision())
+    }
+
+    /**
+     * 构造当前会话快照；保留天数为 0（不留存）时返回 null。
+     * 快照在**调用时**同步复制（避免异步写入时读到之后的会话状态）。
+     */
+    private fun buildSessionSnapshot(): StoredChat? {
+        if (retentionDays <= 0) return null
         val ui = _messages.value.takeLast(ChatSessionStore.MAX_UI_MESSAGES)
         val uiTurnIds = ui.map { it.turnId }.toSet()
         val turns = session.allTurns()
             .filter { it.id in uiTurnIds }
             .takeLast(ChatSessionStore.MAX_TURNS)
-        val snapshot = StoredChat(
+        return StoredChat(
             savedAt = System.currentTimeMillis(),
             protocolVersion = 2,
             coveredThroughTurnId = coveredThroughTurnId,
@@ -1477,7 +1636,6 @@ class ChatViewModel(
                 )
             }
         )
-        scope.launch { sessionStore.save(snapshot) }
     }
 
     // ---- 过期会话记录清理（2026-09-17） ----
@@ -1630,6 +1788,12 @@ class ChatViewModel(
 
         /** 一次上下文整理最多补带多少"漏掉的历史片段"轮（防上下文爆炸） */
         private const val MAX_LEFTOVER_TURNS = 30
+
+        /** 后台定时对话等待会话恢复的上限（冷启动首次打开数据库可能较慢） */
+        private const val RESTORE_WAIT_MS = 30_000L
+
+        /** 后台定时对话等待用户当前回复结束的上限；超时交给 Worker 稍后重试 */
+        private const val STREAM_IDLE_WAIT_MS = 3 * 60_000L
 
         /** 后台静默抽取长期记忆的旧入口已删除：对话内记忆改由主模型 write_memory 工具完成 */
     }

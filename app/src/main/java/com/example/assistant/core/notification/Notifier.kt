@@ -21,6 +21,7 @@ object Notifier {
     private const val CHANNEL_REMINDER = "reminder"
     private const val CHANNEL_REMINDER_SILENT = "reminder_silent"
     private const val CHANNEL_BRIEFING = "briefing"
+    private const val CHANNEL_SCHEDULED_CHAT = "scheduled_chat"
 
     /** 识屏：截屏前台服务的前台通知（IMPORTANCE_LOW 不打扰） */
     const val CHANNEL_SCREEN_CAPTURE = "screen_capture"
@@ -50,6 +51,11 @@ object Notifier {
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_BRIEFING, "清晨简报", NotificationManager.IMPORTANCE_DEFAULT
+            )
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_SCHEDULED_CHAT, "定时对话", NotificationManager.IMPORTANCE_DEFAULT
             )
         )
         nm.createNotificationChannel(
@@ -159,6 +165,43 @@ object Notifier {
     }
 
     /**
+     * 定时对话通知：点击打开 App 的聊天页（回复已写进同一会话）。
+     * @param failed true = 未生成可用回复（模型未配置/网络失败/跳过）
+     */
+    fun notifyScheduledChat(
+        context: Context,
+        scheduleId: Long,
+        customName: String,
+        body: String,
+        failed: Boolean = false
+    ) {
+        val contentIntent = PendingIntent.getActivity(
+            context,
+            REQUEST_SCHEDULED_CHAT_OPEN,
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(EXTRA_ACTION, ACTION_OPEN_CHAT),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val prefix = if (failed) "⚠️ 定时对话" else "⏰ 定时对话"
+        val title = if (customName.isBlank()) prefix else "$prefix · $customName"
+        val notification = NotificationCompat.Builder(context, CHANNEL_SCHEDULED_CHAT)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(body.take(200))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .build()
+        try {
+            NotificationManagerCompat.from(context)
+                .notify(NOTIFY_ID_SCHEDULED_CHAT_BASE + (scheduleId and 0xFFFF).toInt(), notification)
+        } catch (e: SecurityException) {
+            // 未授予 POST_NOTIFICATIONS 权限：通知静默丢弃
+        }
+    }
+
+    /**
      * 普通通知（无点击跳转）。
      * reminderId 非空时带点击跳转（提醒确认流程用）。
      */
@@ -201,6 +244,8 @@ object Notifier {
     const val EXTRA_BRIEFING_TEXT = "briefing_text"
     const val ACTION_SHOW_SUMMARY = "show_summary"
     const val ACTION_SHOW_BRIEFING = "show_briefing"
+    /** 定时对话通知点击 → 打开聊天页 */
+    const val ACTION_OPEN_CHAT = "open_chat"
     /** 提醒通知点击 → 打开 App 弹确认窗 */
     const val ACTION_CONFIRM_REMINDER = "confirm_reminder"
     const val EXTRA_REMINDER_ID = "reminder_id"
@@ -232,6 +277,8 @@ object Notifier {
 
     private const val REQUEST_SUMMARY_OPEN = 100
     private const val REQUEST_BRIEFING_OPEN = 101
+    private const val REQUEST_SCHEDULED_CHAT_OPEN = 102
     private const val NOTIFY_ID_DIARY_SUMMARY = 1001
     private const val NOTIFY_ID_BRIEFING = 1002
+    private const val NOTIFY_ID_SCHEDULED_CHAT_BASE = 80_000
 }

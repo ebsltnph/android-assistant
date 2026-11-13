@@ -34,6 +34,8 @@ import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.WebAccessRegistry
 import com.example.assistant.data.db.entity.parseDiaryTags
 import com.example.assistant.core.quiet.QuietHours
+import com.example.assistant.core.scheduled.ScheduledChatManager
+import com.example.assistant.core.scheduled.ScheduledChatStore
 import com.example.assistant.core.storage.ConversationLog
 import com.example.assistant.core.storage.ChatSessionStore
 import com.example.assistant.core.storage.PrefixSnapshotStore
@@ -104,6 +106,12 @@ class AppContainer(context: Context) {
     /** 会话快照（轻量持久化：一个 JSON 文件，不进备份；按保留天数定时清理） */
     val chatSessionStore: ChatSessionStore by lazy { ChatSessionStore(appContext) }
 
+    // ---- 定时对话（2026-11-14：每天/每周固定时刻自动开启一轮正常对话） ----
+    val scheduledChatStore: ScheduledChatStore by lazy { ScheduledChatStore(appContext) }
+    val scheduledChatManager: ScheduledChatManager by lazy {
+        ScheduledChatManager(appContext, scheduledChatStore)
+    }
+
     /**
      * 注入前缀的**冻结快照**（2026-09-17「进行中的事」）：
      * 记忆块与状态块的文本只在"合并点"（窗口回落流程）重渲染一次，
@@ -123,7 +131,8 @@ class AppContainer(context: Context) {
             promptStore = promptStore,
             summaryStore = summaryStore,
             secretStore = secretStore,
-            conversationLog = conversationLog
+            conversationLog = conversationLog,
+            scheduledChatStore = scheduledChatStore
         )
     }
 

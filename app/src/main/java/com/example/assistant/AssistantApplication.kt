@@ -97,6 +97,7 @@ class AssistantApplication : Application() {
         scheduleEventPoll()
         scheduleBriefingWithSetting()
         scheduleAutoBackupWithSetting()
+        scheduleScheduledChats()
         // 提醒清理与恢复：
         // - 已触发超 24h 的一次性提醒清理（列表不堆积）
         // - 已确认的过期僵尸提醒清理（未确认的还在 5 分钟确认流程中，跳过）
@@ -175,6 +176,21 @@ class AssistantApplication : Application() {
     }
 
     // ---- v1.3 定期自动备份调度 ----
+
+    /**
+     * 定时对话：应用每次启动都全量重排。
+     * AlarmManager 的闹钟在强制停止/重启/时间或时区变化后会丢，这里与 BootReceiver 一起兜底；
+     * 重复排同一时刻是幂等的（FLAG_UPDATE_CURRENT）。
+     */
+    private fun scheduleScheduledChats() {
+        appScope.launch {
+            try {
+                container.scheduledChatManager.rescheduleAll()
+            } catch (_: Exception) {
+                // 后台排程失败不影响启动
+            }
+        }
+    }
 
     /** 启动时按设置调度自动备份（关闭则取消）——onCreate 里调用 */
     private fun scheduleAutoBackupWithSetting() {

@@ -12,6 +12,7 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.room.withTransaction
 import com.example.assistant.core.network.Capability
+import com.example.assistant.core.scheduled.ScheduledChatStore
 import com.example.assistant.core.storage.ConversationLog
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
@@ -52,7 +53,8 @@ class BackupManager(
     private val promptStore: PromptStore,
     private val summaryStore: SummaryStore,
     private val secretStore: SecretStore,
-    private val conversationLog: ConversationLog
+    private val conversationLog: ConversationLog,
+    private val scheduledChatStore: ScheduledChatStore
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -166,6 +168,7 @@ class BackupManager(
             restoreSettings(data.settings)
             restorePrompts(data.prompts)
             restoreSummaries(data.latestSummary, data.latestBriefing)
+            scheduledChatStore.replaceAll(data.scheduledChats)
             secretStore.saveProfiles(data.providerProfiles.map { it.toProfile() })
         } catch (e: BackupException) {
             throw e
@@ -342,7 +345,8 @@ class BackupManager(
             dailySummaries = summaries,
             secretLogIncluded = secretLogIncluded,
             latestSummary = latestSummary,
-            latestBriefing = latestBriefing
+            latestBriefing = latestBriefing,
+            scheduledChats = scheduledChatStore.all()
         )
     }
 

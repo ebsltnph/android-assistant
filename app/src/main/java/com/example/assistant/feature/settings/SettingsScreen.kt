@@ -92,7 +92,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             app.container.promptStore,
             app.container.providerRegistry,
             app.container.agent,
-            app.container.webAccessRegistry
+            app.container.webAccessRegistry,
+            app.container.scheduledChatManager
         )
     }
 
@@ -221,6 +222,10 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 },
                 onBack = { subPage = null }
             )
+            SettingsSubPage.SCHEDULED_CHAT -> ScheduledChatPage(
+                vm = vm,
+                onBack = { subPage = null }
+            )
             SettingsSubPage.QUIET_HOURS -> QuietHoursPage(
                 startMinute = quietStart,
                 endMinute = quietEnd,
@@ -281,6 +286,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 /** 设置页子页面（内部导航，不引入 NavHost） */
 private enum class SettingsSubPage {
     USER_GUIDE, MODEL_CONFIG, DAILY_SUMMARY, BRIEFING, QUIET_HOURS, PROMPTS_ADVANCED, SECRET, BACKUP,
+    /** 定时对话（每天/每周固定时刻自动开启一轮正常对话） */
+    SCHEDULED_CHAT,
     /** 悬浮球语音输入（配置项多，折叠进子页，主页只显示摘要） */
     BALL_VOICE,
     /** 聊天上下文（上下限/字符上限/会话保留/历史图片，同样折叠进子页） */
@@ -489,6 +496,22 @@ private fun SettingsMainList(
                 subtitle = if (briefingEnabled) "每天推送今日提醒 + 昨日小结"
                 else "自动推送已关闭，历史简报仍可在首页查看",
                 onClick = { onOpenSubPage(SettingsSubPage.BRIEFING) }
+            )
+        }
+
+        // ---- 4.5 定时对话（2026-11-14：到点自动走一轮正常对话） ----
+        item {
+            val list by vm.scheduledChatList.collectAsState()
+            val active = list.filter { it.enabled }
+            EntryCard(
+                title = "定时对话" + if (active.isNotEmpty()) " · ${active.size} 个启用" else "",
+                subtitle = when {
+                    active.isNotEmpty() -> active.first().let { "${it.displayName} · ${it.scheduleLabel()}" } +
+                        " 主动开启对话 · 可自行读取提醒/日记后提醒你"
+                    list.isNotEmpty() -> "全部已停用 · 点开管理"
+                    else -> "每天或每周固定时刻，让助手主动开启一轮对话"
+                },
+                onClick = { onOpenSubPage(SettingsSubPage.SCHEDULED_CHAT) }
             )
         }
 
@@ -1918,7 +1941,7 @@ private fun WebTestRow(
 
 /** 子页面顶部：返回按钮 + 标题 */
 @Composable
-private fun SubPageHeader(title: String, onBack: () -> Unit) {
+internal fun SubPageHeader(title: String, onBack: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -1932,7 +1955,7 @@ private fun formatMinute(minute: Int): String = "%02d:%02d".format(minute / 60, 
 
 /** 分钟级时间选择器：小时 + 分钟两个下拉并排（所有时间设置统一用） */
 @Composable
-private fun MinutePicker(current: Int, onChange: (Int) -> Unit) {
+internal fun MinutePicker(current: Int, onChange: (Int) -> Unit) {
     val hour = current / 60
     val minute = current % 60
     var hourExpanded by remember { mutableStateOf(false) }

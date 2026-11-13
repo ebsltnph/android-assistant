@@ -63,12 +63,13 @@ core/network/   # 网络层（OpenAI 兼容客户端，能力级提供商 Provid
 core/agent/     # Agent 编排：意图路由、PromptBuilder、记忆注入
 core/speech/    # 语音（输入法语音引导 + SpeechRecognizer 备选 + TTS）
 core/storage/   # SettingsStore / SecretStore(加密) / PromptStore
+core/scheduled/ # 定时对话：配置存储（DataStore JSON）+ AlarmManager 排程 + WorkManager 协调
 core/notification/ # 通知渠道
 data/db/ + data/repo/   # Room 持久化
 feature/        # home/chat/diary/memory/reminder/screensense/settings/wake
 service/        # ScreenCaptureService、FloatingBubbleService、WakeWordService(后期)
-receiver/       # ReminderReceiver、BootReceiver
-worker/         # DailySummaryWorker、MorningBriefingWorker、EventPollWorker
+receiver/       # ReminderReceiver、ScheduledChatReceiver、BootReceiver
+worker/         # DailySummaryWorker、MorningBriefingWorker、EventPollWorker、ScheduledChatWorker
 share/ tiles/   # 分享到助手、快捷设置磁贴
 ```
 
@@ -81,6 +82,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
 - **识图 = 同一条聊天通道，只换模型**（2026-09-11 起）：带图轮走 `Capability.VISION` 档案，其余（上下文/工具/思维链/重做/编辑/删除）与纯文字轮完全一致；图片存 `filesDir/chat_images`，会话只留路径；**没有任何"隐藏的静默调用"**（原 `Agent.silentReply` 已删除）
 - **意图路由**：仅识屏关键词本地直连；其余全部进对话回路由主模型自主调度（无独立分类调用）
 - **主模型统一工具调度（原生 Function Calling，2026-11-13 起）**：提醒/记录/长期记忆/监控/搜索/网页阅读/识屏全部由主聊天模型经**原生 `tools`/`tool_calls`** 自主发起，工具结果以 `role=tool` + `tool_call_id` 配对回传；`ToolRegistry` 只负责 schema/分发/执行，不再解析正文调用行。仅剩识屏关键词本地直连与后台批处理（小结/期间总结/简报/事件轮询命中判断/日记页记忆抽取）走独立调用
+- **定时对话（2026-11-14）**：配置存 DataStore（`scheduled_chats`，单 JSON 数组，避免 Room 迁移）；每条含每天/每周、星期、时刻、可编辑提示词、`configChangedAt`/`lastTriggeredAt`。`ScheduledChatReceiver` 到点**先排下一次**再入队 `ScheduledChatWorker`（广播有时限，对话必须交给 WorkManager）；Worker 调 `ChatViewModel.runScheduledConversation`，**复用与用户发消息完全相同的 `runTurn` 回路**（上下文窗口、缓存前缀、工具、整理、会话持久化），只是等恢复完成/等当前回复结束（最多 3 分钟，忙则 15 分钟后重试一次）、气泡显示「⏰ 定时对话 · 名称」而模型收到提示词原文、结束后同步落盘。下一次闹钟在重启/时间或时区变化/应用启动/回到前台时重排；**补跑**：预定时刻后 30 分钟内发现未处理会补一次（`configChangedAt <= 预定时刻` 才补，避免改时间/刚启用误触发），旧闹钟按 `EXTRA_TRIGGER_AT` 去重。`ScheduledChatManager` 用 Mutex 串行化保存/重排/到点，防止 Application/Activity/广播三路并发重复入队。配置随备份导出恢复。
 
 ## 开发阶段状态
 
@@ -343,6 +345,19 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **序列化坑**：`ApiClient` 改 `encodeDefaults=false` 后，所有请求必带常量字段（role/content/type/temperature/max_tokens/stream/tool type/stream_options）必须用 `@EncodeDefault(ALWAYS)`；纯文本 content 序列化为字符串，带图才发数组。
   - **测试**：新增 SearchProviderTest / NativeToolCallAssemblerTest / ChatWireProtocolTest / NativeSessionPersistenceTest / ProtocolLeakFilterTest；全套 **128 例通过**。`assembleDebug`/`assembleRelease` 通过；`lintDebug` 仍有 **6 个既有错误**（RemoteVoiceRecorder 权限、FloatingPanel super、OrientationUtils API30、TileService 弃用），不是本次引入，未改。
   - **真机验证（2026-11-13）**：① 旧会话打开/迁移正常，界面消息保留；② Tavily 搜索与抓取测试均成功（keyless 连续探测会 429，属限流）；③ DeepSeek 搜索/抓取测试均 HTTP 200、无异常；④ DeepSeek 凭据复用官方对话档案正常；⑤ 聊天确认工具确实以结构化 `tool_calls` 发起，未再出现正文 DSML/`[调用]` 标记。设置子页收纳与“只显示当前选中提供商”已真机确认并恢复原 Tavily 默认。
+
+- [x] **定时对话（2026-11-14，138 个单测通过，Debug/Release 构建通过，真机验证通过）**
+  - **需求与路径**：每天或每周固定时刻自动触发一轮对话。到点不是发模板通知，而是把每条可编辑的提示词作为用户消息，走**与聊天页完全相同的** `ChatViewModel.runTurn`（上下文/缓存/工具/整理/持久化）。
+  - **排程**：DataStore JSON 配置（`ScheduledChatStore`，避免 Room v10 迁移）；`ScheduledChatScheduler` 用 AlarmManager 精确闹钟（未授权精确闹钟 → `setWindow` 15 分钟兜底）；`ScheduledChatReceiver` 到点**先排下一次**再入队 `ScheduledChatWorker`（KEEP 防重复）；Worker 失败/被跳过不影响下一周期。`BootReceiver` 扩展 TIME_SET/TIMEZONE_CHANGED 与精确闹钟授权变化；Application 每次启动、MainActivity 每次回前台全量重排（force-stop 会清闹钟）。
+  - **补跑与去重**：`rescheduleAll` 在预定时刻后 30 分钟内发现 `lastTriggeredAt < 预定时刻` 会补跑一次；要求 `max(configChangedAt, createdAt) <= 预定时刻`，刚改时间/刚启用的配置不误触发。闹钟 Intent 带 `EXTRA_TRIGGER_AT`，`onAlarm` 若 `lastTriggeredAt >= triggerAt` 只排下一次、不重复执行；`ScheduledChatManager` 用 `operationMutex` 串行化 save/setEnabled/delete/rescheduleAll/onAlarm，防 Application + Activity + 广播三路并发重复入队。
+  - **后台对话**：`ChatViewModel.runScheduledConversation` 用 `CompletableDeferred` 等待冷启动会话恢复（30s 超时；普通 send 路径也已等待）、等待当前流式回复结束（3 分钟；忙则 Worker 15 分钟后重试一次），然后以 `_isStreaming` 占位执行正常回路；结束时同步写一次会话快照（防止 Worker 结束/进程回收丢记录）。界面用户气泡显示 `⏰ 定时对话 · 名称`，模型收到提示词原文；编辑重发会还原提示词原文。定时提示词**不走识屏关键词直连、不触发"记录"写日记兜底**（后台消息不应拉授权/误写日记）。
+  - **默认提示词**：要求助手结合上下文/长期记忆/「进行中的事」，必要时自行调用 `list_reminders`、`read_diary` 查看提醒、日记与待办，再给简短、具体、相关的提醒或询问；禁止暴露定时机制或复述工具原文。每条配置可编辑并可一键恢复默认。
+  - **UI**：设置主页摘要入口 →「定时对话」子页：列表（启用开关/下次时间/上次触发/提示词预览）、新建/编辑（每天/每周+星期+时间+名称+启用+提示词）、删除确认、立即运行、精确闹钟授权提示与省电说明。编辑草稿用 JSON Saver 的 `rememberSaveable`，配置变更/进程重建不丢。
+  - **通知**：新渠道「定时对话」，成功/失败标题区分；点击打开聊天页（回复已写入会话）。
+  - **备份**：`BackupFile.scheduledChats` 随备份导出/恢复（格式向后兼容；旧备份恢复为空 = 覆盖语义）。会话保留天数 0 时后台结果不跨进程保留。
+  - **会话持久化加固（由审查发现并修复）**：`ChatSessionStore` 的 save 加 Mutex + 独立临时文件 + 原子 move；`ChatViewModel` 按构造快照时领取单调修订号，旧异步快照晚到会被丢弃；`clear` 抬高修订号，防止清空后又被旧快照写回。`streamReply` 单独 rethrow `CancellationException`，停用/删除配置取消 Worker 时不再写入假 `[出错]`。
+  - **测试**：新增 `ScheduledChatSchedulerTest`（每天/每周下一次、已过/未到、previousTrigger 补跑基准、停用、默认提示词、JSON round-trip）；全套 **138 例通过**。
+  - **真机验证（2026-11-14，荣耀 ALP-AN00 / Android 14）**：先在 1.8.1-debug（code 16）覆盖安装验证，完成版本升级后最终 1.9.0-debug（code 17）覆盖安装数据仍完整、首页正常；设置主页摘要与独立子页正常；新建每天 01:13 的配置后 `dumpsys alarm` 可见 `ScheduledChatReceiver` 精确闹钟；到点后通知 id=80001、标题「⏰ 定时对话」，正文为结合提醒/日记的个性化回复且工具行显示「查看提醒」；聊天页出现「⏰ 定时对话」用户气泡 + 思考/工具/回答，上下文命中 99%。「立即运行」、每周切换（周日）、停用（闹钟立即取消）、删除（配置清空）、force-stop 后重新打开 App（08:00 闹钟自动重排）均实测通过。测试配置与两轮测试对话已删除，原 21 轮会话完整保留；crash 日志无新增。
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细开发计划见本机 `.claude/plans/` 目录（未入库）。

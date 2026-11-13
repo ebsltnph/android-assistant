@@ -135,12 +135,20 @@
             android:name=".receiver.ReminderReceiver"
             android:exported="false" />
 
-        <!-- 开机后重排提醒 -->
+        <!-- 定时对话到点广播（闹钟 → WorkManager 执行完整对话） -->
+        <receiver
+            android:name=".receiver.ScheduledChatReceiver"
+            android:exported="false" />
+
+        <!-- 开机后重排提醒/定时对话；时间或时区变化后重排定时对话 -->
         <receiver
             android:name=".receiver.BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
     </application>

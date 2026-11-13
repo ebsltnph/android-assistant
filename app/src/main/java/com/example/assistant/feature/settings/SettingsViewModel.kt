@@ -12,6 +12,8 @@ import com.example.assistant.core.network.ProviderProfile
 import com.example.assistant.core.network.ProviderRegistry
 import com.example.assistant.core.network.WebAccessRegistry
 import com.example.assistant.core.network.WebProvider
+import com.example.assistant.core.scheduled.ScheduledChat
+import com.example.assistant.core.scheduled.ScheduledChatManager
 import com.example.assistant.core.storage.PromptStore
 import com.example.assistant.core.storage.SecretStore
 import com.example.assistant.core.storage.SettingsStore
@@ -31,7 +33,8 @@ class SettingsViewModel(
     private val promptStore: PromptStore,
     private val registry: ProviderRegistry,
     private val agent: Agent,
-    private val webAccess: WebAccessRegistry
+    private val webAccess: WebAccessRegistry,
+    private val scheduledChats: ScheduledChatManager
 ) : ViewModel() {
 
     private val _profiles = MutableStateFlow<List<ProviderProfile>>(emptyList())
@@ -130,6 +133,32 @@ class SettingsViewModel(
 
     private fun testKey(provider: WebProvider, search: Boolean): String =
         (if (search) "search_" else "fetch_") + provider.storageValue
+
+    // ---- 定时对话（2026-11-14） ----
+    /** 全部定时配置（启用/停用、保存后立即反映；排程由 Manager 同步处理） */
+    val scheduledChatList: StateFlow<List<ScheduledChat>> = scheduledChats.schedules
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun scheduledChatCanExact(): Boolean = scheduledChats.canExact
+
+    fun nextScheduledChatAt(schedule: ScheduledChat): Long? =
+        scheduledChats.nextTriggerAt(schedule)
+
+    fun saveScheduledChat(item: ScheduledChat) {
+        viewModelScope.launch { scheduledChats.save(item) }
+    }
+
+    fun setScheduledChatEnabled(id: Long, enabled: Boolean) {
+        viewModelScope.launch { scheduledChats.setEnabled(id, enabled) }
+    }
+
+    fun deleteScheduledChat(id: Long) {
+        viewModelScope.launch { scheduledChats.delete(id) }
+    }
+
+    fun runScheduledChatNow(id: Long) {
+        scheduledChats.runNow(id)
+    }
 
     // ---- 清晨简报 ----
     val briefingMinute: StateFlow<Int> = settingsStore.briefingMinuteOfDay
