@@ -358,6 +358,7 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **会话持久化加固（由审查发现并修复）**：`ChatSessionStore` 的 save 加 Mutex + 独立临时文件 + 原子 move；`ChatViewModel` 按构造快照时领取单调修订号，旧异步快照晚到会被丢弃；`clear` 抬高修订号，防止清空后又被旧快照写回。`streamReply` 单独 rethrow `CancellationException`，停用/删除配置取消 Worker 时不再写入假 `[出错]`。
   - **测试**：新增 `ScheduledChatSchedulerTest`（每天/每周下一次、已过/未到、previousTrigger 补跑基准、停用、默认提示词、JSON round-trip）；全套 **138 例通过**。
   - **真机验证（2026-11-14，荣耀 ALP-AN00 / Android 14）**：先在 1.8.1-debug（code 16）覆盖安装验证，完成版本升级后最终 1.9.0-debug（code 17）覆盖安装数据仍完整、首页正常；设置主页摘要与独立子页正常；新建每天 01:13 的配置后 `dumpsys alarm` 可见 `ScheduledChatReceiver` 精确闹钟；到点后通知 id=80001、标题「⏰ 定时对话」，正文为结合提醒/日记的个性化回复且工具行显示「查看提醒」；聊天页出现「⏰ 定时对话」用户气泡 + 思考/工具/回答，上下文命中 99%。「立即运行」、每周切换（周日）、停用（闹钟立即取消）、删除（配置清空）、force-stop 后重新打开 App（08:00 闹钟自动重排）均实测通过。测试配置与两轮测试对话已删除，原 21 轮会话完整保留；crash 日志无新增。
+  - **v1.9.0 发布（2026-11-14）**：版本号 1.8.1 → **1.9.0 / code 17**（MINOR：新增定时对话；同时包含 2026-11-13 的搜索/抓取双提供商 + 原生 Function Calling）。提交 `4361b3dea65820849a4f4826d3ec44c8d07a7af1`，GitHub Release **v1.9.0**（Latest）已附 `app-release.apk`（**14,491,448 字节**，sha256 `40f8c6c74dae18f9eef4ef7477b754c94c21895077253404029aa811e0de30e9`，与本地构建产物一致；target = `4361b3dea65820849a4f4826d3ec44c8d07a7af1`）。**推送坑复现**：直连 `git -c http.sslBackend=openssl push` 报 `Recv failure: Connection was reset`，改用 `-c http.proxy=socks5h://127.0.0.1:7897` 后成功；`gh release create` 直连即可。1.9.0-debug（code 17）已覆盖安装真机，数据完整。
 
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细开发计划见本机 `.claude/plans/` 目录（未入库）。
