@@ -1,5 +1,6 @@
 package com.example.assistant.tiles
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Build
 import android.service.quicksettings.Tile
@@ -25,6 +26,9 @@ class ScreenSenseTileService : TileService() {
         }
     }
 
+    // 旧版分支只能调用已弃用的 startActivityAndCollapse(Intent)：
+    // 官方替代（registerActivity + 无参版本）是 API 36 才有的，低版本没有别的收起面板方案。
+    @SuppressLint("StartActivityAndCollapseDeprecated")
     override fun onClick() {
         super.onClick()
         val intent = Intent(this, MainActivity::class.java)

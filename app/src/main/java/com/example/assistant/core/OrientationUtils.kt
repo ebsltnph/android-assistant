@@ -5,9 +5,11 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.database.ContentObserver
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.view.Display
 import android.view.Surface
 
 /**
@@ -28,6 +30,19 @@ object OrientationUtils {
     fun isAutoRotateEnabled(context: Context): Boolean =
         Settings.System.getInt(context.contentResolver, Settings.System.ACCELEROMETER_ROTATION, 1) == 1
 
+    /**
+     * 取 Activity 当前所在 Display（兼容 API 26–29）。
+     * `Activity.display` 是 API 30+；低版本直接调用会抛 NoSuchMethodError（属于 Error，
+     * 普通 catch(Exception) 接不住），因此这里统一走本 helper 兜底。
+     */
+    fun displayOf(activity: Activity): Display? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            activity.display
+        } else {
+            @Suppress("DEPRECATION")
+            activity.windowManager.defaultDisplay
+        }
+
     /** rotation 常量 → requestedOrientation 值 */
     fun orientationForRotation(rotation: Int): Int = when (rotation) {
         Surface.ROTATION_90 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -42,7 +57,7 @@ object OrientationUtils {
      * 不打断 MediaProjection 授权框（P5 坑）；竖屏环境则锁竖屏。
      */
     fun lockToCurrentOrientation(activity: Activity) {
-        val rotation = activity.display?.rotation ?: Surface.ROTATION_0
+        val rotation = displayOf(activity)?.rotation ?: Surface.ROTATION_0
         activity.requestedOrientation = orientationForRotation(rotation)
     }
 
@@ -68,7 +83,7 @@ object OrientationUtils {
      */
     fun requestHighRefreshRate(activity: Activity) {
         try {
-            val display = activity.display ?: return
+            val display = displayOf(activity) ?: return
             val best = display.supportedModes.maxByOrNull { it.refreshRate } ?: return
             val lp = activity.window.attributes
             if (lp.preferredDisplayModeId != best.modeId) {
@@ -90,7 +105,7 @@ object OrientationUtils {
       if (isAutoRotateEnabled(activity)) {
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
       } else {
-        val r = preferredRotation ?: (activity.display?.rotation ?: Surface.ROTATION_0)
+        val r = preferredRotation ?: (displayOf(activity)?.rotation ?: Surface.ROTATION_0)
         activity.requestedOrientation = orientationForRotation(r)
       }
     }

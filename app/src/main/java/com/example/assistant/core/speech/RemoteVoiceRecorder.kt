@@ -1,6 +1,8 @@
 package com.example.assistant.core.speech
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -12,6 +14,7 @@ import kotlin.math.sqrt
  * 内置简单能量检测：听到说话后连续静音 [silenceMs]（设置页可调，默认 2.5 秒）自动结束；
  * 总时长上限 60 秒；外部也可随时 finish()（手动结束）或 cancel()（丢弃不回调）。
  * 回调在录音线程触发，面板侧自行 launch 到主线程更新 UI。
+ * 无麦克风权限时 onError 在**调用线程**立即触发（不进录音线程）。
  */
 class RemoteVoiceRecorder(private val context: Context) {
 
@@ -29,6 +32,14 @@ class RemoteVoiceRecorder(private val context: Context) {
         onFinish: (File) -> Unit,
         onError: (String) -> Unit
     ) {
+        // 录音器自身也做权限兜底：面板侧虽已申请，但权限可能中途被撤销/被系统回收，
+        // 没有这层检查时 AudioRecord 会直接抛 SecurityException。
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            onError("请先允许麦克风权限")
+            return
+        }
         cancel()
         stopRequested = false
         finishRequested = false
@@ -94,6 +105,9 @@ class RemoteVoiceRecorder(private val context: Context) {
                 val f = File(context.cacheDir, "asr_" + System.currentTimeMillis() + ".wav")
                 f.writeBytes(wavHeader(data.size) + data)
                 onFinish(f)
+            } catch (e: SecurityException) {
+                // 权限在录音过程中被撤销（如用户在设置里收回）
+                onError("麦克风权限已被撤销，请重新授予后再试")
             } catch (e: Exception) {
                 onError("录音出错：" + (e.message ?: "未知错误"))
             } finally {

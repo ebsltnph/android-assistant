@@ -180,7 +180,15 @@ adb install -r app-release.apk
 
 ## 🔄 版本历史
 
-### v1.9.0（2026-11-14，当前发布版本）
+### v1.9.1（2026-11-16，当前发布版本）
+
+**稳定性修复：lint error 清零**
+
+- 🛡️ **修复 Android 8–11 启动崩溃隐患**：`Activity.display` 是 API 30+，旧系统上 `MainActivity.onCreate` 请求高刷新率会触发 `NoSuchMethodError`（普通 `catch (Exception)` 接不住）——新增 `displayOf()`：API 30+ 走 `activity.display`，低版本用 `windowManager.defaultDisplay` 兜底
+- 🎙️ **录音器权限兜底**：开始录音前显式检查麦克风权限，未授权或中途被撤销时提示「请先允许麦克风权限」，不再直接抛异常
+- 🧹 **lint 6 error → 0 error**：返回手势下滑退出悬浮面板、旧版识屏磁贴调用弃用 API 都标注为有意设计；无用户可见行为变化
+
+### v1.9.0（2026-11-14）
 
 **定时对话 + 联网搜索/抓取双提供商 + 原生 Function Calling**
 

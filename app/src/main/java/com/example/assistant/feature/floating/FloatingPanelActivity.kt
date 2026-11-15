@@ -1,5 +1,6 @@
 package com.example.assistant.feature.floating
 
+import android.annotation.SuppressLint
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -228,6 +229,8 @@ class FloatingPanelActivity : ComponentActivity() {
         }
     }
 
+    /** 有意不调用 super：返回手势要直接下滑退出面板，而不是走默认的 finish()（会丢动画）。 */
+    @SuppressLint("MissingSuperCall")
     override fun onBackPressed() {
         // 系统返回手势/返回键：直接退出浮动界面回原 App（用户确认：不做「再次滑动提示」）
         finishWithSlideOut()
