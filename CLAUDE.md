@@ -368,6 +368,14 @@ share/ tiles/   # 分享到助手、快捷设置磁贴
   - **真机验证（2026-11-16，荣耀 ALP-AN00 / Android 14）**：1.9.1-debug（code 18）覆盖安装后数据完整、启动正常；用户实测浮动面板返回手势下滑退出、远程语音输入均正常。识屏磁贴逻辑未改（仅抑制注解），未单独复测。
   - **v1.9.1 发布（2026-11-16）**：版本号 1.9.0 → **1.9.1 / code 18**（PATCH：lint 清零 + 低版本启动隐患修复）。提交 `812b365071131073ce4ded02b3495a193017c7e6`，GitHub Release **v1.9.1**（Latest）附 `app-release.apk`（**14,491,448 字节**，sha256 `82fce92426bf7c9016a30b1d773127bc92214962277bd303aaaa1cca568dfc1e`；target = `812b365071131073ce4ded02b3495a193017c7e6`）。
 
+- [x] **长期记忆截断修复（2026-11-16，143 个单测通过，lint 0 error，真机验证通过，暂未发布）**
+  - **根因**：`MemoryDao.memoriesFlow()` 与注入用的 `allMemories()` 都是 `ORDER BY id ASC LIMIT 50`，管理页、首页计数、模型上下文共用。真机 DB 已有 57 条时，新写入的记忆（第 51 条起）**在列表和模型上下文里都不可见**，表现为「`write_memory` 返回成功却查不到」。
+  - **另一条假成功路径**：`write_memory` 漏传 `importance` 时默认 5（低于阈值 7），工具返回 Success 但静默不保存。现在 schema 把 `importance` 设为必填；缺省按阈值 7 保存；显式 <7 时工具行标注「不会保存」。
+  - **修复**：管理页改为全量（新在前）；首页计数改用独立 `COUNT(*)`（不再为数字加载全量）；模型注入改为**全量**（按 id 升序，渲染顺序稳定；实测 54 条记忆合计约 2.7k 字符，无截断必要，截最旧会丢称呼/专业等早期核心事实）；`PrefixSnapshot` 加 `version`（当前 **3**），启动时删除旧版快照并重建一次，保证升级立即生效（一次性前缀缓存失效）。
+  - **测试**：新增 `WriteMemoryToolTest`（缺省 importance 保存 / 低值过滤 / 工具行提示）与 `PrefixSnapshotVersionTest`（旧快照无 version 按 1 解码、新快照带当前版本）；全套 **143 例通过**，`lintDebug` 0 error。
+  - **真机验证（2026-11-16，荣耀 ALP-AN00 / Android 14）**：数据库 54 条 → 首页与记忆页均显示 54，新增记忆出现在顶部；`prefix_snapshot.json` version=3、54 行，且包含最早写入的称呼偏好。1.9.1-debug（code 18）覆盖安装，未改版本号、未发 Release。
+  - **提交**：`2fed2187d45ef7b9d291e8516fba80e890d974cc`（10 files，+168/-15），已推送 master；按用户要求暂不升版本、不发新 Release。
+
 GitHub：https://github.com/ebsltnph/android-assistant（master，功能阶段完成后提交；推送等 bug 处理完、验证通过后（2026-08-02 用户要求别急着推））
 详细开发计划见本机 `.claude/plans/` 目录（未入库）。
 
