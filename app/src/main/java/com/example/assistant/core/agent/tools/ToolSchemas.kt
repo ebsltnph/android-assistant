@@ -78,7 +78,7 @@ internal object ToolSchemas {
         )
 
         "write_memory" -> schema(
-            required = listOf("fact"),
+            required = listOf("fact", "importance"),
             "fact" to string("值得长期记住的用户信息（称呼/稳定习惯/重要背景；一次性琐事不要写）"),
             "category" to string("记忆分类，如 preference / background / general"),
             "importance" to integer("重要性 1-10；只有 ≥7 才会真正保存", minimum = 1, maximum = 10)

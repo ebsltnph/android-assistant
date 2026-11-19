@@ -25,6 +25,11 @@ import java.io.File
  */
 @Serializable
 data class PrefixSnapshot(
+    /**
+     * 快照渲染版本。低于 [CURRENT_VERSION] 时启动会丢弃并从数据库重建一次：
+     * 记忆块由固定 50 条改为全量后，旧文件里仍是截断过的旧内容，必须重建才生效。
+     */
+    val version: Int = 1,
     /** 长期记忆块文本（空 = 不插入该块） */
     val memoryText: String = "",
     /** 「进行中的事」条目文本（空 = 不插入该块；块标题与固定说明在 PromptBuilder） */
@@ -32,6 +37,11 @@ data class PrefixSnapshot(
     val savedAt: Long = 0L
 ) {
     val isEmpty: Boolean get() = memoryText.isBlank() && bufferText.isBlank()
+
+    companion object {
+        /** 3 = 记忆块改为全量注入（2026-11-16） */
+        const val CURRENT_VERSION = 3
+    }
 }
 
 /**
@@ -47,12 +57,18 @@ class PrefixSnapshotStore(private val context: Context) {
 
     private val file: File get() = File(context.filesDir, "prefix_snapshot.json")
 
-    /** 读取快照；没有 / 损坏返回 null（调用方据此从数据库重建一次） */
+    /** 读取快照；没有 / 损坏 / 版本过旧返回 null（调用方据此从数据库重建一次） */
     suspend fun load(): PrefixSnapshot? = withContext(Dispatchers.IO) {
         try {
             val f = file
             if (!f.exists() || f.length() == 0L) return@withContext null
-            json.decodeFromString<PrefixSnapshot>(f.readText())
+            val snapshot = json.decodeFromString<PrefixSnapshot>(f.readText())
+            if (snapshot.version < PrefixSnapshot.CURRENT_VERSION) {
+                // 旧渲染逻辑（固定 50 条截断）的快照不能再用，删除后由调用方重建
+                try { f.delete() } catch (_: Exception) {}
+                return@withContext null
+            }
+            snapshot
         } catch (_: Exception) {
             try { file.delete() } catch (_: Exception) {}
             null

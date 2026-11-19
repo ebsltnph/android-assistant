@@ -876,8 +876,9 @@ class ChatViewModel(
             snapshot.bufferText.ifBlank { null }
         )
 
-    /** 从数据库现渲染一份冻结快照（首装 / 文件损坏 / 恢复备份后重建） */
+    /** 从数据库现渲染一份冻结快照（首装 / 文件损坏 / 版本过旧 / 恢复备份后重建） */
     private suspend fun rebuildSnapshotFromDb(): PrefixSnapshot = PrefixSnapshot(
+        version = PrefixSnapshot.CURRENT_VERSION,
         memoryText = memoryRepository.memoryContextText().orEmpty(),
         // 设置值现读，避免启动时收集器还没跑完拿到默认值
         bufferText = if (settingsStore.bufferEnabled.first()) {

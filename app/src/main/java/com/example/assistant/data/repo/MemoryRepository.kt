@@ -6,11 +6,19 @@ import kotlinx.coroutines.flow.Flow
 
 class MemoryRepository(private val dao: MemoryDao) {
 
+    /** 管理页用：全量记忆（新在前） */
     val memories: Flow<List<MemoryEntity>> = dao.memoriesFlow()
 
-    /** 注入对话用的记忆文本（按 id 升序、最多 50 条 → 排序稳定保证缓存前缀一致） */
+    /** 首页摘要用：记忆总数（不受渲染上限影响） */
+    val memoryCount: Flow<Int> = dao.countFlow()
+
+    /**
+     * 注入对话用的记忆文本：全部记忆，按 id 升序渲染（顺序稳定 → 缓存前缀一致）。
+     * 2026-11-16 修复：原实现只取最旧 50 条，既让新记忆永远进不了模型上下文，
+     * 也会在超限后丢掉最早写入的核心事实（称呼/专业等）。
+     */
     suspend fun memoryContextText(): String? {
-        val list = dao.allMemories()
+        val list = dao.memoriesForContext()
         if (list.isEmpty()) return null
         return list.joinToString("\n") { it.fact }
     }

@@ -19,13 +19,21 @@ class WriteMemoryTool(private val memoryRepository: MemoryRepository) : Assistan
 
     override fun actionLabel(args: JsonObject): String {
         val f = args.argStr("fact")?.take(12) ?: "?"
-        return "记忆「$f」"
+        val importance = args.argInt("importance")
+        // 低于阈值的调用不会入库：工具行直接标明，避免用户看到"成功"却找不到记忆
+        return if (importance != null && importance < IMPORTANCE_THRESHOLD) {
+            "记忆「$f」（importance=$importance，不会保存）"
+        } else {
+            "记忆「$f」"
+        }
     }
 
     override suspend fun execute(args: JsonObject): ToolOutcome {
         val fact = args.argStr("fact")
             ?: return ToolOutcome.Failure("缺少必填参数 fact（要记住的事实）")
-        val importance = args.argInt("importance") ?: 5
+        // 缺省按阈值处理：模型主动调用 write_memory 已表明保存意图，
+        // 原默认 5 会让"没带 importance"的调用静默不保存（成功却查不到的来源之一）。
+        val importance = args.argInt("importance") ?: IMPORTANCE_THRESHOLD
         if (importance < IMPORTANCE_THRESHOLD) {
             // 不算失败：明确告知没存，避免模型向用户宣称已记住
             return ToolOutcome.Success(

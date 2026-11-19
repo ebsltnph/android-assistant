@@ -74,7 +74,7 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     val reminders by vm.upcomingReminders.collectAsState()
     val events by vm.events.collectAsState()
     val ballEnabled by vm.floatingBallEnabled.collectAsState()
-    val memories by app.container.memoryRepository.memories.collectAsState(initial = emptyList())
+    val memoryCount by app.container.memoryRepository.memoryCount.collectAsState(initial = 0)
     val bufferItems by app.container.bufferRepository.items.collectAsState(initial = emptyList())
 
     // 首页子页：长期记忆管理（从首页进入，不占底部导航）
@@ -190,7 +190,7 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                     Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
                         Text("长期记忆", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "${memories.size} 条 · 点击管理",
+                            "${memoryCount} 条 · 点击管理",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
